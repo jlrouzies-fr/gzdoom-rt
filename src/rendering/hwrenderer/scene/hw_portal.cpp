@@ -44,6 +44,7 @@
 
 EXTERN_CVAR(Int, r_mirror_recursions)
 EXTERN_CVAR(Bool, gl_portals)
+EXTERN_CVAR(Bool, gl_noskyboxes)
 namespace cvar
 {
 EXTERN_CVAR( Bool, rt_sky_always )
@@ -100,18 +101,11 @@ void FPortalSceneState::EndFrame(HWDrawInfo *di, FRenderState &state)
 	}
 
 #if HAVE_RT
-	// no sky walls/floor/ceiling visible... emulate it :(
-	if( di->Portals.size() == 0 )
-	{
-		if( cvar::rt_sky_always )
-		{
-			HWSkyInfo skyinfo{};
-			skyinfo.init( di, nullptr, sector_t::ceiling, 0, 0 );
-			auto emulated_skyportal = HWSkyPortal{ screen->mSkyData, &portalState, &skyinfo };
-			RenderPortal( &emulated_skyportal, state, true, di );
-		}
-	}
-	else
+	// Doom64-RT: previously rt_sky_always only ran when Portals was empty.
+	// If any portal existed (incl. broken sector skyboxes / empty-line skies),
+	// outdoor F_SKY1 became white/checker voids. Always process portals, then
+	// ensure a rasterized sky was submitted.
+	bool drew_raster_sky = false;
 #endif
 	while (di->Portals.Pop(p) && p)
 	{
@@ -119,12 +113,36 @@ void FPortalSceneState::EndFrame(HWDrawInfo *di, FRenderState &state)
 		{
 			Printf("%sProcessing %s, depth = %d\n", indent.GetChars(), p->GetName(), renderdepth);
 		}
+#if HAVE_RT
+		// Sector skyboxes are white/black rooms under RT; with gl_noskyboxes they
+		// should already be converted, but drop any that still appear.
+		if( gl_noskyboxes && p->GetName() && strcmp( p->GetName(), "Skybox" ) == 0 )
+		{
+			delete p;
+			continue;
+		}
+#endif
 		if (p->lines.Size() > 0)
 		{
+#if HAVE_RT
+			if( p->GetName() && strcmp( p->GetName(), "Sky" ) == 0 )
+			{
+				drew_raster_sky = true;
+			}
+#endif
 			RenderPortal(p, state, true, di);
 		}
 		delete p;
 	}
+#if HAVE_RT
+	if( cvar::rt_sky_always && !drew_raster_sky )
+	{
+		HWSkyInfo skyinfo{};
+		skyinfo.init( di, nullptr, sector_t::ceiling, 0, 0 );
+		auto emulated_skyportal = HWSkyPortal{ screen->mSkyData, &portalState, &skyinfo };
+		RenderPortal( &emulated_skyportal, state, true, di );
+	}
+#endif
 	renderdepth--;
 
 	if (gl_portalinfo)

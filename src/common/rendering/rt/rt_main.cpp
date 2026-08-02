@@ -96,8 +96,9 @@ namespace cvar
     RT_CVAR( rt_cpu_cullmode,           0,      "[IMPACTS CPU PERFORMANCE HEAVILY] 0: BSP + all neighbor sectors of visible,  1 - original GZDoom's BSP/clip checks,  2: uploading whole map, no culling at all" )
     RT_CVAR( rt_cpu_nocullradius,       10.f,   "[IMPACTS CPU PERFORMANCE] Radius (in meters) in which culling must not be applied. Applicable with rt_cpu_cullmode=0" )
 
-    RT_CVAR( rt_autoexport,             true,   "if true: if map's gltf doesn't exist on disk, export to gltf "
-                                                "and process the map as if it's static (which improves performance / stability)" )
+    RT_CVAR( rt_autoexport,             false,  "if true: if map's gltf doesn't exist on disk, export to gltf "
+                                                "and process the map as if it's static (which improves performance / stability). "
+                                                "Default false: auto-export freezes large UDMF mods (e.g. Doom 64 Retribution)." )
     RT_CVAR( rt_autoexport_light,       200.f,  "On auto export to gltf, apply this multiplier to the sector light intensities" ) 
 
     RT_CVAR( rt_classic,                0.f,    "[0.0,1.0] what portion of the screen to render with a classic mode" )
@@ -130,6 +131,7 @@ namespace cvar
                                                 "This controls the FSR3 / FSR2 upscaling (Super Resolution), but not the Frame Generation.")
     RT_CVAR( rt_sharpen,                0,      "image sharpening; 0 - auto, 1 - naive, 2 - AMD CAS, 3 - force disable" )
 
+    RT_CVAR( rt_rayreconstr,            false,  "native DLSS Ray Reconstruction (replaces A-SVGF + DLSS-SR). Requires rt_upscale_dlss>0 and nvngx_dlssd.dll. Disables frame generation." )
     RT_CVAR( rt_remix_rayreconstr,      false,  "[only for RTX Remix] DLSS Ray Reconstruction - denoise path tracing with AI" )
     RT_CVAR( rt_remix_reflex,           true,   "[only for RTX Remix] Reflex - reduce latency between inputs and visible results" )
     RT_CVAR( rt_remix_taa,              0,      "[only for RTX Remix] temporal anti aliasing. 0 - off, 1 - quality, 2 - balanced, 3 - perf, 4 - ultra perf, 5 - FSR2 with rt_renderscale, 6 - native" )
@@ -337,6 +339,8 @@ const char* RT_GetMapName()
 
     if( primaryLevel && !primaryLevel->RT_MapName.IsEmpty() )
     {
+        // Official modcompat: RT_MapName is set in p_openmap for PWAD maps
+        // so Doom II rt/scenes/map## do not collide with mod MAP01 etc.
         return primaryLevel->RT_MapName.GetChars();
     }
 
@@ -524,6 +528,9 @@ public:
     void SetLevelMesh( hwrenderer::LevelMesh* mesh ) override {}
 
     void Draw2D() override;
+
+    // RTGL1 has no frame-readback API; grab the presented HWND contents.
+    TArray< uint8_t > GetScreenshotBuffer( int& pitch, ESSType& color_type, float& gamma ) override;
 
 public:
     void RT_MarkWasSky() { m_wassky = true; }
@@ -909,6 +916,37 @@ public:
                 }
             }
         };
+        // Doom64-RT: RGBA PNGs are always Masked. Soft garbage alpha hole-punches solid
+        // walls; real fences have many low-alpha pixels. Heuristic: if <8% of pixels are
+        // "see-through" (A<32), force opaque; otherwise keep alpha for fences/grates.
+        auto forceOpaqueAlphaIfNeed = []( FTextureBuffer& data, bool forceOpaque ) {
+            if( !forceOpaque || !data.mBuffer || data.mWidth <= 0 || data.mHeight <= 0 )
+            {
+                return;
+            }
+            const size_t n =
+                size_t( data.mWidth ) * size_t( data.mHeight );
+            for( size_t i = 0; i < n; i++ )
+            {
+                data.mBuffer[ 4 * i + 3 ] = 255;
+            }
+        };
+        auto looksLikeRealMask = []( FTextureBuffer& data ) -> bool {
+            if( !data.mBuffer || data.mWidth <= 0 || data.mHeight <= 0 )
+            {
+                return false;
+            }
+            const size_t n = size_t( data.mWidth ) * size_t( data.mHeight );
+            size_t       holes = 0;
+            for( size_t i = 0; i < n; i++ )
+            {
+                if( data.mBuffer[ 4 * i + 3 ] < 32 )
+                {
+                    holes++;
+                }
+            }
+            return holes * 100 >= n * 8; // >= 8% transparent-ish pixels
+        };
 
         if( m_created )
         {
@@ -927,6 +965,15 @@ public:
         auto texbuffer = src.GetTexture()->CreateTexBuffer( translation, flags | CTF_ProcessData );
         desaturateIfNeed( texbuffer, flags, fileSystem.GetFileShortName( src.GetSourceLump() ) );
         calculateAlphaIfNeed( texbuffer, renderStyle.Flags & STYLEF_RedIsAlpha );
+        {
+            const auto use = src.GetUseType();
+            const bool keepAlpha = ( renderStyle.Flags & STYLEF_RedIsAlpha ) ||
+                                   use == ETextureType::Sprite ||
+                                   use == ETextureType::FontChar ||
+                                   use == ETextureType::SkinSprite ||
+                                   looksLikeRealMask( texbuffer );
+            forceOpaqueAlphaIfNeed( texbuffer, rt_mod_compat != 0 && !keepAlpha );
+        }
 
         if( texbuffer.mWidth <= 0 || texbuffer.mHeight <= 0 )
         {
@@ -1648,16 +1695,19 @@ private:
                     break;
             }
             
+            bool alphaTest = mAlphaThreshold > 0;
             if( rt_mod_compat )
             {
-                // assume all sprites alpha test
                 if( rtstate.is< RtPrim::ExportInstance >() )
                 {
                     add |= RG_MESH_PRIMITIVE_ALPHA_TESTED;
+                    alphaTest = true;
                 }
+                // World: keep alpha-test for real masks (fences). Soft-alpha solids were
+                // forced opaque at upload time via looksLikeRealMask heuristic.
             }
 
-            return ( mAlphaThreshold > 0 ? RG_MESH_PRIMITIVE_ALPHA_TESTED : 0 ) | add;
+            return ( alphaTest ? RG_MESH_PRIMITIVE_ALPHA_TESTED : 0 ) | add;
         };
 
         auto l_isemis = [ & ]() {
@@ -1667,7 +1717,9 @@ private:
             }
             if( rt_mod_compat & 2 )
             {
-                if( rtstate.is< RtPrim::ExportInstance >() )
+                // Auto: brightmaps/glowmaps on sprites AND world geometry -> RT emissive
+                if( rtstate.is< RtPrim::ExportInstance >() ||
+                    rtstate.is< RtPrim::ExportMap >() )
                 {
                     if( mBrightmapEnabled )
                     {
@@ -1702,9 +1754,11 @@ private:
         };
 
         // HACKHACK: replacements are ignored if a prim is rasterized, force alpha=1.0
+        // Doom64-RT: always force opaque vertex color on world geometry under mod_compat.
         const bool forcealpha1 = ( mesh.flags & RG_MESH_FORCE_GLASS ) ||
                                  ( mesh.flags & RG_MESH_FORCE_MIRROR ) ||
-                                 ( mesh.flags & RG_MESH_FORCE_WATER );
+                                 ( mesh.flags & RG_MESH_FORCE_WATER ) ||
+                                 ( rt_mod_compat && rtstate.is< RtPrim::ExportMap >() );
 
         auto prim = RgMeshPrimitiveInfo{
             .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
@@ -2040,6 +2094,14 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
 
 } // anonymous namespace
 
+bool RT_ModMapNeedsLiveGeometryUpload()
+{
+    // PWAD maps use RT_MapName like "d64rtr_v15_map01" and have no baked rt/scenes/*.
+    // Stock Doom II maps are plain "map01" and rely on static gltf — those can omit uploads.
+    const char* mapname = RT_GetMapName();
+    return mapname != nullptr && strchr( mapname, '_' ) != nullptr;
+}
+
 #ifdef _WIN32
 std::atomic< HWND > g_msgbox_parent{};
 #endif
@@ -2078,11 +2140,13 @@ Win32RTVideo::Win32RTVideo()
             RT_FEATURE_FSR3_FG  = 2,
             RT_FEATURE_DLSS2    = 4,
             RT_FEATURE_DLSS3_FG = 8,
+            RT_FEATURE_DLSS_RR  = 16,
         };
 
         const std::pair< std::filesystem::path, int > dlls[] = {
             { "rt/bin/D3D12Core.dll", RT_FEATURE_FSR3_FG | RT_FEATURE_DLSS3_FG },
             { "rt/bin/nvngx_dlss.dll", RT_FEATURE_DLSS2 },
+            { "rt/bin/nvngx_dlssd.dll", RT_FEATURE_DLSS_RR },
             { "rt/bin/nvngx_dlssg.dll", RT_FEATURE_DLSS3_FG },
             { "rt/bin/NvLowLatencyVk.dll", RT_FEATURE_DLSS3_FG },
             { "rt/bin/sl.dlss.dll", RT_FEATURE_DLSS3_FG },
@@ -2124,6 +2188,7 @@ Win32RTVideo::Win32RTVideo()
                 // clang-format off
                 if( failedFeatures & RT_FEATURE_DLSS3_FG) msg += "NVIDIA DLSS3 (AI Frame Generation)\n";
                 if( failedFeatures & RT_FEATURE_DLSS2   ) msg += "NVIDIA DLSS2 (AI Upscaling)\n";
+                if( failedFeatures & RT_FEATURE_DLSS_RR ) msg += "NVIDIA DLSS Ray Reconstruction\n";
                 if( failedFeatures & RT_FEATURE_FSR3_FG ) msg += "AMD FSR 3 (Frame Generation)\n";
                 if( failedFeatures & RT_FEATURE_FSR2    ) msg += "AMD FSR 2 (Upscaling)\n";
                 // clang-format on
@@ -2325,6 +2390,96 @@ Win32RTVideo::Win32RTVideo()
 DFrameBuffer* Win32RTVideo::CreateFrameBuffer()
 {
     return new RTFrameBuffer{ m_hMonitor, vid_fullscreen };
+}
+
+TArray< uint8_t > RTFrameBuffer::GetScreenshotBuffer( int& pitch, ESSType& color_type, float& gamma )
+{
+    // RTGL1 exposes no GPU readback for the presented frame. Capture the HWND
+    // after present so `screenshot` / Level.MakeScreenShot work (and don't need focus).
+    const int w = GetClientWidth() > 0 ? GetClientWidth() : GetWidth();
+    const int h = GetClientHeight() > 0 ? GetClientHeight() : GetHeight();
+    if( w <= 0 || h <= 0 )
+    {
+        return {};
+    }
+
+    HWND hwnd = mainwindow.GetHandle();
+    if( !hwnd )
+    {
+        return {};
+    }
+
+    HDC hdcWin = GetDC( hwnd );
+    if( !hdcWin )
+    {
+        return {};
+    }
+
+    HDC     hdcMem = CreateCompatibleDC( hdcWin );
+    HBITMAP hbm    = CreateCompatibleBitmap( hdcWin, w, h );
+    HGDIOBJ old    = SelectObject( hdcMem, hbm );
+
+    // PW_RENDERFULLCONTENT: ask DWM for the redirected surface (Vulkan/DXGI).
+    BOOL ok = PrintWindow( hwnd, hdcMem, 0x00000002 );
+    if( !ok )
+    {
+        ok = BitBlt( hdcMem, 0, 0, w, h, hdcWin, 0, 0, SRCCOPY );
+    }
+
+    TArray< uint8_t > out;
+    if( ok )
+    {
+        BITMAPINFOHEADER bi{};
+        bi.biSize        = sizeof( bi );
+        bi.biWidth       = w;
+        bi.biHeight      = h; // bottom-up DIB
+        bi.biPlanes      = 1;
+        bi.biBitCount    = 32;
+        bi.biCompression = BI_RGB;
+
+        TArray< uint8_t > bgra( size_t( w ) * size_t( h ) * 4u, true );
+        if( GetDIBits( hdcMem,
+                       hbm,
+                       0,
+                       UINT( h ),
+                       bgra.Data(),
+                       reinterpret_cast< BITMAPINFO* >( &bi ),
+                       DIB_RGB_COLORS ) )
+        {
+            // Reject obviously empty / failed captures (all black).
+            uint64_t sum = 0;
+            for( int i = 0; i < w * h; ++i )
+            {
+                sum += bgra[ size_t( i ) * 4u + 0u ];
+                sum += bgra[ size_t( i ) * 4u + 1u ];
+                sum += bgra[ size_t( i ) * 4u + 2u ];
+            }
+            if( sum > 0 )
+            {
+                out.Resize( size_t( w ) * size_t( h ) * 3u );
+                for( int y = 0; y < h; ++y )
+                {
+                    const uint8_t* src = bgra.Data() + size_t( y ) * size_t( w ) * 4u;
+                    uint8_t*       dst = out.Data() + size_t( h - 1 - y ) * size_t( w ) * 3u;
+                    for( int x = 0; x < w; ++x )
+                    {
+                        dst[ x * 3 + 0 ] = src[ x * 4 + 2 ];
+                        dst[ x * 3 + 1 ] = src[ x * 4 + 1 ];
+                        dst[ x * 3 + 2 ] = src[ x * 4 + 0 ];
+                    }
+                }
+                pitch      = w * 3;
+                color_type = SS_RGB;
+                gamma      = 1.0f;
+            }
+        }
+    }
+
+    SelectObject( hdcMem, old );
+    DeleteObject( hbm );
+    DeleteDC( hdcMem );
+    ReleaseDC( hwnd, hdcWin );
+    return out;
 }
 
 void Win32RTVideo::Shutdown()
@@ -2538,6 +2693,14 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
                      ? int( cvar::rt_upscale_fsr2 )
                      : 0;
 
+    // Native Ray Reconstruction needs a DLSS quality mode; default to Balanced.
+    const bool wantNativeRr = !g_isremix && bool( cvar::rt_rayreconstr );
+    if( wantNativeRr && nvDlss == 0 && ( cvar::rt_available_dlss2 || cvar::rt_available_dlss3fg ) )
+    {
+        nvDlss                = 2;
+        cvar::rt_upscale_dlss = 2;
+    }
+
     switch( nvDlss )
     {
         case 1:
@@ -2627,6 +2790,18 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
         else
         {
             pDst->frameGeneration = RG_FRAME_GENERATION_MODE_OFF;
+        }
+    }
+
+    // Native RR replaces A-SVGF + DLSS-SR; Frame Gen is out of scope for MVP.
+    pDst->rayReconstruction = 0;
+    if( wantNativeRr && nvDlss != 0 )
+    {
+        pDst->rayReconstruction = 1;
+        pDst->frameGeneration   = RG_FRAME_GENERATION_MODE_OFF;
+        if( int( cvar::rt_framegen ) != 0 )
+        {
+            cvar::rt_framegen = 0;
         }
     }
 
@@ -3141,14 +3316,21 @@ void RTFrameBuffer::RT_BeginFrame()
 
     RgStaticSceneStatusFlags staticscene_status = 0;
 
+    // Mod maps (RT_MapName like "d64rtr_v15_map01") must not auto-export until a scene exists:
+    // export + uncull-all freezes the main thread on large UDMF maps.
+    const char* mapname_for_rt = RT_GetMapName();
+    const bool  is_mod_map =
+        mapname_for_rt && strchr( mapname_for_rt, '_' ) != nullptr;
+    const bool allow_autoexport = cvar::rt_autoexport && !is_mod_map;
+
     auto info = RgStartFrameInfo{
         .sType                  = RG_STRUCTURE_TYPE_START_FRAME_INFO,
         .pNext                  = &fluid_params,
-        .pMapName               = RT_GetMapName(),
+        .pMapName               = mapname_for_rt,
         .ignoreExternalGeometry = false,
         .vsync                  = cvar::rt_vsync,
         .hdr                    = cvar::rt_hdr_available ? cvar::rt_hdr : false,
-        .allowMapAutoExport     = cvar::rt_autoexport,
+        .allowMapAutoExport     = allow_autoexport,
         .lightmapScreenCoverage = RT_ForceNoClassicMode() ? 0.0f : cvar::rt_classic,
         .lightstyleValuesCount  = uint32_t( g_sectorlightlevels.size() ),
         .pLightstyleValues8     = g_sectorlightlevels.data(),
@@ -3161,18 +3343,19 @@ void RTFrameBuffer::RT_BeginFrame()
     RG_CHECK( r );
 
 
-    auto l_clm = [ staticscene_status ]() {
-        if( staticscene_status & RG_STATIC_SCENE_STATUS_EXPORT_STARTED )
+    auto l_clm = [ staticscene_status, is_mod_map ]() {
+        // Doom64-RT: uncull-all (mode 2) on large UDMF mods freezes the main thread
+        // for a long time (looks hung; needs force-close). Never do it for mod maps.
+        if( !is_mod_map )
         {
-            return 2; // no cull as we need to upload all geometry for the first time
-        }
-        if( staticscene_status & RG_STATIC_SCENE_STATUS_NEW_SCENE_STARTED )
-        {
-            return 2; // touch everything, to upload all resources
-        }
-        if( !( staticscene_status & RG_STATIC_SCENE_STATUS_LOADED ) )
-        {
-            return 2; // no static scene, upload everything
+            if( staticscene_status & RG_STATIC_SCENE_STATUS_EXPORT_STARTED )
+            {
+                return 2; // no cull as we need to upload all geometry for the first time
+            }
+            if( staticscene_status & RG_STATIC_SCENE_STATUS_NEW_SCENE_STARTED )
+            {
+                return 2; // touch everything, to upload all resources
+            }
         }
         switch( int( cvar::rt_cpu_cullmode ) )
         {
@@ -3271,7 +3454,8 @@ void RTFrameBuffer::RT_DrawFrame()
         .sType              = RG_STRUCTURE_TYPE_DRAW_FRAME_SKY_PARAMS,
         .pNext              = &reflrefr_params,
         .skyType            = m_wassky ? RG_SKY_TYPE_RASTERIZED_GEOMETRY : RG_SKY_TYPE_COLOR,
-        .skyColorDefault    = { 0, 0, 0 },
+        // Dark space tint if raster sky failed (pure black often tonemaps to white voids).
+        .skyColorDefault    = { 0.02f, 0.02f, 0.05f },
         .skyColorMultiplier = cvar::rt_sky,
         .skyColorSaturation = cvar::rt_sky_saturation,
         .skyViewerPosition  = { 0, 0, 0 },

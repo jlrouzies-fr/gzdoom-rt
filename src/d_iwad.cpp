@@ -716,13 +716,12 @@ int FIWadManager::IdentifyVersion (std::vector<std::string>&wadfiles, const char
 	if (picks.Size() == 0)
 	{
 #if HAVE_RT
-		RT_AskToOpenUrl( "IWAD not found",
-		                 "Can't find any \'.wad\' (file that contains all game resources).\n"
-		                 "Please, install DOOM on Steam,\n"
-		                 "or place \'.wad\' file into the same directory as " GAMENAME ".exe"
-		                 "\n\nOpen the Steam page?",
-		                 L"https://store.steampowered.com/app/2280/DOOM__DOOM_II/" );
-		exit( -1 );
+		// Doom64-RT fork: do not hard-exit to Steam; fall through to normal fatal error
+		// so -iwad / non-Steam installs and mod workflows remain usable.
+		RT_ShowWarningMessageBox(
+			"No IWAD found.\n\n"
+			"Pass -iwad path\\to\\doom2.wad (any legally owned Doom II IWAD works).\n"
+			"Steam DOOM II is optional; the exact Steam file size is no longer required." );
 #endif
 
 		I_FatalError ("Cannot find a game IWAD (doom.wad, doom2.wad, heretic.wad, etc.).\n"
@@ -865,51 +864,29 @@ int FIWadManager::IdentifyVersion (std::vector<std::string>&wadfiles, const char
 			RT_ShowWarningMessageBox( str.GetChars() );
 		};
 
+		// Doom64-RT fork: Steam file-size gates removed. Stock Doom II light scenes
+		// still apply only for pure commercial Doom II (no PWADs); mods use autoexport
+		// via RT_GetMapName() "mod/" prefix.
 		if( autoname.CompareNoCase( "doom.id.doom2.commercial" ) == 0)
 		{
 			if( fileSize != 14604584 )
 			{
-				auto msg = "Please, use the original DOOM2.wad file from Steam:\n    "
-				           "The provided DOOM2.wad has failed a file check:\n    " +
-				           picks[ pick ].mFullPath +
-				           "\n\n\n"
-				           "Open a Steam page?";
-
-				if( RT_AskToOpenUrl( "Incompatible DOOM2.wad",
-				                     msg.GetChars(),
-				                     L"https://store.steampowered.com/app/2280/DOOM__DOOM_II/" ) )
-				{
-					exit( 0 );
-				}
-
-				l_showWarn( "Forcing incompatible WAD.\n\n"
-				            "Light data for ray tracing will not be available.\n"
-				            "Expect INCORRECT LIGHTING and a worse experience." );
+				l_showWarn( "DOOM2.wad size differs from the Steam original (14604584 bytes):\n    " +
+				            picks[ pick ].mFullPath +
+				            "\n\nContinuing anyway. Stock Doom II RT scenes may not match." );
 			}
 
 			rt_isdoom2 = true;
 		}
 		else if( autoname.CompareNoCase( "doom.id.doom1.ultimate" ) == 0 )
 		{
-			// TODO: remove when doom 1 is implemented
-			l_showWarn( "Doom (1993) is not supported.\n"
-			            "Only Doom II (1994) has the required light data for ray tracing.\n\n"
-			            "Expect INCORRECT LIGHTING." );
-
-			if( fileSize != 12408292 )
-			{
-				l_showWarn( "Please, use the original DOOM.wad file from Steam:\n    "
-				            "The provided DOOM.wad has failed a file check:\n    " +
-				            picks[ pick ].mFullPath +
-				            "\n\nLight data for ray tracing will not be available.\n"
-				            "Expect INCORRECT LIGHTING and a worse experience." );
-			}
+			l_showWarn( "Doom (1993): stock RT light scenes are Doom II–oriented.\n"
+			            "Expect to rely on autoexport / custom scenes." );
 		}
 		else
 		{
-			l_showWarn( "Found unsupported .wad:\n    " + picks[ pick ].mFullPath +
-			            "\n\nLight data for ray tracing will not be available.\n"
-			            "Expect INCORRECT LIGHTING and a worse experience." );
+			l_showWarn( "IWAD is not Doom II commercial:\n    " + picks[ pick ].mFullPath +
+			            "\n\nStock Doom II RT scenes will not apply; using autoexport/custom scenes." );
 		}
 	}
 #endif

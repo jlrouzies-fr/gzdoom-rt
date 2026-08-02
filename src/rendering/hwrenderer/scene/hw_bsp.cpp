@@ -268,6 +268,12 @@ static bool RT_CanOmitUploadOfStaticExportable( const seg_t* seg )
 	{
 		return false;
 	}
+	// Doom64-RT: with rt_classic=0, stock code skips ExportMap walls/flats assuming
+	// baked rt/scenes geometry. Mod maps have no scenes → walls never upload → sky holes.
+	if( RT_ModMapNeedsLiveGeometryUpload() )
+	{
+		return false;
+	}
 	return true;
 }
 

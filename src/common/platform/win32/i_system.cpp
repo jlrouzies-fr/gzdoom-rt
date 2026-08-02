@@ -1510,15 +1510,15 @@ static void AskUserToChoose(std::stop_token stopToken, std::promise<ChooseResult
 		return;
 	}
 #else
+	// Doom64-RT fork: if Doom II commercial wasn't detected, fall back to the
+	// normal IWAD dialog instead of forcing a Steam install / closing.
 	if( !hasDoom2 )
 	{
-		RT_AskToOpenUrl( "Compatible DOOM2.wad not found",
-		                 "Can't find DOOM2.wad (file that contains all game resources),\n"
-		                 "or doom2.wad is not \'doom.id.doom2.commercial\'.\n\n"
-		                 "Please, install DOOM II on Steam, and relaunch.\n\n"
-		                 "Open the Steam page?",
-		                 L"https://store.steampowered.com/app/2280/DOOM__DOOM_II/" );
-		result.set_value( ChooseResult::Close );
+		RT_ShowWarningMessageBox(
+			"Doom II commercial IWAD not detected by the RT launcher.\n\n"
+			"Falling back to the standard IWAD picker.\n"
+			"You can also pass -iwad and -file on the command line." );
+		result.set_value( ChooseResult::Fallback );
 		return;
 	}
 #endif
@@ -1931,6 +1931,13 @@ int I_PickIWad(WadStuff *wads, int numwads, bool showwin, int defaultiwad, int& 
     }
 
     auto res = ChooseResult::Fallback;
+	// Doom64-RT fork: skip custom Steam launcher when user already chose an IWAD
+	// or explicitly disabled it — required for mod loaders (-iwad + -file).
+	const bool skip_rt_launcher =
+		Args->CheckValue( "-iwad" ) != nullptr ||
+		Args->CheckParm( "-file" ) > 0 ||
+		Args->CheckParm( "-rtnolauncher" ) > 0;
+
 	if (Args->CheckParm("-rtdoom1") > 0)
 	{
 		res = ChooseResult::UltimateDoom;
@@ -1939,7 +1946,7 @@ int I_PickIWad(WadStuff *wads, int numwads, bool showwin, int defaultiwad, int& 
 	{
 		res = ChooseResult::Doom2;
 	}
-	else if (Args->CheckParm("-rtnolauncher") == 0)
+	else if (!skip_rt_launcher)
 	{
 		auto resPromise = std::promise<ChooseResult>{};
 		auto resFuture = resPromise.get_future();
@@ -1982,7 +1989,18 @@ int I_PickIWad(WadStuff *wads, int numwads, bool showwin, int defaultiwad, int& 
 	{
 		vkey = 0;
 	}
-	if (showwin || (vkey != 0 && GetAsyncKeyState(vkey)))
+#if HAVE_RT
+	// When -iwad/-file/-rtnolauncher is set, skip the welcome "Launch" dialog.
+	// (RT builds always reach this path even for a single IWAD; +queryiwad false
+	// is applied too late to help.)
+	const bool skip_iwad_dialog =
+		Args->CheckValue( "-iwad" ) != nullptr ||
+		Args->CheckParm( "-file" ) > 0 ||
+		Args->CheckParm( "-rtnolauncher" ) > 0;
+#else
+	const bool skip_iwad_dialog = false;
+#endif
+	if ((showwin || (vkey != 0 && GetAsyncKeyState(vkey))) && !skip_iwad_dialog)
 	{
 		WadList = wads;
 		NumWads = numwads;
