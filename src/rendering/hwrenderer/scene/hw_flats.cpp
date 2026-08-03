@@ -51,6 +51,7 @@
 #if HAVE_RT
 #include "rt/rt_cvars.h"
 #include "rt/rt_state.h"
+#include "hwrenderer/scene/hw_portal.h"
 #endif
 
 #ifdef _DEBUG
@@ -310,7 +311,11 @@ void HWFlat::DrawFloodPlanes(HWDrawInfo *di, FRenderState &state)
 void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 {
 #if HAVE_RT
-	auto rtexp = rtstate.push_type(RT_IsSectorExportable(sector, ceiling) ? RtPrim::ExportMap : RtPrim::Identity);
+	// See HWWall::DrawWall — sector skybox rooms must not enter the RT scene.
+	auto rtexp = rtstate.push_type(
+		portalState.inskybox ? RtPrim::Ignored
+		: RT_IsSectorExportable(sector, ceiling) ? RtPrim::ExportMap
+		                                         : RtPrim::Identity);
     auto rttype = rtstate.push_type(
         (hacktype & SSRF_PLANEHACK) || (hacktype & SSRF_FLOODHACK) ?
         RtPrim::Ignored : RtPrim::Identity);

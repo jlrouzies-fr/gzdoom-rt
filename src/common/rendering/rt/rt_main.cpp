@@ -11,6 +11,7 @@
 #include "c_dispatch.h"
 #include "hw_renderstate.h"
 #include "g_levellocals.h"
+#include "a_dynlight.h"
 #include "r_utility.h"
 #include "v_draw.h"
 #include "flatvertices.h"
@@ -21,6 +22,7 @@
 #include "i_modelvertexbuffer.h"
 #include "p_lnspec.h"
 #include "image.h"
+#include "texturemanager.h"
 
 #include "rt_state.h"
 
@@ -100,6 +102,25 @@ namespace cvar
                                                 "and process the map as if it's static (which improves performance / stability). "
                                                 "Default false: auto-export freezes large UDMF mods (e.g. Doom 64 Retribution)." )
     RT_CVAR( rt_autoexport_light,       200.f,  "On auto export to gltf, apply this multiplier to the sector light intensities" ) 
+    RT_CVAR( rt_sector_lights,          false,  "upload per-sector center point lights for ALL sectors (stock autoexport). "
+                                                "Default false: floods mod maps with fake white wash" )
+    RT_CVAR( rt_sector_flicker,         false,  "upload sector-center lights for flicker/strobe sector specials. "
+                                                "Off by default — that blinks wall/monitor alcoves, not ceiling inset lamps" )
+
+    RT_CVAR( rt_dynlight,               true,   "upload GZDoom map/GLDEFS dynamic lights (PointLight / Flicker / Pulse) into RT" )
+    RT_CVAR( rt_dynlight_intensity,     40.0f,  "peak RT spherical intensity scale for GZDoom dynlights" )
+    RT_CVAR( rt_dynlight_radius,        0.08f,  "RT light source radius in meters (smaller = harder shadows)" )
+    RT_CVAR( rt_dynlight_debug,         false,  "visualize uploaded GZDoom dynlights as bright magenta marker spheres + periodic console count" )
+    RT_CVAR( rt_dynlight_flicker,       false,  "upload Flicker/RandomFlicker FDynamicLights (9802). Default false: MAP01 wall "
+                                                "SMON alcoves use those; ceiling head lights are rt_ceiling_lamps instead" )
+
+    RT_CVAR( rt_ceiling_lamps,          true,   "upload blinking shadow-casting lights under SFLATAS/SFLATAQ/SFLATAP/SPORT* ceilings "
+                                                "(Doom 64 inset 'head lights')" )
+    RT_CVAR( rt_ceiling_lamp_intensity, 900.f,  "peak RT intensity for ceiling inset lamps (dynlight scale is hi*40 ≈ 960)" )
+    RT_CVAR( rt_ceiling_lamp_radius,    0.08f,  "RT source radius in meters for ceiling inset lamps" )
+    RT_CVAR( rt_ceiling_lamp_zofs,      8.f,    "drop light this many map units below the ceiling plane" )
+    RT_CVAR( rt_ceiling_lamp_off,       0.f,    "intensity scale when blinking out (0 = fully extinguish like base Doom 64)" )
+    RT_CVAR( rt_ceiling_lamp_debug,     false,  "periodic console dump of ceiling inset lamp uploads + cyan marker spheres" )
 
     RT_CVAR( rt_classic,                0.f,    "[0.0,1.0] what portion of the screen to render with a classic mode" )
     RT_CVAR( rt_classic_mus,            true,   "if true, apply high pass filter to music when classic mode is enabled" )
@@ -176,12 +197,23 @@ namespace cvar
     RT_CVAR( rt_lightlevel_exp,          2.0f,  "[replacements lights] exponent to apply when converting gzdoom lightlevel to light intensity" )
 
     RT_CVAR( rt_flsh,                   false,  "flashlight enable")
-    RT_CVAR( rt_flsh_intensity,         200.f,  "flashlight intensity")
+    RT_CVAR( rt_flsh_intensity,         90.f,   "flashlight intensity (dimmer = more horror)" )
     RT_CVAR( rt_flsh_radius,            0.02f,  "flashlight source disk radius in meters")
-    RT_CVAR( rt_flsh_angle,             35.f,   "flashlight width in degrees")
+    RT_CVAR( rt_flsh_angle,             42.f,   "flashlight width in degrees")
+    RT_CVAR( rt_flsh_pitch,             22.f,   "degrees to tip flashlight aim toward the ground" )
     RT_CVAR( rt_flsh_r,                 -0.3f,  "flashlight position offset - right (in meteres)")
     RT_CVAR( rt_flsh_u,                 -0.7f,  "flashlight position offset - up (in meteres)")
     RT_CVAR( rt_flsh_f,                 0.0f,   "flashlight position offset - forward (in meteres)")
+    RT_CVAR_COLOR( rt_flsh_color,     0xFFBE82, "flashlight color (hex); warm horror tint default" )
+
+    RT_CVAR( rt_flsh_battery,           true,   "horror battery cycle: on → dying flicker → recharge → repeat" )
+    RT_CVAR( rt_flsh_on_secs,           30.f,   "seconds the flashlight stays lit before dying (before jitter)" )
+    RT_CVAR( rt_flsh_die_secs,          4.f,    "seconds of irregular blackouts at the end of the on-phase" )
+    RT_CVAR( rt_flsh_off_secs,          5.f,    "seconds of full recharge (light off)" )
+    RT_CVAR( rt_flsh_jitter,            0.15f,  "0..1 randomness scale on on/off durations" )
+    // HUD readouts (written each frame by RT_AddFlashlight; ZScript pk3 displays them)
+    RT_CVAR( rt_flsh_charge,            0.f,    "0..1 battery charge readout for HUD" )
+    RT_CVAR( rt_flsh_battstate,         0,      "0=off 1=on 2=dying 3=recharge (HUD readout)" )
 
     RT_CVAR( rt_sun,                    false,  "enable sun for debugging")
     RT_CVAR( rt_sun_intensity,          1000.f, "sun intensity")
@@ -327,6 +359,9 @@ constexpr uint64_t FlashlightLightId  = 0xFFFFFFF + 0;
 constexpr uint64_t SunLightId         = 0xFFFFFFF + 1;
 constexpr uint64_t MuzzleFlashLightId = 0xFFFFFFF + 2;
 constexpr uint64_t SectorLightId_Base = 0xFFFFFFF + 3;
+// Keep clear of sector-light IDs (base + sectorIndex).
+constexpr uint64_t DynLightId_Base    = 0xA0000000ull;
+constexpr uint64_t CeilingLampId_Base = 0xB0000000ull;
 
 
 
@@ -1883,7 +1918,198 @@ public:
             return false;
         };
 
-        if( !enabled() )
+        const bool wantLight = enabled();
+
+        // Battery cycle: on → dying flicker → recharge → repeat (horror lantern).
+        enum BattState : int
+        {
+            BattOff      = 0,
+            BattOn       = 1,
+            BattDying    = 2,
+            BattRecharge = 3,
+        };
+
+        static bool     s_wasOn       = false;
+        static int      s_state       = BattOff;
+        static int      s_phaseStart  = 0;
+        static int      s_phaseLen    = 0;
+        static int      s_onLen       = 0;
+        static int      s_dieLen      = 0;
+        static int      s_maptoken    = -1;
+        static int      s_nextBlinkAt = -1;
+        static int      s_blinkStart  = -1;
+        static int      s_blinkDur    = 0;
+
+        const int maptime = primaryLevel ? primaryLevel->maptime : 0;
+        const int maptoken =
+            primaryLevel ? int( reinterpret_cast< uintptr_t >( primaryLevel ) & 0x7fffffff ) : -1;
+
+        auto rollSecs = [ maptime ]( float base, float jitter, int salt ) -> float {
+            const float j = std::clamp( float{ cvar::rt_flsh_jitter }, 0.f, 1.f );
+            const uint32_t h =
+                uint32_t( maptime + salt ) * 1103515245u + 12345u + uint32_t( salt * 97 );
+            const float u = float( ( h >> 16 ) & 0x7fffu ) / 32767.f; // [0,1]
+            return std::max( 0.5f, base * ( 1.f + j * ( u * 2.f - 1.f ) ) );
+        };
+
+        auto rollUnit = [ maptime ]( int salt ) -> float {
+            const uint32_t h =
+                uint32_t( maptime + salt * 131 ) * 1664525u + 1013904223u;
+            return float( ( h >> 16 ) & 0x7fffu ) / 32767.f;
+        };
+
+        // Smooth valley: 1 → 0 → 1 over u in [0,1] (slow fade out / fade in).
+        auto fadeValley = []( float u ) -> float {
+            u = std::clamp( u, 0.f, 1.f );
+            return 1.f - std::sin( u * pi() );
+        };
+
+        auto scheduleNextBlink = [ & ]( int minSecs, int maxSecs, int salt ) {
+            const float u   = rollUnit( salt );
+            const float sec = float( minSecs ) + u * float( std::max( 0, maxSecs - minSecs ) );
+            s_nextBlinkAt   = maptime + std::max( 1, int( sec * TICRATE ) );
+            s_blinkStart    = -1;
+            s_blinkDur      = 0;
+        };
+
+        auto beginOnPhase = [ & ]() {
+            const float onSecs  = rollSecs( float{ cvar::rt_flsh_on_secs }, float{ cvar::rt_flsh_jitter }, 11 );
+            const float dieSecs = std::clamp(
+                rollSecs( float{ cvar::rt_flsh_die_secs }, float{ cvar::rt_flsh_jitter }, 29 ),
+                0.5f,
+                onSecs * 0.8f );
+            s_onLen      = std::max( 1, int( onSecs * TICRATE ) );
+            s_dieLen     = std::max( 1, int( dieSecs * TICRATE ) );
+            s_phaseLen   = s_onLen;
+            s_phaseStart = maptime;
+            s_state      = BattOn;
+            // First mid-cycle blink a few seconds in (not immediately).
+            scheduleNextBlink( 3, 9, 71 );
+        };
+
+        auto beginRecharge = [ & ]() {
+            const float offSecs =
+                rollSecs( float{ cvar::rt_flsh_off_secs }, float{ cvar::rt_flsh_jitter }, 47 );
+            s_phaseLen    = std::max( 1, int( offSecs * TICRATE ) );
+            s_phaseStart  = maptime;
+            s_state       = BattRecharge;
+            s_nextBlinkAt = -1;
+            s_blinkStart  = -1;
+        };
+
+        if( maptoken != s_maptoken )
+        {
+            s_maptoken    = maptoken;
+            s_wasOn       = false;
+            s_state       = BattOff;
+            s_phaseLen    = 0;
+            s_nextBlinkAt = -1;
+            s_blinkStart  = -1;
+        }
+
+        float battScale = 1.f;
+        float charge    = 0.f;
+        int   battState = BattOff;
+
+        if( !wantLight || !cvar::rt_flsh_battery )
+        {
+            s_wasOn       = wantLight;
+            s_state       = BattOff;
+            s_nextBlinkAt = -1;
+            s_blinkStart  = -1;
+            battScale     = wantLight ? 1.f : 0.f;
+            charge        = wantLight ? 1.f : 0.f;
+            battState     = wantLight ? BattOn : BattOff;
+        }
+        else
+        {
+            if( !s_wasOn )
+            {
+                beginOnPhase();
+            }
+            s_wasOn = true;
+
+            // Advance phases until we land in a stable frame state.
+            for( int guard = 0; guard < 4; ++guard )
+            {
+                const int elapsed = maptime - s_phaseStart;
+                if( s_state == BattOn || s_state == BattDying )
+                {
+                    if( elapsed >= s_phaseLen )
+                    {
+                        beginRecharge();
+                        continue;
+                    }
+                    const int remaining = s_phaseLen - elapsed;
+                    charge              = float( remaining ) / float( std::max( 1, s_onLen ) );
+                    if( remaining <= s_dieLen )
+                    {
+                        s_state   = BattDying;
+                        battState = BattDying;
+                        // Intermittent slow fade-outs (~every 2.2s, ~0.9s soft valley).
+                        constexpr int kDiePeriod = 77; // ~2.2s
+                        constexpr int kDieFade   = 32; // ~0.9s
+                        const int     local      = ( maptime - s_phaseStart ) % kDiePeriod;
+                        if( local < kDieFade )
+                        {
+                            battScale = fadeValley( float( local ) / float( kDieFade - 1 ) );
+                        }
+                        else
+                        {
+                            battScale = 1.f;
+                        }
+                    }
+                    else
+                    {
+                        s_state   = BattOn;
+                        battState = BattOn;
+                        battScale = 1.f;
+
+                        // Rare single mid-cycle blinks (slow one-shot fade).
+                        if( s_blinkStart >= 0 )
+                        {
+                            const int bt = maptime - s_blinkStart;
+                            if( bt >= s_blinkDur )
+                            {
+                                scheduleNextBlink( 4, 12, maptime + 3 );
+                            }
+                            else
+                            {
+                                battScale = fadeValley( float( bt ) / float( std::max( 1, s_blinkDur - 1 ) ) );
+                            }
+                        }
+                        else if( s_nextBlinkAt >= 0 && maptime >= s_nextBlinkAt )
+                        {
+                            // ~0.35–0.55s single fade-out.
+                            const float u = rollUnit( maptime + 5 );
+                            s_blinkDur    = 12 + int( u * 8.f ); // 12–20 tics
+                            s_blinkStart  = maptime;
+                            battScale     = fadeValley( 0.f );
+                        }
+                    }
+                    break;
+                }
+                if( s_state == BattRecharge )
+                {
+                    if( elapsed >= s_phaseLen )
+                    {
+                        beginOnPhase();
+                        continue;
+                    }
+                    battState = BattRecharge;
+                    battScale = 0.f;
+                    charge    = float( elapsed ) / float( std::max( 1, s_phaseLen ) );
+                    break;
+                }
+                // Unexpected — restart.
+                beginOnPhase();
+            }
+        }
+
+        cvar::rt_flsh_charge    = std::clamp( charge, 0.f, 1.f );
+        cvar::rt_flsh_battstate = battState;
+
+        if( !wantLight || battScale <= 0.01f )
         {
             return;
         }
@@ -1895,14 +2121,32 @@ public:
             pos += gzvec3( forward ) * cvar::rt_flsh_f;
         }
 
-        auto target = gzvec3( basePosition ) + 20 * gzvec3( forward );
+        // Tip the beam toward the ground (horror lantern wash on floor).
+        const float pitchRad = to_rad( float{ cvar::rt_flsh_pitch } );
+        const float cp       = std::cos( pitchRad );
+        const float sp       = std::sin( pitchRad );
+        auto        aim =
+            gzvec3( forward ) * cp - gzvec3( up ) * sp;
+        if( aim.LengthSquared() < 1.e-8f )
+        {
+            aim = gzvec3( forward );
+        }
+        else
+        {
+            aim = aim.Unit();
+        }
+
+        auto target = gzvec3( basePosition ) + 20 * aim;
         auto dir    = ( target - pos ).Unit();
+
+        const float intensity =
+            float{ cvar::rt_flsh_intensity } * battScale;
 
         auto spot = RgLightSpotEXT{
             .sType      = RG_STRUCTURE_TYPE_LIGHT_SPOT_EXT,
             .pNext      = nullptr,
-            .color      = RG_PACKED_COLOR_WHITE,
-            .intensity  = cvar::rt_flsh_intensity,
+            .color      = cvarcolor_to_rtcolor( cvar::rt_flsh_color ),
+            .intensity  = intensity,
             .position   = { pos.X, pos.Y, pos.Z },
             .direction  = { dir.X, dir.Y, dir.Z },
             .radius     = cvar::rt_flsh_radius,
@@ -3072,6 +3316,36 @@ namespace classic_toggle
     float                  g_source = 0.0f;
     std::optional< float > g_target = {};
 
+    CCMD( rt_dump_dynlights )
+    {
+        if( !primaryLevel || !primaryLevel->lights )
+        {
+            Printf( "rt_dump_dynlights: no level / no light list\n" );
+            return;
+        }
+        unsigned n = 0;
+        for( FDynamicLight* light = primaryLevel->lights; light != nullptr; light = light->next )
+        {
+            if( !light->IsActive() || light->X() < -1.0e6 )
+            {
+                continue;
+            }
+            Printf(
+                "  [%u] pos=(%.0f,%.0f,%.0f) rgb=(%d,%d,%d) radius=%.1f active=%d\n",
+                n,
+                light->X(),
+                light->Y(),
+                light->Z(),
+                light->GetRed(),
+                light->GetGreen(),
+                light->GetBlue(),
+                light->m_currentRadius,
+                light->IsActive() ? 1 : 0 );
+            ++n;
+        }
+        Printf( "rt_dump_dynlights: %u listed (GZDoom FDynamicLight chain)\n", n );
+    }
+
     CCMD( rt_classic_toggle )
     {
         if( g_isremix )
@@ -3139,13 +3413,58 @@ void RT_MakeLightstyles()
     }
 }
 
+static bool RT_IsSectorLightChangingSpecial( int special )
+{
+    return ( special == Light_Phased ) || ( special == LightSequenceStart ) ||
+           ( special == LightSequenceSpecial1 ) || ( special == LightSequenceSpecial2 ) ||
+           ( special == dLight_Flicker ) || ( special == dLight_StrobeFast ) ||
+           ( special == dLight_StrobeSlow ) || ( special == dLight_Strobe_Hurt ) ||
+           ( special == dLight_Glow ) || ( special == dLight_StrobeSlowSync ) ||
+           ( special == dLight_StrobeFastSync ) || ( special == dLight_FireFlicker ) ||
+           ( special == sLight_Strobe_Hurt ) || ( special == Light_OutdoorLightning ) ||
+           ( special == Light_IndoorLightning1 ) || ( special == Light_IndoorLightning2 );
+}
+
 void RT_UploadExportableSectorLights()
 {
+    // Stock path uploads a white sphere at every sector center. On Retribution that
+    // was a lingering wash. Two modes:
+    //   rt_sector_lights  = all sectors (stock / Doom II export)
+    //   rt_sector_flicker = only sectors with light-changing specials (blink without wash)
+    //
+    // MAP01 note: spawn booth ceilings (SFLATAS) have special 0 / steady lightlevel —
+    // sector lights do NOT blink them. The wall SMON alcoves are dLight_Flicker (65)
+    // and DO blink with this path — that is the wrong target for "head lights".
+    const bool allSectors   = bool{ cvar::rt_sector_lights };
+    const bool flickerOnly  = bool{ cvar::rt_sector_flicker };
+    if( !allSectors && !flickerOnly )
+    {
+        return;
+    }
+    if( !primaryLevel )
+    {
+        return;
+    }
+    // BeginFrame normally fills this; rebuild if DrawFrame somehow races ahead.
+    if( g_sectorlightlevels.size() != primaryLevel->sectors.Size() )
+    {
+        RT_MakeLightstyles();
+    }
+    if( g_sectorlightlevels.size() != primaryLevel->sectors.Size() )
+    {
+        return;
+    }
+
     assert( g_sectorlightlevels.size() == primaryLevel->sectors.Size() );
 
     for( uint32_t i = 0; i < primaryLevel->sectors.Size(); i++ )
     {
         const sector_t& sector = primaryLevel->sectors[ i ];
+
+        if( !allSectors && !RT_IsSectorLightChangingSpecial( sector.special ) )
+        {
+            continue;
+        }
 
         float z;
         {
@@ -3155,23 +3474,7 @@ void RT_UploadExportableSectorLights()
             // if too thin
             if( std::abs( zfloor - zceiling ) < 0.1f )
             {
-                bool important = ( sector.special == Light_Phased ) ||
-                                 ( sector.special == LightSequenceStart ) ||
-                                 ( sector.special == LightSequenceSpecial1 ) ||
-                                 ( sector.special == LightSequenceSpecial2 ) ||
-                                 ( sector.special == dLight_Flicker ) ||
-                                 ( sector.special == dLight_StrobeFast ) ||
-                                 ( sector.special == dLight_StrobeSlow ) ||
-                                 ( sector.special == dLight_Strobe_Hurt ) ||
-                                 ( sector.special == dLight_Glow ) ||
-                                 ( sector.special == dLight_StrobeSlowSync ) ||
-                                 ( sector.special == dLight_StrobeFastSync ) ||
-                                 ( sector.special == dLight_FireFlicker ) ||
-                                 ( sector.special == sLight_Strobe_Hurt ) ||
-                                 ( sector.special == Light_OutdoorLightning ) ||
-                                 ( sector.special == Light_IndoorLightning1 ) ||
-                                 ( sector.special == Light_IndoorLightning2 );
-                if( !important )
+                if( !RT_IsSectorLightChangingSpecial( sector.special ) )
                 {
                     continue;
                 }
@@ -3179,6 +3482,12 @@ void RT_UploadExportableSectorLights()
 
             z = ( zfloor + zceiling ) / 2;
         }
+
+        // Flicker-only path uses a milder intensity than stock autoexport (200)
+        // so we get blink + cast without room-wide wash.
+        const float intensity =
+            allSectors ? float{ cvar::rt_autoexport_light }
+                       : std::min( 80.f, float{ cvar::rt_autoexport_light } * 0.35f );
 
         const auto center = FVector3{
             float( sector.centerspot.X ),
@@ -3198,7 +3507,7 @@ void RT_UploadExportableSectorLights()
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = &adt,
             .color     = RG_PACKED_COLOR_WHITE,
-            .intensity = cvar::rt_autoexport_light,
+            .intensity = intensity,
             .position  = { center.X * ONEGAMEUNIT_IN_METERS,
                            center.Y * ONEGAMEUNIT_IN_METERS,
                            center.Z * ONEGAMEUNIT_IN_METERS },
@@ -3209,7 +3518,7 @@ void RT_UploadExportableSectorLights()
             .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
             .pNext        = &lsph,
             .uniqueID     = SectorLightId_Base + i,
-            .isExportable = true, // so we can write in the gltf
+            .isExportable = allSectors, // flicker-only lights are runtime-only
         };
 
         RgResult r = rt.rgUploadLight( &linfo );
@@ -3217,7 +3526,288 @@ void RT_UploadExportableSectorLights()
     }
 }
 
+void RT_UploadGzDoomDynamicLights()
+{
+    // Stock gzdoom-rt never forwarded FDynamicLight (map things 9800/9802, GLDEFS
+    // attached lights) into RTGL. Retribution MAP01 spawn blink lamps are
+    // PointLightFlicker (9802) beside SMONAA — without this they are invisible in PT.
+    if( !cvar::rt_dynlight || !primaryLevel || !primaryLevel->lights )
+    {
+        return;
+    }
+
+    const float intensityScale = std::max( 0.f, float{ cvar::rt_dynlight_intensity } );
+    const float srcRadius      = std::max( 0.01f, float{ cvar::rt_dynlight_radius } );
+
+    uint32_t index = 0;
+    for( FDynamicLight* light = primaryLevel->lights; light != nullptr; light = light->next )
+    {
+        if( !light->IsActive() || light->IsSubtractive() || light->DontLightMap() )
+        {
+            continue;
+        }
+
+        // Skip uninitialized lights (GetLight seeds Pos.X = -1e7 until UpdateLocation).
+        if( light->X() < -1.0e6 )
+        {
+            continue;
+        }
+
+        // MAP01 wall SMON alcoves use PointLightFlicker (9802). Those are NOT the ceiling
+        // head lights — skip unless explicitly re-enabled.
+        if( !cvar::rt_dynlight_flicker &&
+            ( light->lighttype == FlickerLight || light->lighttype == RandomFlickerLight ) )
+        {
+            continue;
+        }
+
+        // GZDoom stores intensity as light radius in map units; flicker/pulse update
+        // m_currentRadius each tic. MAP01 9802 uses 24/20 — only ~17% HW delta, invisible
+        // under RR. Remap [lo,hi] → [0.15,1.0] * peak so blink reads as on/off.
+        const float mapRadius = light->m_currentRadius;
+        if( mapRadius <= 0.01f )
+        {
+            continue;
+        }
+
+        const float lo = float( std::min( light->GetIntensity(), light->GetSecondaryIntensity() ) );
+        const float hi = float( std::max( light->GetIntensity(), light->GetSecondaryIntensity() ) );
+        float       blink = 1.f;
+        if( hi > lo + 0.5f &&
+            ( light->lighttype == FlickerLight || light->lighttype == RandomFlickerLight ||
+              light->lighttype == PulseLight ) )
+        {
+            const float t = std::clamp( ( mapRadius - lo ) / ( hi - lo ), 0.f, 1.f );
+            blink         = 0.15f + 0.85f * t;
+        }
+
+        const float intensity = hi * intensityScale * blink;
+        if( intensity <= 0.01f )
+        {
+            continue;
+        }
+
+        const int cr = light->GetRed();
+        const int cg = light->GetGreen();
+        const int cb = light->GetBlue();
+        if( cr + cg + cb <= 0 )
+        {
+            continue;
+        }
+
+        const auto color = rt.rgUtilPackColorByte4D( cr, cg, cb, 255 );
+
+        // Stable ID across frames (index shifts when other lights activate/deactivate
+        // and breaks ReSTIR temporal matching — flicker gets smoothed away).
+        const uint64_t stableId =
+            DynLightId_Base + ( uint64_t{ reinterpret_cast< uintptr_t >( light ) } & 0xFFFFFFFFull );
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = color,
+            .intensity = intensity,
+            .position  = { float( light->X() ) * ONEGAMEUNIT_IN_METERS,
+                           float( light->Y() ) * ONEGAMEUNIT_IN_METERS,
+                           float( light->Z() ) * ONEGAMEUNIT_IN_METERS },
+            .radius    = srcRadius,
+        };
+
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = stableId,
+            .isExportable = false,
+        };
+
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        // Magenta hotspot markers so light sources are visible as blobs in-world
+        // (no RTGL "draw all lights" overlay exists; this is the closest engine-side debug).
+        if( cvar::rt_dynlight_debug )
+        {
+            auto markSph = RgLightSphericalEXT{
+                .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                .pNext     = nullptr,
+                .color     = rt.rgUtilPackColorByte4D( 255, 0, 255, 255 ),
+                .intensity = 400.f,
+                .position  = sph.position,
+                .radius    = 0.05f,
+            };
+            auto markInfo = RgLightInfo{
+                .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                .pNext        = &markSph,
+                .uniqueID     = stableId + 0x50000000ull,
+                .isExportable = false,
+            };
+            r = rt.rgUploadLight( &markInfo );
+            RG_CHECK( r );
+        }
+
+        ++index;
+    }
+
+    if( cvar::rt_dynlight_debug )
+    {
+        static int s_tick;
+        if( ( ++s_tick % 60 ) == 0 )
+        {
+            Printf( "rt_dynlight_debug: %u active GZDoom light(s) uploaded this frame\n", index );
+        }
+    }
 }
+
+static bool RT_IsCeilingInsetLampTexture( const char* name )
+{
+    if( !name || !*name )
+    {
+        return false;
+    }
+    // Doom 64 inset ceiling lamps: round bright blobs on dark flats (MAP01 spawn
+    // booths over the first zombies use SFLATAS).
+    if( strncmp( name, "SFLATAS", 7 ) == 0 || strncmp( name, "SFLATAQ", 7 ) == 0 ||
+        strncmp( name, "SFLATAP", 7 ) == 0 )
+    {
+        return true;
+    }
+    if( strncmp( name, "SPORT", 5 ) == 0 )
+    {
+        return true;
+    }
+    return false;
+}
+
+void RT_UploadCeilingInsetLamps()
+{
+    // Surface _e on SFLATAS only glows. These analytic lights blink + cast under
+    // the ceiling flats (the "head lights" by MAP01's first enemies) — not the
+    // wall SMON terminals (those are separate 9802 / sector-special blinkers).
+    if( !cvar::rt_ceiling_lamps || !primaryLevel )
+    {
+        return;
+    }
+
+    const float peak      = std::max( 0.f, float{ cvar::rt_ceiling_lamp_intensity } );
+    const float srcRadius = std::max( 0.01f, float{ cvar::rt_ceiling_lamp_radius } );
+    const float zOfs      = float{ cvar::rt_ceiling_lamp_zofs };
+    const float offScale  = std::clamp( float{ cvar::rt_ceiling_lamp_off }, 0.f, 1.f );
+    if( peak <= 0.01f )
+    {
+        return;
+    }
+
+    const int maptime = primaryLevel->maptime;
+    uint32_t  uploaded = 0;
+
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
+    {
+        sector_t& sector = primaryLevel->sectors[ i ];
+        auto*     gtex =
+            TexMan.GetGameTexture( sector.GetTexture( sector_t::ceiling ), true );
+        if( !gtex )
+        {
+            continue;
+        }
+        const char* tname = gtex->GetName().GetChars();
+        if( !RT_IsCeilingInsetLampTexture( tname ) )
+        {
+            continue;
+        }
+
+        const float zfloor =
+            float( sector.floorplane.ZatPoint( sector.centerspot ) );
+        const float zceiling =
+            float( sector.ceilingplane.ZatPoint( sector.centerspot ) );
+        if( zceiling - zfloor < 8.f )
+        {
+            continue;
+        }
+
+        // Hard on/off like base Doom 64 (not a soft dim). Desync per sector.
+        // ~22% of the cycle is fully extinguished; occasional short double-blips.
+        const int phase = int( ( maptime * 4 + int( i ) * 23 ) % 256 );
+        const bool blackout =
+            ( phase < 40 ) || ( phase >= 110 && phase < 122 ) || ( phase >= 200 && phase < 208 );
+        const float blink = blackout ? offScale : 1.f;
+        const float intensity = peak * blink;
+
+        // Skip upload when fully off so ReSTIR / the light list actually drops the source.
+        if( intensity <= 0.01f )
+        {
+            continue;
+        }
+
+        const float z = zceiling - zOfs;
+        const float px = float( sector.centerspot.X ) * ONEGAMEUNIT_IN_METERS;
+        const float py = float( sector.centerspot.Y ) * ONEGAMEUNIT_IN_METERS;
+        const float pz = z * ONEGAMEUNIT_IN_METERS;
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            // Warm white — matches inset lamp blobs better than SMON green 9802s.
+            .color     = rt.rgUtilPackColorByte4D( 255, 230, 190, 255 ),
+            .intensity = intensity,
+            .position  = { px, py, pz },
+            .radius    = srcRadius,
+        };
+
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = CeilingLampId_Base + i,
+            .isExportable = false,
+        };
+
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        if( cvar::rt_ceiling_lamp_debug )
+        {
+            auto markSph = RgLightSphericalEXT{
+                .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                .pNext     = nullptr,
+                .color     = rt.rgUtilPackColorByte4D( 0, 255, 255, 255 ),
+                .intensity = 400.f,
+                .position  = { px, py, pz },
+                .radius    = 0.05f,
+            };
+            auto markInfo = RgLightInfo{
+                .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                .pNext        = &markSph,
+                .uniqueID     = CeilingLampId_Base + 0x08000000ull + i,
+                .isExportable = false,
+            };
+            r = rt.rgUploadLight( &markInfo );
+            RG_CHECK( r );
+
+            if( ( maptime % 35 ) == 0 && uploaded < 8 )
+            {
+                Printf( "rt_ceiling_lamp: sec %u '%s' xyz=(%.0f,%.0f,%.0f) I=%.0f\n",
+                        i,
+                        tname,
+                        float( sector.centerspot.X ),
+                        float( sector.centerspot.Y ),
+                        z,
+                        intensity );
+            }
+        }
+
+        ++uploaded;
+    }
+
+    if( cvar::rt_ceiling_lamp_debug )
+    {
+        static int s_tick;
+        if( ( ++s_tick % 60 ) == 0 )
+        {
+            Printf( "rt_ceiling_lamp_debug: %u ceiling inset lamp(s) uploaded\n", uploaded );
+        }
+    }
+}
+
+} // anonymous namespace
 
 //
 //
@@ -3411,6 +4001,8 @@ void RTFrameBuffer::RT_DrawFrame()
     }
 
     RT_UploadExportableSectorLights();
+    RT_UploadGzDoomDynamicLights();
+    RT_UploadCeilingInsetLamps();
 
     auto tm_params = RgDrawFrameTonemappingParams{
         .sType                = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS,

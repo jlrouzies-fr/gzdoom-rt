@@ -348,7 +348,13 @@ void HWWall::DrawWall(HWWallDispatcher*di, FRenderState &state, bool translucent
 	extern bool RT_IsWallNoMotionVectors( const seg_t* seg, side_t::ETexpart part );
 
 	assert(!lightlist);
-	auto rtexp = rtstate.push_type(RT_IsWallExportable(this->seg) ? RtPrim::ExportMap : RtPrim::Identity);
+	// Sector skyboxes composite a second camera in HW; under RT that room geometry
+	// uploads as a white/black box in the main scene. Ignore it and let rt_sky_always
+	// supply the raster night sky (SPACE) instead.
+	auto rtexp = rtstate.push_type(
+		portalState.inskybox ? RtPrim::Ignored
+		: RT_IsWallExportable(this->seg) ? RtPrim::ExportMap
+		                                 : RtPrim::Identity);
 	auto rttype = rtstate.push_type(
 		type == RENDERWALL_MIRRORSURFACE ? RtPrim::Mirror :
 		translucent ? RtPrim::Glass :
