@@ -234,6 +234,12 @@ namespace cvar
     RT_CVAR( rt_mzlflsh_offset,         0.6f,   "[0.0, 1.0] muzzle flash offset from the hit point, so the light would not be in a wall")
     RT_CVAR( rt_mzlflsh_f,              3.0f,   "muzzle flash light offset - forward (in meteres)" )
     RT_CVAR( rt_mzlflsh_u,              -0.9f,  "muzzle flash light offset - up (in meteres)" )
+    RT_CVAR( rt_mzlflsh_fade,           5.f,    "soft fade-out duration in tics when extralight ends (0 = hard cut; reduces RR residual sparkle)" )
+
+    RT_CVAR( rt_illum_sens_direct,      1.0f,   "[0,1] lighting-change sensitivity for direct diffuse (higher = faster history invalidation)" )
+    RT_CVAR( rt_illum_sens_indirect,    0.75f,  "[0,1] lighting-change sensitivity for indirect diffuse (stock RTGL default bias)" )
+    RT_CVAR( rt_illum_sens_spec,        1.0f,   "[0,1] lighting-change sensitivity for specular" )
+    RT_CVAR( rt_rr_noisy_antifirefly,   false,  "DLSS-RR ComposeNoisy firefly clamp. Default off (stabler motion). On = experiment; also toggleable in RTGL Dev window DLSS-RR A/B" )
 
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             30.f,   "max distance of scattering volume (in meteres)" )
@@ -1795,6 +1801,34 @@ private:
                                  ( mesh.flags & RG_MESH_FORCE_WATER ) ||
                                  ( rt_mod_compat && rtstate.is< RtPrim::ExportMap >() );
 
+        // Doom64-RT: sector lightlevel / lightcolor must NOT bake into PT albedo.
+        // Otherwise: yellow key-door sectors look neon-emissive, and lightlevel-0 rooms
+        // get black vertex color so flashlight / ceiling lamps are absorbed.
+        // IMPORTANT: doors/lifts are NOT ExportMap (movable) — still force white on them.
+        const bool forceWorldWhiteRgb =
+            rt_mod_compat && !isUI &&
+            !rtstate.is< RtPrim::ExportInstance >() &&
+            !rtstate.is< RtPrim::FirstPerson >() &&
+            !rtstate.is< RtPrim::FirstPersonViewer >() &&
+            !rtstate.is< RtPrim::Sky >() &&
+            !rtstate.is< RtPrim::SkyVisibility >() &&
+            !rtstate.is< RtPrim::Particle >() &&
+            !rtstate.is< RtPrim::Decal >();
+
+        RgColor4DPacked32 primColor;
+        if( forceWorldWhiteRgb )
+        {
+            const float a =
+                forcealpha1 ? 1.0f
+                            : ( mStreamData.uObjectColor.a * mStreamData.uVertexColor[ 3 ] );
+            primColor = rt.rgUtilPackColorFloat4D( 1.0f, 1.0f, 1.0f, a );
+        }
+        else
+        {
+            primColor = rtcolor_multiply(
+                mStreamData.uObjectColor, mStreamData.uVertexColor, forcealpha1 );
+        }
+
         auto prim = RgMeshPrimitiveInfo{
             .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
             .pNext = isUI ? &ui : nullptr,
@@ -1809,8 +1843,7 @@ private:
             .indexCount           = static_cast< uint32_t >( indices.size() ),
             .pTextureName         = texname,
             .textureFrame         = 0,
-            .color =
-                rtcolor_multiply( mStreamData.uObjectColor, mStreamData.uVertexColor, forcealpha1 ),
+            .color        = primColor,
             .emissive     = l_isemis() ? cvar::rt_emis_additive_dflt : 0.f,
             .classicLight = lightlevel_to_classic( isUI, mLightParms[ 3 ] ),
         };
@@ -2171,67 +2204,103 @@ public:
                             const RgFloat3D& forward,
                             const RgFloat3D& up )
     {
-        if( extralight <= 0 || !cvar::rt_mzlflsh || !viewactor || !viewactor->Sector )
-        {
-            return;
-        }
+        // Soft fade-out after extralight ends so ReSTIR/RR history is not hard-cut
+        // (peak intensity unchanged). Fade lives across frames via statics.
+        static float    s_fade     = 0.f;
+        static FVector3 s_lastPos  = {};
+        static bool     s_havePos  = false;
 
-        auto desiredPos = gzvec3( basePosition );
+        const bool wantFlash =
+            extralight > 0 && cvar::rt_mzlflsh && viewactor && viewactor->Sector;
+
+        if( wantFlash )
         {
-            desiredPos += gzvec3( up ) * cvar::rt_mzlflsh_u;
-            desiredPos += gzvec3( forward ) * cvar::rt_mzlflsh_f;
+            s_fade = 1.f;
+        }
+        else
+        {
+            const float fadeTics = std::max( 0.f, float( cvar::rt_mzlflsh_fade ) );
+            if( fadeTics <= 0.f || s_fade <= 0.f || !s_havePos )
+            {
+                s_fade    = 0.f;
+                s_havePos = false;
+                return;
+            }
+            s_fade -= 1.f / fadeTics;
+            if( s_fade <= 0.f )
+            {
+                s_fade    = 0.f;
+                s_havePos = false;
+                return;
+            }
         }
 
         FVector3 pos;
+        if( wantFlash )
         {
-            // metric to game units
-            auto units_desiredPos   = DVector3{ desiredPos } / double{ ONEGAMEUNIT_IN_METERS };
-            auto units_basePosition = gzvec3d( basePosition ) / double{ ONEGAMEUNIT_IN_METERS };
-
-            auto dir = units_desiredPos - units_basePosition;
-            auto len = dir.Length();
-
-            if( len > 0.01 )
+            auto desiredPos = gzvec3( basePosition );
             {
-                dir /= len;
+                desiredPos += gzvec3( up ) * cvar::rt_mzlflsh_u;
+                desiredPos += gzvec3( forward ) * cvar::rt_mzlflsh_f;
+            }
 
-                float hitT = 1.0f;
+            {
+                // metric to game units
+                auto units_desiredPos   = DVector3{ desiredPos } / double{ ONEGAMEUNIT_IN_METERS };
+                auto units_basePosition = gzvec3d( basePosition ) / double{ ONEGAMEUNIT_IN_METERS };
 
-                FTraceResults trace;
-                if( Trace( units_basePosition,
-                           viewactor->Sector,
-                           dir,
-                           len,
-                           0,
-                           0,
-                           viewactor,
-                           trace,
-                           TRACE_NoSky ) )
+                auto dir = units_desiredPos - units_basePosition;
+                auto len = dir.Length();
+
+                if( len > 0.01 )
                 {
-                    if( trace.HitType != TRACE_HitNone )
+                    dir /= len;
+
+                    float hitT = 1.0f;
+
+                    FTraceResults trace;
+                    if( Trace( units_basePosition,
+                               viewactor->Sector,
+                               dir,
+                               len,
+                               0,
+                               0,
+                               viewactor,
+                               trace,
+                               TRACE_NoSky ) )
                     {
-                        hitT = float( ( trace.HitPos - units_basePosition ).Length() / len );
-                        // hit point must be between base and desired positions
-                        assert( hitT >= 0 && hitT <= 1 );
+                        if( trace.HitType != TRACE_HitNone )
+                        {
+                            hitT = float( ( trace.HitPos - units_basePosition ).Length() / len );
+                            // hit point must be between base and desired positions
+                            assert( hitT >= 0 && hitT <= 1 );
+                        }
                     }
+
+                    hitT *= std::clamp( float( cvar::rt_mzlflsh_offset ), 0.0f, 1.0f );
+
+                    // lerp
+                    pos = gzvec3( basePosition ) + hitT * ( desiredPos - gzvec3( basePosition ) );
                 }
-
-                hitT *= std::clamp( float( cvar::rt_mzlflsh_offset ), 0.0f, 1.0f );
-
-                // lerp
-                pos = gzvec3( basePosition ) + hitT * ( desiredPos - gzvec3( basePosition ) );
+                else
+                {
+                    pos = gzvec3( basePosition );
+                }
             }
-            else
-            {
-                pos = gzvec3( basePosition );
-            }
+
+            s_lastPos = pos;
+            s_havePos = true;
+        }
+        else
+        {
+            pos = s_lastPos;
         }
 
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color ),
-            .intensity = cvar::rt_mzlflsh_intensity,
+            .intensity = cvar::rt_mzlflsh_intensity * s_fade,
             .position  = { pos.X, pos.Y, pos.Z },
             .radius    = cvar::rt_mzlflsh_radius,
         };
@@ -4105,11 +4174,12 @@ void RTFrameBuffer::RT_DrawFrame()
         .maxBounceShadows                   = safe_uint( *cvar::rt_shadowrays ),
         .enableSecondBounceForIndirect      = true,
         .cellWorldSize                      = 2.0f,
-        .directDiffuseSensitivityToChange   = 1.0f,
-        .indirectDiffuseSensitivityToChange = 0.75f,
-        .specularSensitivityToChange        = 1.0f,
+        .directDiffuseSensitivityToChange   = std::clamp( float( cvar::rt_illum_sens_direct ), 0.f, 1.f ),
+        .indirectDiffuseSensitivityToChange = std::clamp( float( cvar::rt_illum_sens_indirect ), 0.f, 1.f ),
+        .specularSensitivityToChange        = std::clamp( float( cvar::rt_illum_sens_spec ), 0.f, 1.f ),
         .polygonalLightSpotlightFactor      = 2.0f,
         .lightUniqueIdIgnoreFirstPersonViewerShadows = &FlashlightLightId,
+        .enableRrNoisyAntiFirefly           = static_cast< RgBool32 >( bool( cvar::rt_rr_noisy_antifirefly ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
