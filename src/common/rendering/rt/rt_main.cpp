@@ -23,15 +23,19 @@
 #include "p_lnspec.h"
 #include "image.h"
 #include "texturemanager.h"
+#include "actor.h"
+#include "r_state.h"
 
 #include "rt_state.h"
 
 #include <shellapi.h>
 
 #include <filesystem>
+#include <cmath>
 #include <span>
 #include <variant>
 #include <ranges>
+#include <unordered_map>
 #include <unordered_set>
 
 
@@ -108,19 +112,41 @@ namespace cvar
                                                 "Off by default — that blinks wall/monitor alcoves, not ceiling inset lamps" )
 
     RT_CVAR( rt_dynlight,               true,   "upload GZDoom map/GLDEFS dynamic lights (PointLight / Flicker / Pulse) into RT" )
-    RT_CVAR( rt_dynlight_intensity,     40.0f,  "peak RT spherical intensity scale for GZDoom dynlights" )
+    RT_CVAR( rt_dynlight_intensity,     40.0f,  "RT spherical intensity scale for GZDoom dynlights (× map radius)" )
+    RT_CVAR( rt_dynlight_max,           500.0f, "hard cap on uploaded dynlight intensity after scale/stack (0 = no cap). "
+                                                "Retribution key-door jambs stack 3× PointLights — uncapped blooms white" )
+    RT_CVAR( rt_dynlight_rsoft,         40.f,   "map-unit radius above which dynlight energy rolls off (inv-square). "
+                                                "MAP04 hall PointLights use r=88 and hit max as flat flood; door jambs "
+                                                "stay at r=32 (unaffected). 0 = disable roll-off" )
+    RT_CVAR( rt_dynlight_stack_atten,   true,   "divide intensity by co-located XY stack count (Doom64 door jamb strips)" )
     RT_CVAR( rt_dynlight_radius,        0.08f,  "RT light source radius in meters (smaller = harder shadows)" )
     RT_CVAR( rt_dynlight_debug,         false,  "visualize uploaded GZDoom dynlights as bright magenta marker spheres + periodic console count" )
     RT_CVAR( rt_dynlight_flicker,       false,  "upload Flicker/RandomFlicker FDynamicLights (9802). Default false: MAP01 wall "
                                                 "SMON alcoves use those; ceiling head lights are rt_ceiling_lamps instead" )
 
     RT_CVAR( rt_ceiling_lamps,          true,   "upload blinking shadow-casting lights under SFLATAS/SFLATAQ/SFLATAP/SPORT* ceilings "
-                                                "(Doom 64 inset 'head lights')" )
-    RT_CVAR( rt_ceiling_lamp_intensity, 900.f,  "peak RT intensity for ceiling inset lamps (dynlight scale is hi*40 ≈ 960)" )
-    RT_CVAR( rt_ceiling_lamp_radius,    0.08f,  "RT source radius in meters for ceiling inset lamps" )
+                                                "(Doom 64 inset 'head lights') — only small sectors (see maxspan)" )
+    RT_CVAR( rt_ceiling_lamp_intensity, 700.f,  "peak RT intensity for ceiling inset lamps (soft fade + RR boiling keep this usable)" )
+    RT_CVAR( rt_ceiling_lamp_radius,    0.10f,  "RT source radius in meters for ceiling inset lamps" )
     RT_CVAR( rt_ceiling_lamp_zofs,      8.f,    "drop light this many map units below the ceiling plane" )
-    RT_CVAR( rt_ceiling_lamp_off,       0.f,    "intensity scale when blinking out (0 = fully extinguish like base Doom 64)" )
+    RT_CVAR( rt_ceiling_lamp_off,       0.12f,  "intensity scale when blinking out. >0 keeps the light in ReSTIR/RR "
+                                                "history (0 = hard extinguish — very noisy under DLSS-RR)" )
+    RT_CVAR( rt_ceiling_lamp_fade,      8.f,    "tics to ease between on/off (0 = instant). Softens ReSTIR/RR history cuts" )
+    RT_CVAR( rt_ceiling_lamp_maxspan,   128.f,  "skip analytic ceiling lamps if sector AABB width OR height exceeds this "
+                                                "(map units). Large SFLATAQ halls only have edge texture blobs — a center "
+                                                "sphere looks like a fake mid-ceiling light (MAP02)" )
     RT_CVAR( rt_ceiling_lamp_debug,     false,  "periodic console dump of ceiling inset lamp uploads + cyan marker spheres" )
+
+    RT_CVAR( rt_hang_lamps,             true,   "upload warm shadow-casting lights at Doom 64 hanging tech lamps "
+                                                "(LMP1/LMP2 sprites — MAP04 first room etc.). Map often has the props "
+                                                "with no co-located PointLight things" )
+    RT_CVAR( rt_hang_lamp_intensity,    220.f,  "RT intensity for hanging tech lamps (many per room — keep below ceiling lamps)" )
+    RT_CVAR( rt_hang_lamp_radius,       0.09f,  "RT source radius in meters for hanging tech lamps" )
+    RT_CVAR( rt_hang_lamp_zofs,         4.f,    "drop light this many map units below bulb estimate (SPAWNCEILING Z=bottom)" )
+    RT_CVAR( rt_hang_lamp_debug,        false,  "periodic console dump + yellow marker spheres at hanging lamp lights" )
+
+    RT_CVAR( rt_translucent_minalpha,   0.72f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
+                                                "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
 
     RT_CVAR( rt_classic,                0.f,    "[0.0,1.0] what portion of the screen to render with a classic mode" )
     RT_CVAR( rt_classic_mus,            true,   "if true, apply high pass filter to music when classic mode is enabled" )
@@ -160,8 +186,8 @@ namespace cvar
     RT_CVAR( rt_shadowrays,             4,      "max depth of shadow ray casts" )
     RT_CVAR( rt_withplayer,             true,   "enable player model for shadows, reflections etc" )
     RT_CVAR( rt_lerpmdlangle,           true,   "interpolate subtick rotation for replacements" )
-    RT_CVAR( rt_spectre,                0,      "render spectres as: 0 - water, 1 - glass, 2 - mirror" )
-    RT_CVAR( rt_spectre_invis1,         0,      "render first-person weapons, viewer invisibility as: 0 - water, 1 - glass, 2 - mirror" )
+    RT_CVAR( rt_spectre,                0,      "[deprecated] spectres now use alpha-tested PT (opaque sprite shape)" )
+    RT_CVAR( rt_spectre_invis1,         0,      "[deprecated] invisibility uses alpha-tested PT (opaque sprite shape)" )
     RT_CVAR( rt_znear,                  0.07f,  "camera near plane (in meters); precision problems occur on a first-person weapons if too small (<=0.05)" )
     RT_CVAR( rt_zfar,                   2048.f, "camera far plane (in meters); precision problems occur on a first-person weapons if too large" )
 
@@ -239,7 +265,9 @@ namespace cvar
     RT_CVAR( rt_illum_sens_direct,      1.0f,   "[0,1] lighting-change sensitivity for direct diffuse (higher = faster history invalidation)" )
     RT_CVAR( rt_illum_sens_indirect,    0.75f,  "[0,1] lighting-change sensitivity for indirect diffuse (stock RTGL default bias)" )
     RT_CVAR( rt_illum_sens_spec,        1.0f,   "[0,1] lighting-change sensitivity for specular" )
-    RT_CVAR( rt_rr_noisy_antifirefly,   false,  "DLSS-RR ComposeNoisy firefly clamp. Default off (stabler motion). On = experiment; also toggleable in RTGL Dev window DLSS-RR A/B" )
+    RT_CVAR( rt_rr_temporal,            false,  "DLSS-RR: A-SVGF temporal before ComposeNoisy. Default OFF — "
+                                                "caused faded duplicate/ghost depth view (double reprojection + "
+                                                "checkerboard coord mismatch). Keep soft lamp fades instead." )
 
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             30.f,   "max distance of scattering volume (in meteres)" )
@@ -368,6 +396,7 @@ constexpr uint64_t SectorLightId_Base = 0xFFFFFFF + 3;
 // Keep clear of sector-light IDs (base + sectorIndex).
 constexpr uint64_t DynLightId_Base    = 0xA0000000ull;
 constexpr uint64_t CeilingLampId_Base = 0xB0000000ull;
+constexpr uint64_t HangLampId_Base    = 0xC0000000ull;
 
 
 
@@ -1160,8 +1189,21 @@ public:
             case STYLEOP_FuzzOrSub:
             case STYLEOP_FuzzOrRevSub:
             case STYLEOP_Shadow: return true;
-            default: return false;
+            default: break;
         }
+        // Retribution 64Spectre is STYLE_Translucent + SAR2*/SARG*, not classic Fuzz.
+        // Uses rasterized TRANSLUCENT + minalpha floor for see-through purple-dark look.
+        // SARG prefix catches attack frames inherited from base pinky.
+        if( rt_mod_compat && rtstate.is< RtPrim::ExportInstance >() )
+        {
+            const char* n = rtstate.get_exportinstance_name();
+            if( n && n[ 0 ] == 'S' && n[ 1 ] == 'A' && n[ 2 ] == 'R' &&
+                ( n[ 3 ] == '2' || n[ 3 ] == 'G' ) )  // SAR2=spectre, SARG=attack frames
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     void Draw( int dt, int index, int count, bool apply = true ) override
@@ -1658,19 +1700,8 @@ private:
         auto l_makeSpectreFlags = [ & ]() -> RgMeshInfoFlags {
             if( IsSpectre() )
             {
-                bool firstperson = rtstate.is< RtPrim::FirstPersonViewer >() ||
-                                   rtstate.is< RtPrim::FirstPerson >();
-
                 // suppress inter-reflection on spectres
-                RgMeshInfoFlags fs = firstperson ? 0 : RG_MESH_FORCE_IGNORE_REFRACT_AFTER;
-
-                int mode = firstperson ? *cvar::rt_spectre_invis1 : *cvar::rt_spectre;
-                switch( mode )
-                {
-                    case 1: return fs | RG_MESH_FORCE_GLASS;
-                    case 2: return fs | RG_MESH_FORCE_MIRROR;
-                    default: return fs | RG_MESH_FORCE_WATER;
-                }
+                return RG_MESH_FORCE_IGNORE_REFRACT_AFTER;
             }
             return 0;
         };
@@ -1741,8 +1772,33 @@ private:
             {
                 if( rtstate.is< RtPrim::ExportInstance >() )
                 {
-                    add |= RG_MESH_PRIMITIVE_ALPHA_TESTED;
-                    alphaTest = true;
+                    // Soft blends under RT:
+                    //  - SAR2 / classic Fuzz spectre → IsSpectre() → FORCE_WATER/GLASS mesh
+                    //    (alpha-test for sprite shape cutout + refractive material on visible pixels;
+                    //    not raster TRANSLUCENT+emis through weapon).
+                    //  - Additive (DestAlpha One): fire/muzzle — TRANSLUCENT.
+                    //  - Other sprites: ALPHA_TESTED cutout.
+                    const bool additiveBlend =
+                        mRenderStyle.BlendOp == STYLEOP_Add &&
+                        mRenderStyle.DestAlpha == STYLEALPHA_One;
+
+                    if( additiveBlend )
+                    {
+                        add |= RG_MESH_PRIMITIVE_TRANSLUCENT;
+                        alphaTest = false;
+                    }
+                    else if( IsSpectre() )
+                    {
+                        // Spectre: rasterized TRANSLUCENT overlay with alpha floor.
+                        // Gives the purple-dark see-through look (like classic alpha blend).
+                        add |= RG_MESH_PRIMITIVE_TRANSLUCENT;
+                        alphaTest = false;
+                    }
+                    else
+                    {
+                        add |= RG_MESH_PRIMITIVE_ALPHA_TESTED;
+                        alphaTest = true;
+                    }
                 }
                 // World: keep alpha-test for real masks (fences). Soft-alpha solids were
                 // forced opaque at upload time via looksLikeRealMask heuristic.
@@ -1815,13 +1871,41 @@ private:
             !rtstate.is< RtPrim::Particle >() &&
             !rtstate.is< RtPrim::Decal >();
 
+        // Same bake issue on sprites / weapon: lightlevel-0 → black uVertexColor →
+        // silhouette even after world white fix. Keep uObjectColor (ThingColor / weapon
+        // ObjectColor / sector sprite tint); drop lightlevel from uVertexColor RGB.
+        const bool forceSpriteUnlitAlbedo =
+            rt_mod_compat && !isUI &&
+            ( rtstate.is< RtPrim::ExportInstance >() ||
+              rtstate.is< RtPrim::FirstPerson >() ||
+              rtstate.is< RtPrim::FirstPersonViewer >() );
+
+        auto l_spriteAlpha = [ &, this ]() -> float {
+            if( forcealpha1 )
+            {
+                return 1.0f;
+            }
+            // Floor soft-blend alpha so spectres are visible (Retribution 64Spectre
+            // A_SetTranslucent(0.20) is nearly clear under PT alpha blend).
+            float a = mStreamData.uObjectColor.a * mStreamData.uVertexColor[ 3 ];
+            if( rt_mod_compat && rtstate.is< RtPrim::ExportInstance >() )
+            {
+                a = std::max( a, float( cvar::rt_translucent_minalpha ) );
+            }
+            return a;
+        };
+
         RgColor4DPacked32 primColor;
         if( forceWorldWhiteRgb )
         {
-            const float a =
-                forcealpha1 ? 1.0f
-                            : ( mStreamData.uObjectColor.a * mStreamData.uVertexColor[ 3 ] );
-            primColor = rt.rgUtilPackColorFloat4D( 1.0f, 1.0f, 1.0f, a );
+            primColor = rt.rgUtilPackColorFloat4D( 1.0f, 1.0f, 1.0f, l_spriteAlpha() );
+        }
+        else if( forceSpriteUnlitAlbedo )
+        {
+            primColor = rt.rgUtilPackColorFloat4D( mStreamData.uObjectColor.r,
+                                                  mStreamData.uObjectColor.g,
+                                                  mStreamData.uObjectColor.b,
+                                                  l_spriteAlpha() );
         }
         else
         {
@@ -3606,7 +3690,48 @@ void RT_UploadGzDoomDynamicLights()
     }
 
     const float intensityScale = std::max( 0.f, float{ cvar::rt_dynlight_intensity } );
+    const float intensityMax   = std::max( 0.f, float{ cvar::rt_dynlight_max } );
     const float srcRadius      = std::max( 0.01f, float{ cvar::rt_dynlight_radius } );
+    const bool  stackAtten     = bool{ cvar::rt_dynlight_stack_atten };
+
+    // Doom64 key doors place 3 PointLights on the same XY at different heights so the
+    // classic HW path lights a tall jamb strip. In PT those spheres add, so bloom goes
+    // nuclear-white. Count co-located XY first, then divide each upload by the stack size.
+    auto xyKey = []( double x, double y ) -> uint64_t {
+        const int qx = int( std::lround( x / 4.0 ) );
+        const int qy = int( std::lround( y / 4.0 ) );
+        return ( uint64_t( uint32_t( qx ) ) << 32 ) | uint32_t( qy );
+    };
+
+    std::unordered_map< uint64_t, int > stackCount;
+    if( stackAtten )
+    {
+        for( FDynamicLight* light = primaryLevel->lights; light != nullptr; light = light->next )
+        {
+            if( !light->IsActive() || light->IsSubtractive() || light->DontLightMap() )
+            {
+                continue;
+            }
+            if( light->X() < -1.0e6 )
+            {
+                continue;
+            }
+            if( !cvar::rt_dynlight_flicker &&
+                ( light->lighttype == FlickerLight || light->lighttype == RandomFlickerLight ) )
+            {
+                continue;
+            }
+            if( light->m_currentRadius <= 0.01f )
+            {
+                continue;
+            }
+            if( light->GetRed() + light->GetGreen() + light->GetBlue() <= 0 )
+            {
+                continue;
+            }
+            stackCount[ xyKey( light->X(), light->Y() ) ]++;
+        }
+    }
 
     uint32_t index = 0;
     for( FDynamicLight* light = primaryLevel->lights; light != nullptr; light = light->next )
@@ -3650,7 +3775,27 @@ void RT_UploadGzDoomDynamicLights()
             blink         = 0.15f + 0.85f * t;
         }
 
-        const float intensity = hi * intensityScale * blink;
+        float intensity = hi * intensityScale * blink;
+        if( stackAtten )
+        {
+            const int n = std::max( 1, stackCount[ xyKey( light->X(), light->Y() ) ] );
+            intensity /= float( n );
+        }
+        if( intensityMax > 0.f )
+        {
+            intensity = std::min( intensity, intensityMax );
+        }
+        // Large map-radius PointLights (MAP04 yellow hall r=88) otherwise all sit at
+        // rt_dynlight_max and read as flat sector fill, drowning hanging-lamp pools.
+        // Inv-square roll-off above rsoft keeps jamb-sized lights (r~32) unchanged.
+        {
+            const float rSoft = float{ cvar::rt_dynlight_rsoft };
+            if( rSoft > 1.f && mapRadius > rSoft )
+            {
+                const float t = rSoft / mapRadius;
+                intensity *= t * t;
+            }
+        }
         if( intensity <= 0.01f )
         {
             continue;
@@ -3749,9 +3894,13 @@ static bool RT_IsCeilingInsetLampTexture( const char* name )
 
 void RT_UploadCeilingInsetLamps()
 {
-    // Surface _e on SFLATAS only glows. These analytic lights blink + cast under
-    // the ceiling flats (the "head lights" by MAP01's first enemies) — not the
-    // wall SMON terminals (those are separate 9802 / sector-special blinkers).
+    // Surface _e provides fixture albedo. These analytic lights blink + cast under
+    // ceiling flats only (MAP01 spawn "head lights"). Floor lamp panels use texture
+    // emissiveMult GI instead — do not upload floor analytic spheres.
+    //
+    // DLSS-RR skips A-SVGF, so hard on/off + dropping lights from the list
+    // nukes ReSTIR temporal reservoirs and shows up as unfiltered-direct sparkle
+    // in the final image. Always upload a stable uniqueID and ease intensity.
     if( !cvar::rt_ceiling_lamps || !primaryLevel )
     {
         return;
@@ -3761,9 +3910,21 @@ void RT_UploadCeilingInsetLamps()
     const float srcRadius = std::max( 0.01f, float{ cvar::rt_ceiling_lamp_radius } );
     const float zOfs      = float{ cvar::rt_ceiling_lamp_zofs };
     const float offScale  = std::clamp( float{ cvar::rt_ceiling_lamp_off }, 0.f, 1.f );
+    const float fadeTics  = std::max( 0.f, float{ cvar::rt_ceiling_lamp_fade } );
     if( peak <= 0.01f )
     {
         return;
+    }
+
+    // Per-sector eased blink level (survives across frames; resized on map change).
+    static TArray<float> s_lampLevel;
+    if( s_lampLevel.Size() != primaryLevel->sectors.Size() )
+    {
+        s_lampLevel.Resize( primaryLevel->sectors.Size() );
+        for( unsigned n = 0; n < s_lampLevel.Size(); n++ )
+        {
+            s_lampLevel[ n ] = 1.f;
+        }
     }
 
     const int maptime = primaryLevel->maptime;
@@ -3793,19 +3954,67 @@ void RT_UploadCeilingInsetLamps()
             continue;
         }
 
-        // Hard on/off like base Doom 64 (not a soft dim). Desync per sector.
-        // ~22% of the cycle is fully extinguished; occasional short double-blips.
+        // Large halls (MAP02 SFLATAQ corridors) only have lamp blobs on the texture
+        // edges. A single analytic sphere at centerspot makes a blinking white patch
+        // in empty mid-ceiling. Keep analytics for small booths (MAP01 ~96×96).
+        const float maxSpan = std::max( 0.f, float{ cvar::rt_ceiling_lamp_maxspan } );
+        if( maxSpan > 0.f )
+        {
+            float minx = 1.e9f, miny = 1.e9f, maxx = -1.e9f, maxy = -1.e9f;
+            bool  any  = false;
+            for( unsigned li = 0; li < sector.Lines.Size(); li++ )
+            {
+                const line_t* line = sector.Lines[ li ];
+                if( !line )
+                {
+                    continue;
+                }
+                for( vertex_t* v : { line->v1, line->v2 } )
+                {
+                    if( !v )
+                    {
+                        continue;
+                    }
+                    any  = true;
+                    minx = std::min( minx, float( v->fX() ) );
+                    miny = std::min( miny, float( v->fY() ) );
+                    maxx = std::max( maxx, float( v->fX() ) );
+                    maxy = std::max( maxy, float( v->fY() ) );
+                }
+            }
+            if( any && ( maxx - minx > maxSpan || maxy - miny > maxSpan ) )
+            {
+                continue;
+            }
+        }
+
+        // Mostly-on cycle with short dips (same timing as before), but target
+        // stays >= offScale so the light never leaves the ReSTIR list.
         const int phase = int( ( maptime * 4 + int( i ) * 23 ) % 256 );
         const bool blackout =
             ( phase < 40 ) || ( phase >= 110 && phase < 122 ) || ( phase >= 200 && phase < 208 );
-        const float blink = blackout ? offScale : 1.f;
-        const float intensity = peak * blink;
+        const float target = blackout ? offScale : 1.f;
 
-        // Skip upload when fully off so ReSTIR / the light list actually drops the source.
-        if( intensity <= 0.01f )
+        float& level = s_lampLevel[ i ];
+        if( fadeTics <= 0.f )
         {
-            continue;
+            level = target;
         }
+        else
+        {
+            const float step = 1.f / fadeTics;
+            if( level < target )
+            {
+                level = std::min( target, level + step );
+            }
+            else if( level > target )
+            {
+                level = std::max( target, level - step );
+            }
+        }
+
+        // Always upload (even when dim) — hard delete was the RR noise source.
+        const float intensity = std::max( peak * level, peak * offScale * 0.25f );
 
         const float z = zceiling - zOfs;
         const float px = float( sector.centerspot.X ) * ONEGAMEUNIT_IN_METERS;
@@ -3872,6 +4081,159 @@ void RT_UploadCeilingInsetLamps()
         if( ( ++s_tick % 60 ) == 0 )
         {
             Printf( "rt_ceiling_lamp_debug: %u ceiling inset lamp(s) uploaded\n", uploaded );
+        }
+    }
+}
+
+static bool RT_IsHangingTechLampActor( AActor* mo )
+{
+    if( !mo )
+    {
+        return false;
+    }
+    // Doom 64 Retribution: 64LampTechLongHang (1015/LMP1), 64LampTechShortHang (1016/LMP2).
+    if( mo->sprite >= 0 && mo->sprite < sprites.Size() )
+    {
+        const char* sn = sprites[ mo->sprite ].name;
+        if( sn && sn[ 0 ] == 'L' && sn[ 1 ] == 'M' && sn[ 2 ] == 'P' &&
+            ( sn[ 3 ] == '1' || sn[ 3 ] == '2' ) )
+        {
+            return true;
+        }
+    }
+    // Class-name fallback (sprite table glitches / replacements).
+    if( mo->GetClass() && mo->GetClass()->TypeName.IsValidName() )
+    {
+        const char* cn = mo->GetClass()->TypeName.GetChars();
+        if( cn && ( stricmp( cn, "64LampTechLongHang" ) == 0 ||
+                    stricmp( cn, "64LampTechShortHang" ) == 0 ) )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RT_UploadHangingTechLamps()
+{
+    // MAP04 first room (and many D64 halls) hang LMP1/LMP2 props with BRIGHT sprites
+    // but no co-located PointLight things — bulbs look lit, room stays flat ambient.
+    // Place a warm analytic sphere at each hanging lamp actor so PT casts pools/shadows.
+    if( !cvar::rt_hang_lamps || !primaryLevel )
+    {
+        return;
+    }
+
+    const float peak      = std::max( 0.f, float{ cvar::rt_hang_lamp_intensity } );
+    const float srcRadius = std::max( 0.01f, float{ cvar::rt_hang_lamp_radius } );
+    const float zOfs      = float{ cvar::rt_hang_lamp_zofs };
+    if( peak <= 0.01f )
+    {
+        return;
+    }
+
+    const int maptime  = primaryLevel->maptime;
+    uint32_t  uploaded = 0;
+
+    auto it = primaryLevel->GetThinkerIterator< AActor >();
+    AActor* mo = nullptr;
+    while( ( mo = it.Next() ) != nullptr )
+    {
+        if( !RT_IsHangingTechLampActor( mo ) )
+        {
+            continue;
+        }
+        // Skip fully faded / non-rendered.
+        if( mo->renderflags & RF_INVISIBLE )
+        {
+            continue;
+        }
+        if( mo->Alpha <= 0.01 )
+        {
+            continue;
+        }
+
+        // SPAWNCEILING: actor Z is the bottom of the bbox (Top() touches ceiling).
+        // Bulb sits near the lower half of the hanging fixture. zofs nudges down from center.
+        const float px    = float( mo->X() ) * ONEGAMEUNIT_IN_METERS;
+        const float py    = float( mo->Y() ) * ONEGAMEUNIT_IN_METERS;
+        const float zBulb = float( mo->Z() ) + float( mo->Height ) * 0.35f - zOfs;
+        const float pz    = zBulb * ONEGAMEUNIT_IN_METERS;
+
+        // Mild per-lamp phase so a dense hall doesn't hard-sync (no full blackout —
+        // RR hates lights leaving the list; keep >= ~0.85).
+        const int   phase = int( ( maptime * 3 + int( mo->X() ) + int( mo->Y() ) * 7 ) % 256 );
+        const float flicker =
+            ( phase < 6 ) ? 0.88f : ( phase >= 130 && phase < 134 ) ? 0.92f : 1.f;
+        const float intensity = peak * flicker;
+
+        // Stable ID from actor pointer (same pattern as dynlights).
+        const uint64_t stableId =
+            HangLampId_Base + ( uint64_t{ reinterpret_cast< uintptr_t >( mo ) } & 0xFFFFFFFFull );
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            // Warm amber — matches LMP bulb albedo better than pure white.
+            .color     = rt.rgUtilPackColorByte4D( 255, 200, 120, 255 ),
+            .intensity = intensity,
+            .position  = { px, py, pz },
+            .radius    = srcRadius,
+        };
+
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = stableId,
+            .isExportable = false,
+        };
+
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        if( cvar::rt_hang_lamp_debug )
+        {
+            auto markSph = RgLightSphericalEXT{
+                .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                .pNext     = nullptr,
+                .color     = rt.rgUtilPackColorByte4D( 255, 255, 0, 255 ),
+                .intensity = 350.f,
+                .position  = { px, py, pz },
+                .radius    = 0.05f,
+            };
+            auto markInfo = RgLightInfo{
+                .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                .pNext        = &markSph,
+                .uniqueID     = stableId + 0x08000000ull,
+                .isExportable = false,
+            };
+            r = rt.rgUploadLight( &markInfo );
+            RG_CHECK( r );
+
+            if( ( maptime % 35 ) == 0 && uploaded < 8 )
+            {
+                const char* sn = ( mo->sprite >= 0 && mo->sprite < sprites.Size() )
+                                     ? sprites[ mo->sprite ].name
+                                     : "?";
+                Printf( "rt_hang_lamp: '%s'/%s xyz=(%.0f,%.0f,%.0f) I=%.0f\n",
+                        sn,
+                        mo->GetClass() ? mo->GetClass()->TypeName.GetChars() : "?",
+                        float( mo->X() ),
+                        float( mo->Y() ),
+                        zBulb,
+                        intensity );
+            }
+        }
+
+        ++uploaded;
+    }
+
+    if( cvar::rt_hang_lamp_debug )
+    {
+        static int s_tick;
+        if( ( ++s_tick % 60 ) == 0 )
+        {
+            Printf( "rt_hang_lamp_debug: %u hanging tech lamp(s) uploaded\n", uploaded );
         }
     }
 }
@@ -4072,6 +4434,7 @@ void RTFrameBuffer::RT_DrawFrame()
     RT_UploadExportableSectorLights();
     RT_UploadGzDoomDynamicLights();
     RT_UploadCeilingInsetLamps();
+    RT_UploadHangingTechLamps();
 
     auto tm_params = RgDrawFrameTonemappingParams{
         .sType                = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS,
@@ -4179,7 +4542,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .specularSensitivityToChange        = std::clamp( float( cvar::rt_illum_sens_spec ), 0.f, 1.f ),
         .polygonalLightSpotlightFactor      = 2.0f,
         .lightUniqueIdIgnoreFirstPersonViewerShadows = &FlashlightLightId,
-        .enableRrNoisyAntiFirefly           = static_cast< RgBool32 >( bool( cvar::rt_rr_noisy_antifirefly ) ),
+        .enableRrTemporalPrefilter          = static_cast< RgBool32 >( bool( cvar::rt_rr_temporal ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
