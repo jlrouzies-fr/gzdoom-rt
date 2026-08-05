@@ -145,7 +145,7 @@ namespace cvar
     RT_CVAR( rt_hang_lamp_zofs,         4.f,    "drop light this many map units below bulb estimate (SPAWNCEILING Z=bottom)" )
     RT_CVAR( rt_hang_lamp_debug,        false,  "periodic console dump + yellow marker spheres at hanging lamp lights" )
 
-    RT_CVAR( rt_translucent_minalpha,   0.72f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
+    RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
 
     RT_CVAR( rt_classic,                0.f,    "[0.0,1.0] what portion of the screen to render with a classic mode" )
@@ -1191,14 +1191,14 @@ public:
             case STYLEOP_Shadow: return true;
             default: break;
         }
-        // Retribution 64Spectre is STYLE_Translucent + SAR2*/SARG*, not classic Fuzz.
-        // Uses rasterized TRANSLUCENT + minalpha floor for see-through purple-dark look.
-        // SARG prefix catches attack frames inherited from base pinky.
+        // Retribution 64Spectre is STYLE_Translucent + SAR2, not classic Fuzz.
+        // Uses rasterized TRANSLUCENT + minalpha cap for see-through ghostly look.
+        // SARG = regular pinky demon (not spectre). Only SAR2 is the 64Spectre sprite prefix.
         if( rt_mod_compat && rtstate.is< RtPrim::ExportInstance >() )
         {
             const char* n = rtstate.get_exportinstance_name();
             if( n && n[ 0 ] == 'S' && n[ 1 ] == 'A' && n[ 2 ] == 'R' &&
-                ( n[ 3 ] == '2' || n[ 3 ] == 'G' ) )  // SAR2=spectre, SARG=attack frames
+                n[ 3 ] == '2' )  // SAR2 = 64Spectre sprite prefix
             {
                 return true;
             }
