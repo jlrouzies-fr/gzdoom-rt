@@ -1885,11 +1885,17 @@ private:
             {
                 return 1.0f;
             }
-            // Floor soft-blend alpha so spectres are visible (Retribution 64Spectre
-            // A_SetTranslucent(0.20) is nearly clear under PT alpha blend).
             float a = mStreamData.uObjectColor.a * mStreamData.uVertexColor[ 3 ];
-            if( rt_mod_compat && rtstate.is< RtPrim::ExportInstance >() )
+            if( IsSpectre() )
             {
+                // Spectre: force alpha to minalpha so all states (see, attack, pain, death)
+                // render uniformly semi-transparent. Some states don't call A_SetTranslucent
+                // and default to alpha=1.0 (opaque) which makes them look wrong.
+                a = std::min( a, float( cvar::rt_translucent_minalpha ) );
+            }
+            else if( rt_mod_compat && rtstate.is< RtPrim::ExportInstance >() )
+            {
+                // Other soft-blend sprites: floor so they're not ghostly-clear.
                 a = std::max( a, float( cvar::rt_translucent_minalpha ) );
             }
             return a;
