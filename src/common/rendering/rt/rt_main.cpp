@@ -3124,6 +3124,12 @@ auto RT_GetSharpenTechniqueFromCvar( bool dlssOrFsr2 ) -> RgRenderSharpenTechniq
     }
 }
 
+// Snapshot of the last RT_UpscaleCvarsToRtgl() decision, for rt_rr_status.
+static bool g_rr_dbg_isremix     = false;
+static bool g_rr_dbg_wantNative  = false;
+static int  g_rr_dbg_nvDlss      = 0;
+static bool g_rr_dbg_rrRequested = false;
+
 void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
 {
     cvar::rt_available_dlss2 =
@@ -3267,6 +3273,13 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
             cvar::rt_framegen = 0;
         }
     }
+
+    // Cached for the rt_rr_status CCMD (RTGL's own DLSSRR messages are muted
+    // unless -rtdebug, so this is the only in-game view of the decision chain).
+    g_rr_dbg_isremix     = g_isremix;
+    g_rr_dbg_wantNative  = wantNativeRr;
+    g_rr_dbg_nvDlss      = nvDlss;
+    g_rr_dbg_rrRequested = ( pDst->rayReconstruction != 0 );
 
     pDst->sharpenTechnique = RT_GetSharpenTechniqueFromCvar( amdFsr || nvDlss );
 }
@@ -3535,6 +3548,45 @@ namespace classic_toggle
 
     float                  g_source = 0.0f;
     std::optional< float > g_target = {};
+
+    // Why is DLSS Ray Reconstruction on/off? RTGL's own DLSSRR messages are
+    // suppressed unless gzdoom is launched with -rtdebug, so this prints the
+    // whole gzdoom-side decision chain that feeds
+    // RgStartFrameRenderResolutionParams::rayReconstruction.
+    CCMD( rt_rr_status )
+    {
+        Printf( "--- DLSS Ray Reconstruction status ---\n" );
+        Printf( "  rt_rayreconstr        = %d  (user request)\n", int( bool( cvar::rt_rayreconstr ) ) );
+        Printf( "  rt_upscale_dlss       = %d  (0 = off; RR needs != 0)\n", int( cvar::rt_upscale_dlss ) );
+        Printf( "  remix mode            = %s  (RR is native-only, disabled under Remix)\n",
+                g_rr_dbg_isremix ? "YES" : "no" );
+        Printf( "  DLSS2 available       = %s%s%s\n",
+                cvar::rt_available_dlss2 ? "YES" : "NO",
+                ( !cvar::rt_available_dlss2 && cvar::rt_failreason_dlss2 ) ? "  reason: " : "",
+                ( !cvar::rt_available_dlss2 && cvar::rt_failreason_dlss2 ) ? cvar::rt_failreason_dlss2
+                                                                          : "" );
+        Printf( "  DLSS3-FG available    = %s%s%s\n",
+                cvar::rt_available_dlss3fg ? "YES" : "NO",
+                ( !cvar::rt_available_dlss3fg && cvar::rt_failreason_dlss3fg ) ? "  reason: " : "",
+                ( !cvar::rt_available_dlss3fg && cvar::rt_failreason_dlss3fg )
+                    ? cvar::rt_failreason_dlss3fg
+                    : "" );
+        Printf( "  -> wantNativeRr       = %s\n", g_rr_dbg_wantNative ? "YES" : "no" );
+        Printf( "  -> nvDlss (mode)      = %d\n", g_rr_dbg_nvDlss );
+        Printf( "  -> RR REQUESTED       = %s\n", g_rr_dbg_rrRequested ? "YES" : "NO" );
+        Printf( "\n" );
+        if( !g_rr_dbg_rrRequested )
+        {
+            Printf( "  RR is NOT requested -> A-SVGF denoiser runs (image should be smooth).\n" );
+        }
+        else
+        {
+            Printf( "  RR IS requested. If the image is still raw/noisy, RTGL accepted the\n"
+                    "  request but DLSSRR::Apply() bailed (VulkanDevice.cpp skips A-SVGF\n"
+                    "  whenever the nvDlssRr object merely exists) -> no denoiser at all.\n"
+                    "  Relaunch with -rtdebug to see the DLSSRR: lines from RTGL.\n" );
+        }
+    }
 
     CCMD( rt_dump_dynlights )
     {
