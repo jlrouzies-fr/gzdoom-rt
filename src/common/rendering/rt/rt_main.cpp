@@ -278,6 +278,24 @@ namespace cvar
                                                 "(guards against false positives in near-black areas)" )
     RT_CVAR( rt_rr_disocc_show,         false,  "DLSS-RR disocclusion: debug — tint fired tiles red in final image" )
 
+    RT_CVAR( rt_rr_reset_on_lightcut,   true,   "DLSS-RR: flush temporal history (InReset) on an abrupt light "
+                                                "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
+                                                "stabilized history. See also rt_rr_reset_on_dynlight." )
+    RT_CVAR( rt_rr_reset_delta,         0.5f,   "DLSS-RR reset: min abrupt change in emitted flashlight scale "
+                                                "(0..1) that counts as a light cut" )
+    RT_CVAR( rt_rr_reset_on_dynlight,   true,   "DLSS-RR: also flush temporal history when a GZDoom dynamic "
+                                                "light (barrel/rocket explosion flash, pickup glow, etc.) newly "
+                                                "appears or disappears from the uploaded light list. Steady "
+                                                "flicker/pulse lights don't count (they never leave the list). "
+                                                "Muzzle flash is intentionally excluded — too frequent, already "
+                                                "soft-faded via rt_mzlflsh_fade." )
+    RT_CVAR( rt_rr_reset_min_ms,        250,    "DLSS-RR reset: minimum milliseconds between history flushes "
+                                                "(rate limit, avoids back-to-back flushes during rapid triggers)" )
+    RT_CVAR( rt_rr_reset_hold,          false,  "DLSS-RR reset: diagnostic — force InReset every frame "
+                                                "(image should go visibly noisy if this reaches NGX)" )
+    RT_CVAR( rt_rr_reset_now,           false,  "DLSS-RR reset: diagnostic — fire a single history flush, "
+                                                "then self-clears" )
+
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             30.f,   "max distance of scattering volume (in meteres)" )
     RT_CVAR( rt_volume_scatter,         1.f,    "density of media" )
@@ -404,6 +422,16 @@ constexpr uint64_t MuzzleFlashLightId = 0xFFFFFFF + 2;
 constexpr uint64_t SectorLightId_Base = 0xFFFFFFF + 3;
 // Keep clear of sector-light IDs (base + sectorIndex).
 constexpr uint64_t DynLightId_Base    = 0xA0000000ull;
+
+// DLSS-RR: any transient-light source that wants a full temporal-history
+// flush (flashlight on/off, a dynlight appearing/disappearing) sets this.
+// Consumed (and cleared) once per frame at RgDrawFrameInfo.resetHistory,
+// rate-limited by rt_rr_reset_min_ms via g_rt_lastresetat. Declared here
+// (rather than beside the similar g_resetposteffects further down) because
+// RT_AddFlashlight() is an inline method of a class nested in this same
+// anonymous namespace and needs ordinary forward-visible lookup.
+static bool   g_rt_lightcut    = false;
+static double g_rt_lastresetat = -1e9;
 constexpr uint64_t CeilingLampId_Base = 0xB0000000ull;
 constexpr uint64_t HangLampId_Base    = 0xC0000000ull;
 
@@ -2071,6 +2099,10 @@ public:
         static int      s_nextBlinkAt = -1;
         static int      s_blinkStart  = -1;
         static int      s_blinkDur    = 0;
+        // DLSS-RR light-cut edge detector (see below); reset on level change
+        // alongside the other statics so a fresh map doesn't read a stale edge.
+        static bool     s_rrPrevWant  = false;
+        static float    s_rrPrevScale = 0.f;
 
         const int maptime = primaryLevel ? primaryLevel->maptime : 0;
         const int maptoken =
@@ -2137,6 +2169,8 @@ public:
             s_phaseLen    = 0;
             s_nextBlinkAt = -1;
             s_blinkStart  = -1;
+            s_rrPrevWant  = false;
+            s_rrPrevScale = 0.f;
         }
 
         float battScale = 1.f;
@@ -2240,6 +2274,23 @@ public:
 
         cvar::rt_flsh_charge    = std::clamp( charge, 0.f, 1.f );
         cvar::rt_flsh_battstate = battState;
+
+        // DLSS-RR: flag an abrupt cut (rt_flsh toggle, or recharge<->on) for a
+        // history flush. fadeValley() dying-flicker and mid-cycle blinks ramp
+        // smoothly over 12-32 tics -- RR tracks those fine, and flushing on
+        // every one of them would make the ~4s dying phase permanently noisy.
+        if( bool{ cvar::rt_rr_reset_on_lightcut } )
+        {
+            const float emitted = wantLight ? battScale : 0.f;
+
+            if( wantLight != s_rrPrevWant ||
+                std::abs( emitted - s_rrPrevScale ) > float{ cvar::rt_rr_reset_delta } )
+            {
+                g_rt_lightcut = true;
+            }
+            s_rrPrevWant  = wantLight;
+            s_rrPrevScale = emitted;
+        }
 
         if( !wantLight || battScale <= 0.01f )
         {
@@ -3412,6 +3463,7 @@ void RT_OnLevelLoad( const char* mapname )
 {
     g_resetposteffects = true;
     g_resetfluid       = true;
+    g_rt_lightcut      = true; // DLSS-RR: new scene, flush temporal history unconditionally
     RT_ClearTitles();
     RT_InjectTitleIntoDoomMap( mapname );
     RT_ForceIntroCutsceneMusicStop();
@@ -3696,13 +3748,24 @@ void RT_UploadExportableSectorLights()
 
 void RT_UploadGzDoomDynamicLights()
 {
+    // DLSS-RR: previous frame's set of uploaded light IDs, for the
+    // appear/disappear diff at the bottom of this function.
+    static std::unordered_set< uint64_t > s_prevDynIds;
+
     // Stock gzdoom-rt never forwarded FDynamicLight (map things 9800/9802, GLDEFS
     // attached lights) into RTGL. Retribution MAP01 spawn blink lamps are
     // PointLightFlicker (9802) beside SMONAA — without this they are invisible in PT.
-    if( !cvar::rt_dynlight || !primaryLevel || !primaryLevel->lights )
+    //
+    // Note: deliberately NOT bailing out when primaryLevel->lights is null (list
+    // went empty) — the diff below still needs to run to catch "last light
+    // just disappeared"; the loops below simply do zero iterations in that case.
+    if( !cvar::rt_dynlight || !primaryLevel )
     {
+        s_prevDynIds.clear();
         return;
     }
+
+    std::unordered_set< uint64_t > curDynIds;
 
     const float intensityScale = std::max( 0.f, float{ cvar::rt_dynlight_intensity } );
     const float intensityMax   = std::max( 0.f, float{ cvar::rt_dynlight_max } );
@@ -3831,6 +3894,13 @@ void RT_UploadGzDoomDynamicLights()
         const uint64_t stableId =
             DynLightId_Base + ( uint64_t{ reinterpret_cast< uintptr_t >( light ) } & 0xFFFFFFFFull );
 
+        // DLSS-RR: track which lights are present this frame so a newly
+        // appeared/disappeared one (barrel/rocket explosion flash, pickup
+        // glow, etc.) can flush RR history below. Steady flicker/pulse
+        // lights stay in the list the whole time (only their intensity
+        // varies via the `blink` remap above), so they never touch this.
+        curDynIds.insert( stableId );
+
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
@@ -3885,6 +3955,14 @@ void RT_UploadGzDoomDynamicLights()
             Printf( "rt_dynlight_debug: %u active GZDoom light(s) uploaded this frame\n", index );
         }
     }
+
+    // DLSS-RR: any ID present in exactly one of the two sets means a light
+    // appeared or disappeared this frame -- flush temporal history.
+    if( bool{ cvar::rt_rr_reset_on_dynlight } && curDynIds != s_prevDynIds )
+    {
+        g_rt_lightcut = true;
+    }
+    s_prevDynIds = std::move( curDynIds );
 }
 
 static bool RT_IsCeilingInsetLampTexture( const char* name )
@@ -4723,11 +4801,36 @@ void RTFrameBuffer::RT_DrawFrame()
         .pDither               = &ef_dither,
     };
 
+    // DLSS-RR: flush temporal history this frame if any transient-light source
+    // flagged an abrupt cut (flashlight on/off, a dynlight appearing/
+    // disappearing, or a fresh level load -- see g_rt_lightcut's setters) or a
+    // diagnostic cvar asked for it. Rate-limited so rapid triggers (e.g. quick
+    // flashlight double-tap) don't chain resets back-to-back.
+    bool wantResetHistory = bool{ cvar::rt_rr_reset_hold };
+
+    if( g_rt_lightcut )
+    {
+        g_rt_lightcut = false;
+        if( curtime - g_rt_lastresetat >= double( cvar::rt_rr_reset_min_ms ) / 1000.0 )
+        {
+            wantResetHistory = true;
+            g_rt_lastresetat = curtime;
+        }
+    }
+
+    if( bool{ cvar::rt_rr_reset_now } )
+    {
+        cvar::rt_rr_reset_now = false;
+        wantResetHistory      = true;
+        g_rt_lastresetat      = curtime;
+    }
+
     auto info = RgDrawFrameInfo{
         .sType            = RG_STRUCTURE_TYPE_DRAW_FRAME_INFO,
         .pNext            = &post_params,
         .rayLength        = GetZFar() * ONEGAMEUNIT_IN_METERS,
         .presentPrevFrame = false,
+        .resetHistory     = static_cast< RgBool32 >( wantResetHistory ),
         .currentTime      = curtime,
     };
 
