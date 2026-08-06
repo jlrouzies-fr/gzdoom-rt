@@ -269,6 +269,15 @@ namespace cvar
                                                 "caused faded duplicate/ghost depth view (double reprojection + "
                                                 "checkerboard coord mismatch). Keep soft lamp fades instead." )
 
+    RT_CVAR( rt_rr_disocc,              true,   "DLSS-RR: disocclusion mask — force RR to drop temporal history where "
+                                                "scene luminance changed sharply vs previous frame (motion-reprojected, "
+                                                "per 16x16 tile). Fixes barrel/muzzle flash linger and occluded-glow ghosting." )
+    RT_CVAR( rt_rr_disocc_ratio,        3.0f,   "DLSS-RR disocclusion: tile luminance ratio (cur vs prev, symmetric) above "
+                                                "which history is discarded. Lower = more responsive, noisier. [1.0, +inf)" )
+    RT_CVAR( rt_rr_disocc_mindelta,     0.01f,  "DLSS-RR disocclusion: minimum absolute tile luminance delta to fire "
+                                                "(guards against false positives in near-black areas)" )
+    RT_CVAR( rt_rr_disocc_show,         false,  "DLSS-RR disocclusion: debug — tint fired tiles red in final image" )
+
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             30.f,   "max distance of scattering volume (in meteres)" )
     RT_CVAR( rt_volume_scatter,         1.f,    "density of media" )
@@ -4549,6 +4558,10 @@ void RTFrameBuffer::RT_DrawFrame()
         .polygonalLightSpotlightFactor      = 2.0f,
         .lightUniqueIdIgnoreFirstPersonViewerShadows = &FlashlightLightId,
         .enableRrTemporalPrefilter          = static_cast< RgBool32 >( bool( cvar::rt_rr_temporal ) ),
+        .enableRrDisocclusionMask           = static_cast< RgBool32 >( bool( cvar::rt_rr_disocc ) ),
+        .rrDisocclusionThreshold            = std::max( float( cvar::rt_rr_disocc_ratio ), 1.0f ),
+        .rrDisocclusionMinDelta             = std::max( float( cvar::rt_rr_disocc_mindelta ), 0.0f ),
+        .rrDisocclusionShowMask             = static_cast< RgBool32 >( bool( cvar::rt_rr_disocc_show ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
