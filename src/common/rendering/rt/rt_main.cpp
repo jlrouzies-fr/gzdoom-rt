@@ -295,6 +295,9 @@ namespace cvar
                                                 "(image should go visibly noisy if this reaches NGX)" )
     RT_CVAR( rt_rr_reset_now,           false,  "DLSS-RR reset: diagnostic — fire a single history flush, "
                                                 "then self-clears" )
+    RT_CVAR( rt_rr_reset_debug,         false,  "DLSS-RR reset: diagnostic — log every history flush (with its "
+                                                "cause) plus a once-a-second fired/suppressed tally. Use this to "
+                                                "check whether a trigger is over-firing." )
 
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             30.f,   "max distance of scattering volume (in meteres)" )
@@ -432,6 +435,8 @@ constexpr uint64_t DynLightId_Base    = 0xA0000000ull;
 // anonymous namespace and needs ordinary forward-visible lookup.
 static bool   g_rt_lightcut    = false;
 static double g_rt_lastresetat = -1e9;
+// Which setter raised g_rt_lightcut, for rt_rr_reset_debug. Static string only.
+static const char* g_rt_lightcut_why = "?";
 constexpr uint64_t CeilingLampId_Base = 0xB0000000ull;
 constexpr uint64_t HangLampId_Base    = 0xC0000000ull;
 
@@ -2286,7 +2291,8 @@ public:
             if( wantLight != s_rrPrevWant ||
                 std::abs( emitted - s_rrPrevScale ) > float{ cvar::rt_rr_reset_delta } )
             {
-                g_rt_lightcut = true;
+                g_rt_lightcut     = true;
+                g_rt_lightcut_why = "flashlight";
             }
             s_rrPrevWant  = wantLight;
             s_rrPrevScale = emitted;
@@ -3477,6 +3483,7 @@ void RT_OnLevelLoad( const char* mapname )
     g_resetposteffects = true;
     g_resetfluid       = true;
     g_rt_lightcut      = true; // DLSS-RR: new scene, flush temporal history unconditionally
+    g_rt_lightcut_why  = "levelload";
     RT_ClearTitles();
     RT_InjectTitleIntoDoomMap( mapname );
     RT_ForceIntroCutsceneMusicStop();
@@ -3885,6 +3892,26 @@ void RT_UploadGzDoomDynamicLights()
             continue;
         }
 
+        // Stable ID across frames (index shifts when other lights activate/deactivate
+        // and breaks ReSTIR temporal matching — flicker gets smoothed away).
+        const uint64_t stableId =
+            DynLightId_Base + ( uint64_t{ reinterpret_cast< uintptr_t >( light ) } & 0xFFFFFFFFull );
+
+        // DLSS-RR: track which lights are present this frame so a newly appeared/
+        // disappeared one (barrel/rocket explosion flash, pickup glow, etc.) can
+        // flush RR history below.
+        //
+        // Recorded HERE, before the brightness cutoffs below, deliberately: a pulse
+        // light whose m_currentRadius (or scaled intensity) dips under 0.01 for a few
+        // tics is still the same light, and must not read as disappear-then-reappear.
+        // Doing this after those cutoffs made steady flicker/pulse lights churn the
+        // set — membership changing while the *count* stayed flat, so the
+        // rt_dynlight_debug count check never caught it — and fired a history flush
+        // almost every frame, i.e. permanent RR noise. Presence here means "this
+        // FDynamicLight exists and is active", which is what actually maps to the
+        // scene-lighting cut we care about.
+        curDynIds.insert( stableId );
+
         // GZDoom stores intensity as light radius in map units; flicker/pulse update
         // m_currentRadius each tic. MAP01 9802 uses 24/20 — only ~17% HW delta, invisible
         // under RR. Remap [lo,hi] → [0.15,1.0] * peak so blink reads as on/off.
@@ -3940,18 +3967,6 @@ void RT_UploadGzDoomDynamicLights()
         }
 
         const auto color = rt.rgUtilPackColorByte4D( cr, cg, cb, 255 );
-
-        // Stable ID across frames (index shifts when other lights activate/deactivate
-        // and breaks ReSTIR temporal matching — flicker gets smoothed away).
-        const uint64_t stableId =
-            DynLightId_Base + ( uint64_t{ reinterpret_cast< uintptr_t >( light ) } & 0xFFFFFFFFull );
-
-        // DLSS-RR: track which lights are present this frame so a newly
-        // appeared/disappeared one (barrel/rocket explosion flash, pickup
-        // glow, etc.) can flush RR history below. Steady flicker/pulse
-        // lights stay in the list the whole time (only their intensity
-        // varies via the `blink` remap above), so they never touch this.
-        curDynIds.insert( stableId );
 
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
@@ -4012,7 +4027,32 @@ void RT_UploadGzDoomDynamicLights()
     // appeared or disappeared this frame -- flush temporal history.
     if( bool{ cvar::rt_rr_reset_on_dynlight } && curDynIds != s_prevDynIds )
     {
-        g_rt_lightcut = true;
+        // Detail line, throttled: if this trigger is over-firing it can hit every
+        // single frame, and 60 console lines/s would drown everything else. Print
+        // at most one line per 15 changes and carry the skipped count on it.
+        static uint32_t s_dbgSince = 0;
+        if( cvar::rt_rr_reset_debug && ( s_dbgSince++ % 15 ) == 0 )
+        {
+            uint32_t appeared = 0;
+            uint32_t vanished = 0;
+            for( uint64_t id : curDynIds )
+            {
+                appeared += ( s_prevDynIds.count( id ) == 0 );
+            }
+            for( uint64_t id : s_prevDynIds )
+            {
+                vanished += ( curDynIds.count( id ) == 0 );
+            }
+            Printf( "rt_rr_reset: dynlight set changed +%u/-%u (present %u, was %u) "
+                    "[change #%u]\n",
+                    appeared,
+                    vanished,
+                    uint32_t( curDynIds.size() ),
+                    uint32_t( s_prevDynIds.size() ),
+                    s_dbgSince );
+        }
+        g_rt_lightcut     = true;
+        g_rt_lightcut_why = "dynlight";
     }
     s_prevDynIds = std::move( curDynIds );
 }
@@ -4860,6 +4900,14 @@ void RTFrameBuffer::RT_DrawFrame()
     // flashlight double-tap) don't chain resets back-to-back.
     bool wantResetHistory = bool{ cvar::rt_rr_reset_hold };
 
+    // rt_rr_reset_debug tallies: how many flushes actually reached NGX this
+    // second, and how many the rate limit swallowed. A trigger that over-fires
+    // shows up as a fired count pinned at ~1000/rt_rr_reset_min_ms per second
+    // with a large suppressed count behind it.
+    static uint32_t s_rrFired      = 0;
+    static uint32_t s_rrSuppressed = 0;
+    static double   s_rrTallyAt    = 0.0;
+
     if( g_rt_lightcut )
     {
         g_rt_lightcut = false;
@@ -4867,6 +4915,33 @@ void RTFrameBuffer::RT_DrawFrame()
         {
             wantResetHistory = true;
             g_rt_lastresetat = curtime;
+
+            if( cvar::rt_rr_reset_debug )
+            {
+                ++s_rrFired;
+                Printf( "rt_rr_reset: FLUSH (cause: %s)\n", g_rt_lightcut_why );
+            }
+        }
+        else if( cvar::rt_rr_reset_debug )
+        {
+            ++s_rrSuppressed;
+        }
+    }
+
+    if( cvar::rt_rr_reset_debug )
+    {
+        if( curtime - s_rrTallyAt >= 1.0 )
+        {
+            if( s_rrFired || s_rrSuppressed )
+            {
+                Printf( "rt_rr_reset: last second — %u flush(es), %u suppressed by "
+                        "rt_rr_reset_min_ms\n",
+                        s_rrFired,
+                        s_rrSuppressed );
+            }
+            s_rrFired      = 0;
+            s_rrSuppressed = 0;
+            s_rrTallyAt    = curtime;
         }
     }
 
