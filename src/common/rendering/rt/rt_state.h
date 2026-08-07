@@ -13,6 +13,7 @@
 
 
     #include "defer.h"
+    #include "palentry.h"
     #include "rt_helpers.h"
 
     #include <optional>
@@ -100,6 +101,28 @@ struct FRtState
             []( FRtState& fthis, uint32_t s ) {
                 assert( ( fthis.m_state & s ) || ( s == uint32_t( RtPrim::Identity ) ) );
                 fthis.m_state &= ~s;
+            },
+            *this,
+        };
+    }
+
+    // Deliberately separate from m_lightlevel: that one is sprite-only and feeds
+    // RgMeshInfo::localLightsIntensity for every primitive. Writing world lightlevel
+    // into it would silently change local-light response on all map geometry.
+    [[nodiscard]] auto push_sectorlight( const PalEntry& lightcolor, int lightlevel )
+    {
+        std::pair< FVector3, int > prev{ m_sectorLightColor, m_sectorLightLevel };
+
+        m_sectorLightColor = FVector3{ lightcolor.r / 255.0f,
+                                       lightcolor.g / 255.0f,
+                                       lightcolor.b / 255.0f };
+        m_sectorLightLevel = lightlevel;
+
+        return detail::AutoPop{
+            prev, // payload
+            []( FRtState& fthis, std::pair< FVector3, int > p ) {
+                fthis.m_sectorLightColor = p.first;
+                fthis.m_sectorLightLevel = p.second;
             },
             *this,
         };
@@ -241,8 +264,14 @@ struct FRtState
 
     int m_lightlevel{ 255 };
 
-    // Active sector tint consumed by the narrowly scoped RT blue-room fix.
+    // Doom 64 per-sector colormap color + lightlevel for the world primitive being
+    // drawn. Written only by walls/flats, so they must be scoped: left as plain
+    // assignments they stay set after the flat is done and leak the last sector's
+    // values onto any later world geometry that doesn't set them. Use
+    // push_sectorlight(). Lightlevel defaults to 0 so anything that never sets it
+    // (sprites, sky, portals) is treated as non-emissive.
     FVector3 m_sectorLightColor{ 1.0, 1.0, 1.0 };
+    int      m_sectorLightLevel{ 0 };
 
 private:
     uint32_t m_state{ 0 };             // RtPrim flags

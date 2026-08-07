@@ -151,7 +151,10 @@ namespace cvar
                                                 "stay at r=32 (unaffected). 0 = disable roll-off" )
     RT_CVAR( rt_dynlight_stack_atten,   true,   "divide intensity by co-located XY stack count (Doom64 door jamb strips)" )
     RT_CVAR( rt_dynlight_radius,        0.08f,  "RT light source radius in meters (smaller = harder shadows)" )
-    RT_CVAR( rt_dynlight_debug,         false,  "visualize uploaded GZDoom dynlights as bright magenta marker spheres + periodic console count" )
+    RT_CVAR( rt_dynlight_debug,         false,  "periodic console count of uploaded GZDoom dynlights + xy-stack histogram" )
+    RT_CVAR( rt_dynlight_debug_marks,   false,  "also drop bright magenta marker spheres at each uploaded dynlight. Separate "
+                                                "from rt_dynlight_debug because 60+ markers at intensity 400 flood the whole "
+                                                "scene purple, which hides the very thing you are trying to localize" )
     RT_CVAR( rt_dynlight_flicker,       false,  "upload Flicker/RandomFlicker FDynamicLights (9802). Default false: MAP01 wall "
                                                 "SMON alcoves use those; ceiling head lights are rt_ceiling_lamps instead" )
 
@@ -177,6 +180,27 @@ namespace cvar
     RT_CVAR( rt_hang_lamp_radius,       0.09f,  "RT source radius in meters for hanging tech lamps" )
     RT_CVAR( rt_hang_lamp_zofs,         4.f,    "drop light this many map units below bulb estimate (SPAWNCEILING Z=bottom)" )
     RT_CVAR( rt_hang_lamp_debug,        false,  "periodic console dump + yellow marker spheres at hanging lamp lights" )
+
+    RT_CVAR( rt_sector_emis,            0.35f,  "make bright world surfaces emit light themselves, scaled by sector lightlevel "
+                                                "(0 = off). Doom 64 draws its light features as flat-shaded bright surfaces with "
+                                                "no light actor anywhere — the red MAP02 corridor panels are lit purely by "
+                                                "sector lightlevel. Since RT must discard lightlevel (it is baked shading), those "
+                                                "rooms end up with no light source at all, and albedo tint cannot rescue them: "
+                                                "zero incident light times red albedo is still black. Emitting from the surface "
+                                                "is the right shape for this — a sector-center analytic sphere instead reads as a "
+                                                "light bulb floating in the corner" )
+    RT_CVAR( rt_sector_emis_minlight,   160.f,  "sector lightlevel below which surfaces do not self-emit [0..255]. Keeps ordinary "
+                                                "mid-lit walls inert so only the map's actual bright light features glow" )
+
+    RT_CVAR( rt_sector_tint_lights,     0.85f,  "how much of a sector's Doom 64 colormap hue tints the analytic lights inside it "
+                                                "(0 = hardcoded warm white everywhere, 1 = fully saturated sector hue). This is "
+                                                "where the colored-room atmosphere comes from — emissive blobs, bloom, speculars "
+                                                "and GI bounce all pick it up for free" )
+    RT_CVAR( rt_sector_tint_albedo,     1.00f,  "surface tint from the sector colormap hue [0..1, values above 1 clamp]. 1.0 is "
+                                                "the full normalized hue and is what matches the original game (confirmed on "
+                                                "MAP02's blue armor room) — Doom 64's colored rooms are saturated, and because "
+                                                "the hue is peak-normalized this only ever removes off-hue channels, never "
+                                                "brightens. Lower it toward 0 for a more neutral, less stylized look" )
 
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
@@ -598,6 +622,40 @@ constexpr uint64_t CeilingLampId_Base = 0xB0000000ull;
 constexpr uint64_t HangLampId_Base    = 0xC0000000ull;
 
 
+
+// Doom 64 stores room atmosphere as a per-sector colormap (MAP02's blue armor room
+// is lightcolor 0x0050FF). That is a post-shade filter from the original renderer,
+// not a light: it has no position and no falloff, and GZDoom bakes it into vertex
+// color together with lightlevel. Handing that to the path tracer as albedo
+// double-counts shading — it is what produced the yellow key-door neon wash and the
+// black light-absorbing rooms that rt_mod_compat's force-white works around.
+//
+// So: throw away the baked shading, keep the art intent. Normalize to hue only (peak
+// channel == 1, so this can never darken a surface the way raw lightcolor did), then
+// lerp toward white by `strength`. Feed most of it to light color — then emissive
+// blobs, bloom, speculars and GI bounce all inherit the tint physically — and only a
+// little to albedo, as a fallback for sectors that have no analytic light at all.
+static FVector3 RT_SectorHue( float r, float g, float b, float strength )
+{
+    const float peak = std::max( { r, g, b } );
+    if( peak <= 0.001f )
+    {
+        return FVector3{ 1.0f, 1.0f, 1.0f };
+    }
+
+    const float s = std::clamp( strength, 0.0f, 1.0f );
+    return FVector3{ 1.0f + ( r / peak - 1.0f ) * s,
+                     1.0f + ( g / peak - 1.0f ) * s,
+                     1.0f + ( b / peak - 1.0f ) * s };
+}
+
+static FVector3 RT_SectorHue( const PalEntry& lightcolor, float strength )
+{
+    return RT_SectorHue( lightcolor.r / 255.0f,
+                         lightcolor.g / 255.0f,
+                         lightcolor.b / 255.0f,
+                         strength );
+}
 
 const char* RT_GetMapName()
 {
@@ -2100,33 +2158,58 @@ private:
             return a;
         };
 
-        const char* rtMapName = RT_GetMapName();
-        const bool isRetributionMap02 =
-            rt_mod_compat && rtMapName && strstr( rtMapName, "map02" ) != nullptr;
-        const bool isBlueSector =
-            isRetributionMap02 && forceWorldWhiteRgb &&
-            rtstate.m_sectorLightColor.X <= 0.08 &&
-            rtstate.m_sectorLightColor.Y >= 0.25 &&
-            rtstate.m_sectorLightColor.Y <= 0.40 &&
-            rtstate.m_sectorLightColor.Z >= 0.90;
+        // The map's bright surfaces become the emitters. primColor below already carries
+        // the sector hue at full strength, so a red corridor panel emits red without any
+        // extra colour plumbing here.
+        auto l_worldemissive = [ & ]() -> float {
+            if( l_isemis() )
+            {
+                return float{ cvar::rt_emis_additive_dflt };
+            }
+            if( !forceWorldWhiteRgb )
+            {
+                return 0.f;
+            }
+
+            const float strength = float{ cvar::rt_sector_emis };
+            const float minLight = std::clamp( float{ cvar::rt_sector_emis_minlight }, 0.f, 254.f );
+            if( strength <= 0.f )
+            {
+                return 0.f;
+            }
+
+            const float ll = float( rtstate.m_sectorLightLevel );
+            if( ll <= minLight )
+            {
+                return 0.f;
+            }
+
+            // Ramp from the threshold to full bright so a lightlevel-200 panel glows
+            // less than a lightlevel-255 one, instead of a hard on/off step.
+            return ( ( ll - minLight ) / ( 255.f - minLight ) ) * strength;
+        };
 
         RgColor4DPacked32 primColor;
         if( forceWorldWhiteRgb )
         {
-            // MAP02's blue armor room uses a strong sector lightcolor (0x0050FF).
-            // Restore a bounded blue surface filter only for those world primitives.
-            // This is not a center point light and cannot recreate ceiling blinking.
-            if( isBlueSector )
-            {
-                constexpr float blueTintR = 0.35f;
-                constexpr float blueTintG = 0.58f;
-                constexpr float blueTintB = 1.0f;
-                primColor = rt.rgUtilPackColorFloat4D( blueTintR, blueTintG, blueTintB, l_spriteAlpha() );
-            }
-            else
-            {
-                primColor = rt.rgUtilPackColorFloat4D( 1.0f, 1.0f, 1.0f, l_spriteAlpha() );
-            }
+            // Not white but hue-only: lightlevel stays dropped (that is what fixed the
+            // black rooms), while the sector's colormap hue survives — see RT_SectorHue.
+            //
+            // Emissive world surfaces get the full light-strength hue, because under
+            // this mod's launch config they ARE the room's light source: the launcher
+            // runs rt_ceiling_lamps 0 / rt_sector_lights 0, so the glow in a MAP02
+            // ceiling recess is texture emissive under rt_emis_mapboost, not an
+            // analytic sphere. Tinting only the analytic lamps would have missed it.
+            // Everything else gets the weak albedo strength — that is paint, not light.
+            const float tintStrength = l_isemis() ? float{ cvar::rt_sector_tint_lights }
+                                                  : float{ cvar::rt_sector_tint_albedo };
+
+            const FVector3 tint = RT_SectorHue( rtstate.m_sectorLightColor.X,
+                                                rtstate.m_sectorLightColor.Y,
+                                                rtstate.m_sectorLightColor.Z,
+                                                tintStrength );
+            primColor =
+                rt.rgUtilPackColorFloat4D( tint.X, tint.Y, tint.Z, l_spriteAlpha() );
         }
         else if( forceSpriteUnlitAlbedo )
         {
@@ -2156,7 +2239,7 @@ private:
             .pTextureName         = texname,
             .textureFrame         = 0,
             .color        = primColor,
-            .emissive     = l_isemis() ? cvar::rt_emis_additive_dflt : 0.f,
+            .emissive     = l_worldemissive(),
             .classicLight = lightlevel_to_classic( isUI, mLightParms[ 3 ] ),
         };
 
@@ -4055,10 +4138,16 @@ void RT_UploadExportableSectorLights()
             .hashName   = "",
         };
 
+        // Was RG_PACKED_COLOR_WHITE — that is the "fake white wash" this cvar's own
+        // description warns about. A Doom 64 sector's light IS its colormap color, so
+        // carry the hue: a red corridor gets a red sector light, not a white one.
+        const FVector3 hue =
+            RT_SectorHue( sector.Colormap.LightColor, float{ cvar::rt_sector_tint_lights } );
+
         auto lsph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = &adt,
-            .color     = RG_PACKED_COLOR_WHITE,
+            .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
             .intensity = intensity,
             .position  = { center.X * ONEGAMEUNIT_IN_METERS,
                            center.Y * ONEGAMEUNIT_IN_METERS,
@@ -4113,8 +4202,10 @@ void RT_UploadGzDoomDynamicLights()
         return ( uint64_t( uint32_t( qx ) ) << 32 ) | uint32_t( qy );
     };
 
+    // Also count when only debugging: the histogram below is how you tell whether
+    // stack attenuation is doing anything at all.
     std::unordered_map< uint64_t, int > stackCount;
-    if( stackAtten )
+    if( stackAtten || bool{ cvar::rt_dynlight_debug } )
     {
         for( FDynamicLight* light = primaryLevel->lights; light != nullptr; light = light->next )
         {
@@ -4264,7 +4355,7 @@ void RT_UploadGzDoomDynamicLights()
 
         // Magenta hotspot markers so light sources are visible as blobs in-world
         // (no RTGL "draw all lights" overlay exists; this is the closest engine-side debug).
-        if( cvar::rt_dynlight_debug )
+        if( cvar::rt_dynlight_debug_marks )
         {
             auto markSph = RgLightSphericalEXT{
                 .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
@@ -4292,7 +4383,70 @@ void RT_UploadGzDoomDynamicLights()
         static int s_tick;
         if( ( ++s_tick % 60 ) == 0 )
         {
-            Printf( "rt_dynlight_debug: %u active GZDoom light(s) uploaded this frame\n", index );
+            // stack_atten only divides when co-located lights land in the SAME 4-unit
+            // xyKey bucket. If maxStack is 1 the attenuation is a no-op by construction
+            // — which is exactly what "toggling stack_atten changes nothing" looks like
+            // — and Doom 64's triple-PointLight key-door jambs upload at full 3x.
+            int stackedBuckets = 0;
+            int maxStack       = 0;
+            for( const auto& [ bucket, n ] : stackCount )
+            {
+                stackedBuckets += ( n > 1 );
+                maxStack = std::max( maxStack, n );
+            }
+            Printf( "rt_dynlight_debug: %u active GZDoom light(s) uploaded this frame; "
+                    "xy-buckets with >1 light: %d, max stack: %d\n",
+                    index,
+                    stackedBuckets,
+                    maxStack );
+
+            // Identify one specific offending light (the white one on the MAP02 blue-room
+            // switch) by walking up to it and reading this. Owner class + color is what
+            // lets it be filtered by something meaningful; filtering by map position would
+            // be the same one-room hack the sector-tint work already had to undo.
+            struct NearLight
+            {
+                double         dist2;
+                FDynamicLight* light;
+            };
+            std::vector< NearLight > nearest;
+            const DVector3           vp = r_viewpoint.Pos;
+
+            for( FDynamicLight* light = primaryLevel->lights; light != nullptr; light = light->next )
+            {
+                if( !light->IsActive() || light->X() < -1.0e6 )
+                {
+                    continue;
+                }
+                const double dx = light->X() - vp.X;
+                const double dy = light->Y() - vp.Y;
+                const double dz = light->Z() - vp.Z;
+                nearest.push_back( { dx * dx + dy * dy + dz * dz, light } );
+            }
+
+            std::sort( nearest.begin(),
+                       nearest.end(),
+                       []( const NearLight& a, const NearLight& b ) { return a.dist2 < b.dist2; } );
+
+            for( size_t n = 0; n < std::min< size_t >( 5, nearest.size() ); n++ )
+            {
+                FDynamicLight* l     = nearest[ n ].light;
+                AActor*        owner = l->target.Get();
+                Printf( "  near[%zu] dist=%.0f owner='%s' rgb=(%d,%d,%d) r=%.0f type=%d "
+                        "xyz=(%.0f,%.0f,%.0f)\n",
+                        n,
+                        std::sqrt( nearest[ n ].dist2 ),
+                        ( owner && owner->GetClass() ) ? owner->GetClass()->TypeName.GetChars()
+                                                       : "?",
+                        l->GetRed(),
+                        l->GetGreen(),
+                        l->GetBlue(),
+                        l->m_currentRadius,
+                        int( l->lighttype ),
+                        float( l->X() ),
+                        float( l->Y() ),
+                        float( l->Z() ) );
+            }
         }
     }
 
@@ -4479,11 +4633,20 @@ void RT_UploadCeilingInsetLamps()
         const float py = float( sector.centerspot.Y ) * ONEGAMEUNIT_IN_METERS;
         const float pz = z * ONEGAMEUNIT_IN_METERS;
 
+        // Warm white base — matches inset lamp blobs better than SMON green 9802s —
+        // modulated by the sector's own Doom 64 colormap hue, so colored rooms (MAP02's
+        // 0x0050FF blue armor room) light up in their intended color instead of being
+        // washed neutral by a hardcoded lamp.
+        const FVector3 hue =
+            RT_SectorHue( sector.Colormap.LightColor, float{ cvar::rt_sector_tint_lights } );
+
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
-            // Warm white — matches inset lamp blobs better than SMON green 9802s.
-            .color     = rt.rgUtilPackColorByte4D( 255, 230, 190, 255 ),
+            .color     = rt.rgUtilPackColorFloat4D( 1.000f * hue.X,
+                                                    0.902f * hue.Y,
+                                                    0.745f * hue.Z,
+                                                    1.0f ),
             .intensity = intensity,
             .position  = { px, py, pz },
             .radius    = srcRadius,
@@ -4629,11 +4792,21 @@ void RT_UploadHangingTechLamps()
         const uint64_t stableId =
             HangLampId_Base + ( uint64_t{ reinterpret_cast< uintptr_t >( mo ) } & 0xFFFFFFFFull );
 
+        // Warm amber base — matches LMP bulb albedo better than pure white — tinted by
+        // the hue of the sector the lamp actually hangs in (see RT_SectorHue).
+        const sector_t* lampSector = mo->Sector;
+        const FVector3  hue =
+            lampSector ? RT_SectorHue( lampSector->Colormap.LightColor,
+                                       float{ cvar::rt_sector_tint_lights } )
+                       : FVector3{ 1.0f, 1.0f, 1.0f };
+
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
-            // Warm amber — matches LMP bulb albedo better than pure white.
-            .color     = rt.rgUtilPackColorByte4D( 255, 200, 120, 255 ),
+            .color     = rt.rgUtilPackColorFloat4D( 1.000f * hue.X,
+                                                    0.784f * hue.Y,
+                                                    0.471f * hue.Z,
+                                                    1.0f ),
             .intensity = intensity,
             .position  = { px, py, pz },
             .radius    = srcRadius,
