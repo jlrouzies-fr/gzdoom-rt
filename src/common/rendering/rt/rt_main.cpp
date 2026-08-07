@@ -3584,6 +3584,18 @@ namespace classic_toggle
         Printf( "  -> nvDlss (mode)      = %d\n", g_rr_dbg_nvDlss );
         Printf( "  -> RR REQUESTED       = %s\n", g_rr_dbg_rrRequested ? "YES" : "NO" );
         Printf( "\n" );
+        // Everything above is what gzdoom ASKS FOR. RTGL's Dev UI can silently
+        // replace it afterwards, so none of it proves what actually ran.
+        Printf( "  NOTE: this is gzdoom's REQUEST, not the applied state. RTGL's Dev UI\n"
+                "  can override it -- a sticky \"DLSS Ray Reconstruction\" checkbox wins\n"
+                "  even with the Override master switch OFF, and used to persist across\n"
+                "  launches in rt/devmode_settings.json. That made this command report\n"
+                "  \"RR REQUESTED = YES\" through several sessions that actually ran A-SVGF\n"
+                "  (2026-08-07). RTGL now resets sticky flags on load and warns (-rtdebug)\n"
+                "  whenever it overrides this request. To be certain: launch with -rtdebug\n"
+                "  and check for a \"Dev override: DLSS Ray Reconstruction forced ...\" line,\n"
+                "  or delete rt/devmode_settings.json.\n" );
+        Printf( "\n" );
         if( !g_rr_dbg_rrRequested )
         {
             Printf( "  RR is NOT requested -> A-SVGF denoiser runs (image should be smooth).\n" );
