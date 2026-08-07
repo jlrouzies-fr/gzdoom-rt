@@ -90,9 +90,23 @@ constexpr ECVarType ValueToCVarType =
     MSVC_VSEG FCVarDecl const *const cvardeclref_##name GCC_VSEG = &cvardecl_##name;
 
 // Same as RT_CVAR but never written to the ini, so the cvar comes back at its
-// default on every launch. For settings that are fixes rather than preferences:
-// CVAR_ARCHIVE means a value set once during an A/B silently persists forever,
-// which has repeatedly poisoned later sessions here.
+// default on every launch. For settings that are fixes or investigation knobs
+// rather than preferences.
+//
+// This is not hypothetical tidiness. On 2026-08-07 a day was lost to a DLSS-RR
+// "regression" that was really three cvars left at A/B values from earlier the
+// same day -- rt_restir_tjitter 0, rt_shadow_samples 3, rt_rr_spechitdist 0.
+// rt_restir_tjitter 0 removes the decorrelation from ReSTIR temporal reuse, so
+// every pixel reprojects to exactly the same previous pixel and neighbours
+// reuse in lockstep; the correlated residual noise is what RR's temporal pass
+// smears into worm-like filaments. A git bisect blamed the commit that merely
+// introduced the cvar, because every older build ignored it and used the old
+// hardcoded constant instead.
+//
+// Two rules that follow, the hard way:
+//   - A tuning knob must not outlive the session that set it.
+//   - An A/B arm must set EVERY value explicitly. An arm that just leaves a
+//     persisted cvar alone silently becomes a copy of whichever arm ran last.
 #define RT_CVAR_NOARCH( name, default_value, description ) \
     ValueToCVarRef< decltype( default_value ) > name; \
     static FCVarDecl cvardecl_##name = { \
@@ -297,17 +311,17 @@ namespace cvar
                                                 "(guards against false positives in near-black areas)" )
     RT_CVAR( rt_rr_disocc_show,         false,  "DLSS-RR disocclusion: debug — tint fired tiles red in final image" )
 
-    RT_CVAR( rt_rr_firefly,             0.0f,   "DLSS-RR: neighbourhood firefly clamp on the noisy lighting before RR. "
+    RT_CVAR_NOARCH( rt_rr_firefly,             0.0f,   "DLSS-RR: neighbourhood firefly clamp on the noisy lighting before RR. "
                                                 "A pixel is scaled down only if it out-shines the brightest of its 4 "
                                                 "neighbours by this factor. Lower = more aggressive. 0 = off (default). "
                                                 "A/B'd 2026-08-07 at 4.0/2.0: barely reduced motion noise and ADDED a "
                                                 "trail behind the weapon sprite — suppressing outliers removes the local "
                                                 "contrast RR uses to detect change, so it over-trusts history. Kept as a "
                                                 "knob, off by default; it trades noise for ghosting rather than fixing it." )
-    RT_CVAR( rt_rr_firefly_minlum,      0.01f,  "DLSS-RR firefly clamp: absolute luminance floor below which the clamp "
+    RT_CVAR_NOARCH( rt_rr_firefly_minlum,      0.01f,  "DLSS-RR firefly clamp: absolute luminance floor below which the clamp "
                                                 "is skipped (ratios are meaningless in near-black areas)" )
 
-    RT_CVAR( rt_restir_bluenoise,       true,   "ReSTIR: place temporal/spatial reuse taps with tiled blue noise instead "
+    RT_CVAR_NOARCH( rt_restir_bluenoise,       true,   "ReSTIR: place temporal/spatial reuse taps with tiled blue noise instead "
                                                 "of hash white noise. White noise makes the 8 spatial taps clump and "
                                                 "neighbouring pixels reuse overlapping neighbourhoods, correlating their "
                                                 "estimates into low-frequency blotching no denoiser can separate from "
@@ -315,7 +329,7 @@ namespace cvar
                                                 "alike (RR guide 3.5 requires decorrelated reservoirs). Judge with the "
                                                 "Dev 'Unfiltered diffuse direct' view, not the final image." )
 
-    RT_CVAR( rt_shadow_samples,            1,   "Shadow rays per pixel for DIRECT lighting [1..8]. Direct illumination "
+    RT_CVAR_NOARCH( rt_shadow_samples,            1,   "Shadow rays per pixel for DIRECT lighting [1..8]. Direct illumination "
                                                 "multiplies by a single binary visibility ray, so at 1 spp a pixel is "
                                                 "fully lit or fully black — that 0/1 term dominates the raw noise and is "
                                                 "untouched by ReSTIR or by any denoiser tuning. Averaging N points on the "
@@ -323,21 +337,21 @@ namespace cvar
                                                 "Costs N-1 extra rays per pixel. Judge in the Dev 'Unfiltered diffuse "
                                                 "direct' view — the effect should be obvious there if anywhere." )
 
-    RT_CVAR( rt_debug_restir_m,       false,    "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
+    RT_CVAR_NOARCH( rt_debug_restir_m,       false,    "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
                                                 "radiance, as a green ramp (M/32; black = M=1, the worst case). ReSTIR at "
                                                 "1 spp only converges because temporal reuse grows M. Stand still and "
                                                 "watch it brighten, then move: if it goes dark, history is being rejected "
                                                 "and the RAW signal really is noisier in motion — upstream of every "
                                                 "denoiser, so no denoiser tuning can fix it." )
 
-    RT_CVAR( rt_restir_tjitter,        2.0f,   "ReSTIR temporal reuse tap jitter radius, in pixels (stock 2). The jitter "
+    RT_CVAR_NOARCH( rt_restir_tjitter,        2.0f,   "ReSTIR temporal reuse tap jitter radius, in pixels (stock 2). The jitter "
                                                 "decorrelates the tap, but on grazing surfaces a 2px offset moves depth "
                                                 "well past the flat 10%% reuse threshold, so the tap is rejected and M "
                                                 "collapses to 1 exactly where variance is already worst — visible as the "
                                                 "sides going dark under rt_debug_restir_m 1 while moving. 0 = reproject "
                                                 "exactly (what RTXDI does)." )
 
-    RT_CVAR( rt_rr_spechitdist,         true,   "DLSS-RR: feed pInSpecularHitDistance (world distance from the shading "
+    RT_CVAR_NOARCH( rt_rr_spechitdist,         true,   "DLSS-RR: feed pInSpecularHitDistance (world distance from the shading "
                                                 "point to whatever produced the highlight). Specular does not live ON the "
                                                 "surface, so without it RR reprojects highlights as if it did and glossy "
                                                 "surfaces smear/fizzle in motion — the exact symptom, on a full PBR/ORM "
@@ -346,26 +360,26 @@ namespace cvar
                                                 "Shipping RR integrations all provide it." )
 
     // --- Samples per pixel ---------------------------------------------------
-    RT_CVAR( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "
+    RT_CVAR_NOARCH( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "
                                                 "only converges via temporal accumulation, which camera motion destroys — "
                                                 "so the raw signal is what you see while moving. N independent estimates "
                                                 "averaged cut that noise ~1/sqrt(N) at the SOURCE, which is upstream of the "
                                                 "denoiser and so helps A-SVGF and DLSS-RR equally. Costs 1 extra shadow ray "
                                                 "per extra sample. 1 = stock (bit-identical)." )
-    RT_CVAR( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
+    RT_CVAR_NOARCH( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
                                                 "into the initial reservoir. Costs ~4 extra rays per extra sample — the "
                                                 "expensive one. 1 = stock (bit-identical)." )
 
     // --- ReSTIR quality (previously hardcoded) -------------------------------
-    RT_CVAR( rt_restir_initial,            8,   "ReSTIR RIS candidate lights per pixel [1..32] (was hardcoded 8). Traces "
+    RT_CVAR_NOARCH( rt_restir_initial,            8,   "ReSTIR RIS candidate lights per pixel [1..32] (was hardcoded 8). Traces "
                                                 "NO rays — pure light importance-sampling quality, so this is close to "
                                                 "free. Raise before reaching for rt_spp_direct." )
-    RT_CVAR( rt_restir_spatial,            8,   "ReSTIR spatial reuse taps in the direct pass [0..16] (was hardcoded 8). "
+    RT_CVAR_NOARCH( rt_restir_spatial,            8,   "ReSTIR spatial reuse taps in the direct pass [0..16] (was hardcoded 8). "
                                                 "Image reads, no rays." )
-    RT_CVAR( rt_restir_spatial_radius,  30.f,   "Radius in pixels of the ReSTIR spatial reuse taps [1..64] (was hardcoded "
+    RT_CVAR_NOARCH( rt_restir_spatial_radius,  30.f,   "Radius in pixels of the ReSTIR spatial reuse taps [1..64] (was hardcoded "
                                                 "30). Wider samples a broader neighbourhood but gets more taps rejected by "
                                                 "the depth/normal reuse test." )
-    RT_CVAR( rt_restir_mcap,              20,   "Cap on accumulated ReSTIR temporal M, as a multiple of the initial "
+    RT_CVAR_NOARCH( rt_restir_mcap,              20,   "Cap on accumulated ReSTIR temporal M, as a multiple of the initial "
                                                 "reservoir's M [1..64] (was hardcoded 20). Higher = longer history = "
                                                 "smoother when still, slower to react to change. Watch it with "
                                                 "rt_debug_restir_m 1." )
@@ -384,7 +398,7 @@ namespace cvar
                                                 "no throughput/ambient, to separate the two changes. Does not affect the "
                                                 "composed colour, only what RR is told the albedo is." )
 
-    RT_CVAR( rt_rr_guide_min,          0.01f,   "DLSS-RR: floor for the diffuse/specular albedo guides. RR demodulates "
+    RT_CVAR_NOARCH( rt_rr_guide_min,          0.01f,   "DLSS-RR: floor for the diffuse/specular albedo guides. RR demodulates "
                                                 "colour by these (lighting ~ colour/guide) and remodulates with the same "
                                                 "values, so a small floor costs almost nothing — but without it the "
                                                 "division explodes wherever albedo*throughput approaches 0 (dark rooms, "
@@ -394,7 +408,7 @@ namespace cvar
                                                 "0.01 is a wash, higher is worse), but 0.01 is kept because ro_d is "
                                                 "exactly 0 on metallic surfaces, which is a genuine divide-by-zero." )
 
-    RT_CVAR( rt_mip_bias,               0.0f,   "Offset added to the texture mip LOD bias. RTGL uses the DLSS-SR formula "
+    RT_CVAR_NOARCH( rt_mip_bias,               0.0f,   "Offset added to the texture mip LOD bias. RTGL uses the DLSS-SR formula "
                                                 "log2(render/output) - 1.0, which at Balanced is ~-1.77 mips: textures are "
                                                 "sampled far sharper than the render resolution can represent. DLSS-SR "
                                                 "turns that aliasing into detail from a CLEAN image; DLSS-RR gets the same "
