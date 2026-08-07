@@ -131,7 +131,9 @@ namespace cvar
     RT_CVAR( rt_ceiling_lamp_zofs,      8.f,    "drop light this many map units below the ceiling plane" )
     RT_CVAR( rt_ceiling_lamp_off,       0.12f,  "intensity scale when blinking out. >0 keeps the light in ReSTIR/RR "
                                                 "history (0 = hard extinguish — very noisy under DLSS-RR)" )
-    RT_CVAR( rt_ceiling_lamp_fade,      8.f,    "tics to ease between on/off (0 = instant). Softens ReSTIR/RR history cuts" )
+    RT_CVAR( rt_ceiling_lamp_fade,      40.f,   "tics to ease between on/off (0 = instant). Softens ReSTIR/RR history cuts. "
+                                                "Was 8 -- too abrupt an intensity swing for ReSTIR's temporal reservoir "
+                                                "reuse, producing salt localized right at the lamp (2026-08-07)." )
     RT_CVAR( rt_ceiling_lamp_maxspan,   128.f,  "skip analytic ceiling lamps if sector AABB width OR height exceeds this "
                                                 "(map units). Large SFLATAQ halls only have edge texture blobs — a center "
                                                 "sphere looks like a fake mid-ceiling light (MAP02)" )
