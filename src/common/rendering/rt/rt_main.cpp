@@ -320,6 +320,39 @@ namespace cvar
                                                 "sides going dark under rt_debug_restir_m 1 while moving. 0 = reproject "
                                                 "exactly (what RTXDI does)." )
 
+    RT_CVAR( rt_rr_spechitdist,         true,   "DLSS-RR: feed pInSpecularHitDistance (world distance from the shading "
+                                                "point to whatever produced the highlight). Specular does not live ON the "
+                                                "surface, so without it RR reprojects highlights as if it did and glossy "
+                                                "surfaces smear/fizzle in motion — the exact symptom, on a full PBR/ORM "
+                                                "texture set. Was nullptr because the old binding (FB_DEPTH_WORLD) was the "
+                                                "primary-hit CAMERA distance, the wrong signal; this is the right one. "
+                                                "Shipping RR integrations all provide it." )
+
+    // --- Samples per pixel ---------------------------------------------------
+    RT_CVAR( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "
+                                                "only converges via temporal accumulation, which camera motion destroys — "
+                                                "so the raw signal is what you see while moving. N independent estimates "
+                                                "averaged cut that noise ~1/sqrt(N) at the SOURCE, which is upstream of the "
+                                                "denoiser and so helps A-SVGF and DLSS-RR equally. Costs 1 extra shadow ray "
+                                                "per extra sample. 1 = stock (bit-identical)." )
+    RT_CVAR( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
+                                                "into the initial reservoir. Costs ~4 extra rays per extra sample — the "
+                                                "expensive one. 1 = stock (bit-identical)." )
+
+    // --- ReSTIR quality (previously hardcoded) -------------------------------
+    RT_CVAR( rt_restir_initial,            8,   "ReSTIR RIS candidate lights per pixel [1..32] (was hardcoded 8). Traces "
+                                                "NO rays — pure light importance-sampling quality, so this is close to "
+                                                "free. Raise before reaching for rt_spp_direct." )
+    RT_CVAR( rt_restir_spatial,            8,   "ReSTIR spatial reuse taps in the direct pass [0..16] (was hardcoded 8). "
+                                                "Image reads, no rays." )
+    RT_CVAR( rt_restir_spatial_radius,  30.f,   "Radius in pixels of the ReSTIR spatial reuse taps [1..64] (was hardcoded "
+                                                "30). Wider samples a broader neighbourhood but gets more taps rejected by "
+                                                "the depth/normal reuse test." )
+    RT_CVAR( rt_restir_mcap,              20,   "Cap on accumulated ReSTIR temporal M, as a multiple of the initial "
+                                                "reservoir's M [1..64] (was hardcoded 20). Higher = longer history = "
+                                                "smoother when still, slower to react to change. Watch it with "
+                                                "rt_debug_restir_m 1." )
+
     RT_CVAR( rt_rr_reset_on_lightcut,   true,   "DLSS-RR: flush temporal history (InReset) on an abrupt light "
                                                 "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
                                                 "stabilized history. See also rt_rr_reset_on_dynlight." )
@@ -4873,6 +4906,13 @@ void RTFrameBuffer::RT_DrawFrame()
         .shadowSamples                      = uint32_t( std::clamp( int( cvar::rt_shadow_samples ), 1, 8 ) ),
         .debugRestirM                       = static_cast< RgBool32 >( bool( cvar::rt_debug_restir_m ) ),
         .restirTemporalJitter               = std::clamp( float( cvar::rt_restir_tjitter ), 0.0f, 8.0f ),
+        .rrSpecularHitDistance              = static_cast< RgBool32 >( bool( cvar::rt_rr_spechitdist ) ),
+        .directSamples                      = uint32_t( std::clamp( int( cvar::rt_spp_direct ), 1, 8 ) ),
+        .indirectSamples                    = uint32_t( std::clamp( int( cvar::rt_spp_indirect ), 1, 8 ) ),
+        .restirInitialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_initial ), 1, 32 ) ),
+        .restirSpatialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_spatial ), 0, 16 ) ),
+        .restirSpatialRadius                = std::clamp( float( cvar::rt_restir_spatial_radius ), 1.0f, 64.0f ),
+        .restirTemporalMCap                 = uint32_t( std::clamp( int( cvar::rt_restir_mcap ), 1, 64 ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
