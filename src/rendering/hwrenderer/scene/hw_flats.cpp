@@ -335,6 +335,7 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 
 	state.SetNormal(plane.plane.Normal().X, plane.plane.Normal().Z, plane.plane.Normal().Y);
 
+	rtstate.m_sectorLightColor = FVector3{ Colormap.LightColor.r / 255.0f, Colormap.LightColor.g / 255.0f, Colormap.LightColor.b / 255.0f };
 	SetColor(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), Colormap, alpha);
 	SetFog(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), &Colormap, false);
 	state.SetObjectColor(FlatColor | 0xff000000);

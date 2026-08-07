@@ -386,6 +386,17 @@ namespace cvar
 
     // NOT archived: this is a bisect handle for the worm-artifact regression.
     // A value left over from an A/B would silently decide image quality later.
+    RT_CVAR_NOARCH( rt_restir_indir_antilag, 1, "Apply the A-SVGF antilag gate to INDIRECT ReSTIR "
+                                                "temporal reuse [0/1]. The gradient buffer that gate reads "
+                                                "(framebufDISGradientHistory) is written ONLY by "
+                                                "CmASVGFGradientAtrous, which runs only inside "
+                                                "Denoiser::Denoise() — and DLSS-RR skips Denoise() in favour of "
+                                                "ComposeNoisy(). So under RR the gate tests a buffer nothing "
+                                                "updates: either it is a dead no-op, or it rejects GI temporal "
+                                                "reuse every frame, leaving indirect lighting at 1 spp with no "
+                                                "accumulation (surfaces fizzle; only the denoiser's own history "
+                                                "hides it, which motion removes). 0 = ignore the gate." )
+
     RT_CVAR_NOARCH( rt_rr_guide_mode,      1,   "DLSS-RR: what the albedo guides contain. RR uses them for edge detection "
                                                 "and reprojection, not just demodulation, so they want to be SMOOTH "
                                                 "material properties. 0 = raw albedo/F0 (what shipped before 2026-08-05, "
@@ -2089,10 +2100,33 @@ private:
             return a;
         };
 
+        const char* rtMapName = RT_GetMapName();
+        const bool isRetributionMap02 =
+            rt_mod_compat && rtMapName && strstr( rtMapName, "map02" ) != nullptr;
+        const bool isBlueSector =
+            isRetributionMap02 && forceWorldWhiteRgb &&
+            rtstate.m_sectorLightColor.X <= 0.08 &&
+            rtstate.m_sectorLightColor.Y >= 0.25 &&
+            rtstate.m_sectorLightColor.Y <= 0.40 &&
+            rtstate.m_sectorLightColor.Z >= 0.90;
+
         RgColor4DPacked32 primColor;
         if( forceWorldWhiteRgb )
         {
-            primColor = rt.rgUtilPackColorFloat4D( 1.0f, 1.0f, 1.0f, l_spriteAlpha() );
+            // MAP02's blue armor room uses a strong sector lightcolor (0x0050FF).
+            // Restore a bounded blue surface filter only for those world primitives.
+            // This is not a center point light and cannot recreate ceiling blinking.
+            if( isBlueSector )
+            {
+                constexpr float blueTintR = 0.35f;
+                constexpr float blueTintG = 0.58f;
+                constexpr float blueTintB = 1.0f;
+                primColor = rt.rgUtilPackColorFloat4D( blueTintR, blueTintG, blueTintB, l_spriteAlpha() );
+            }
+            else
+            {
+                primColor = rt.rgUtilPackColorFloat4D( 1.0f, 1.0f, 1.0f, l_spriteAlpha() );
+            }
         }
         else if( forceSpriteUnlitAlbedo )
         {
@@ -4987,6 +5021,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .restirTemporalMCap                 = uint32_t( std::clamp( int( cvar::rt_restir_mcap ), 1, 64 ) ),
         .rrGuideMin                         = std::clamp( float( cvar::rt_rr_guide_min ), 0.0f, 1.0f ),
         .rrGuideMode                        = uint32_t( std::clamp( int( cvar::rt_rr_guide_mode ), 0, 2 ) ),
+        .restirIndirAntilag                 = static_cast< RgBool32 >( bool( cvar::rt_restir_indir_antilag ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{

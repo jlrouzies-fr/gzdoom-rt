@@ -267,6 +267,7 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 	float absalpha = fabsf(alpha);
 	if (lightlist == nullptr)
 	{
+		rtstate.m_sectorLightColor = FVector3{ Colormap.LightColor.r / 255.0f, Colormap.LightColor.g / 255.0f, Colormap.LightColor.b / 255.0f };
 		if (type != RENDERWALL_M2SNF) SetFog(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), &Colormap, RenderStyle == STYLE_Add);
 		SetColor(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), Colormap, absalpha);
 		RenderWall(state, rflags);
@@ -289,6 +290,7 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 				thiscm.FadeColor = Colormap.FadeColor;
 				thiscm.FogDensity = Colormap.FogDensity;
 				CopyFrom3DLight(thiscm, &(*lightlist)[i]);
+				rtstate.m_sectorLightColor = FVector3{ thiscm.LightColor.r / 255.0f, thiscm.LightColor.g / 255.0f, thiscm.LightColor.b / 255.0f };
 				SetColor(state, di->Level, di->lightmode, thisll, rel, false, thiscm, absalpha);
 				if (type != RENDERWALL_M2SNF) SetFog(state, di->Level, di->lightmode, thisll, rel, false, &thiscm, RenderStyle == STYLE_Add);
 				SetSplitPlanes(state, (*lightlist)[i].plane, lowplane);

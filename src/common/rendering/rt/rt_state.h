@@ -241,6 +241,9 @@ struct FRtState
 
     int m_lightlevel{ 255 };
 
+    // Active sector tint consumed by the narrowly scoped RT blue-room fix.
+    FVector3 m_sectorLightColor{ 1.0, 1.0, 1.0 };
+
 private:
     uint32_t m_state{ 0 };             // RtPrim flags
     uint64_t m_curUniqueID{ 0 };       // to identify an object between frames
