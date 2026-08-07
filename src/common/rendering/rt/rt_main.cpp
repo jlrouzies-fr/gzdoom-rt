@@ -280,6 +280,16 @@ namespace cvar
                                                 "(guards against false positives in near-black areas)" )
     RT_CVAR( rt_rr_disocc_show,         false,  "DLSS-RR disocclusion: debug — tint fired tiles red in final image" )
 
+    RT_CVAR( rt_rr_firefly,             0.0f,   "DLSS-RR: neighbourhood firefly clamp on the noisy lighting before RR. "
+                                                "A pixel is scaled down only if it out-shines the brightest of its 4 "
+                                                "neighbours by this factor. Lower = more aggressive. 0 = off (default). "
+                                                "A/B'd 2026-08-07 at 4.0/2.0: barely reduced motion noise and ADDED a "
+                                                "trail behind the weapon sprite — suppressing outliers removes the local "
+                                                "contrast RR uses to detect change, so it over-trusts history. Kept as a "
+                                                "knob, off by default; it trades noise for ghosting rather than fixing it." )
+    RT_CVAR( rt_rr_firefly_minlum,      0.01f,  "DLSS-RR firefly clamp: absolute luminance floor below which the clamp "
+                                                "is skipped (ratios are meaningless in near-black areas)" )
+
     RT_CVAR( rt_rr_reset_on_lightcut,   true,   "DLSS-RR: flush temporal history (InReset) on an abrupt light "
                                                 "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
                                                 "stabilized history. See also rt_rr_reset_on_dynlight." )
@@ -4827,6 +4837,8 @@ void RTFrameBuffer::RT_DrawFrame()
         .rrDisocclusionThreshold            = std::max( float( cvar::rt_rr_disocc_ratio ), 1.0f ),
         .rrDisocclusionMinDelta             = std::max( float( cvar::rt_rr_disocc_mindelta ), 0.0f ),
         .rrDisocclusionShowMask             = static_cast< RgBool32 >( bool( cvar::rt_rr_disocc_show ) ),
+        .rrFireflyThreshold                 = std::max( float( cvar::rt_rr_firefly ), 0.0f ),
+        .rrFireflyMinLum                    = std::max( float( cvar::rt_rr_firefly_minlum ), 0.0f ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
