@@ -2551,7 +2551,15 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
     }
     else if( flags & RG_MESSAGE_SEVERITY_WARNING )
     {
-        DPrintf( DMSG_WARNING, "%s\n", pMessage );
+        // Printf, not DPrintf: DPrintf( DMSG_WARNING, ... ) is additionally
+        // gated behind gzdoom's `developer` cvar being >= 2, which was a third
+        // independent layer of silence on top of RgInstanceCreateInfo::
+        // allowedMessages and RTGL's own g_printSeverity. Renderer warnings
+        // (DLSS-RR failing to initialise, denoiser path changing) must reach
+        // the console and the logfile unconditionally -- muting them by
+        // default is what hid the compiled-out-RR bug for an entire
+        // investigation.
+        Printf( "%s\n", pMessage );
     }
     else if( flags & RG_MESSAGE_SEVERITY_INFO )
     {
@@ -2715,11 +2723,18 @@ Win32RTVideo::Win32RTVideo()
         .pOverrideFolderPath = "rt/",
 
         .pfnPrint = RT_Print, .pUserPrintData = nullptr,
+        // WARNING and ERROR are ALWAYS allowed; -rtdebug only adds the chatty
+        // VERBOSE/INFO stream. This used to be `0` without -rtdebug, i.e. RTGL
+        // failures were muted by default -- which is precisely how "DLSS-RR was
+        // compiled out of RTGL1.dll" survived undetected (every DLSSRR: failure
+        // string was suppressed), and how a null nvDlssRr still silently falls
+        // back to A-SVGF today. A renderer must never swallow its own errors.
         .allowedMessages =
             Args->CheckParm( "-rtdebug" )
                 ? RgMessageSeverityFlags{ RG_MESSAGE_SEVERITY_VERBOSE | RG_MESSAGE_SEVERITY_INFO |
                                           RG_MESSAGE_SEVERITY_WARNING | RG_MESSAGE_SEVERITY_ERROR }
-                : RgMessageSeverityFlags{ 0 },
+                : RgMessageSeverityFlags{ RG_MESSAGE_SEVERITY_WARNING |
+                                          RG_MESSAGE_SEVERITY_ERROR },
 
         .primaryRaysMaxAlbedoLayers = 1, .indirectIlluminationMaxAlbedoLayers = 1,
 
@@ -3178,6 +3193,30 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
         cvar::rt_upscale_dlss = 2;
     }
 
+    // DLSS and FSR2 both write pDst->upscaleTechnique and the FSR switch below
+    // runs *second*, so a non-zero rt_upscale_fsr2 silently overwrites the DLSS
+    // choice. rayReconstruction is still set afterwards (it only tests
+    // nvDlss != 0), so gzdoom would hand RTGL "upscaler=FSR2 + RR=on" -- a
+    // contradiction RTGL resolves by quietly dropping RR and running A-SVGF.
+    //
+    // rt_upscale_fsr2 is CVAR_ARCHIVE like every RT_CVAR, so a stale 2 in the
+    // ini disabled Ray Reconstruction across every launch while rt_rayreconstr
+    // still read 1 (2026-08-07). DLSS wins when both are set; RR depends on it.
+    if( nvDlss != 0 && amdFsr != 0 )
+    {
+        static bool s_warned = false;
+        if( !s_warned )
+        {
+            s_warned = true;
+            Printf( "RT: both rt_upscale_dlss (%d) and rt_upscale_fsr2 (%d) are set; "
+                    "they share one upscaler slot. Using DLSS and ignoring FSR2 "
+                    "(Ray Reconstruction requires DLSS). Set rt_upscale_fsr2 0 to silence.\n",
+                    nvDlss,
+                    amdFsr );
+        }
+        amdFsr = 0;
+    }
+
     switch( nvDlss )
     {
         case 1:
@@ -3271,8 +3310,13 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
     }
 
     // Native RR replaces A-SVGF + DLSS-SR; Frame Gen is out of scope for MVP.
+    // Gate on the technique that actually survived both switches above, not on
+    // nvDlss alone: RTGL drops rayReconstruction whenever the upscaler isn't
+    // DLSS (RenderResolutionHelper::Setup), so requesting RR alongside any
+    // other upscaler is a contradiction that silently costs the denoiser.
     pDst->rayReconstruction = 0;
-    if( wantNativeRr && nvDlss != 0 )
+    if( wantNativeRr && nvDlss != 0 &&
+        pDst->upscaleTechnique == RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS )
     {
         pDst->rayReconstruction = 1;
         pDst->frameGeneration   = RG_FRAME_GENERATION_MODE_OFF;
@@ -3288,6 +3332,43 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
     g_rr_dbg_wantNative  = wantNativeRr;
     g_rr_dbg_nvDlss      = nvDlss;
     g_rr_dbg_rrRequested = ( pDst->rayReconstruction != 0 );
+
+    // Report the decision the FIRST time it is actually computed, and on every
+    // later change. Running `rt_rr_status` from the command line reads the
+    // cached globals above before this function has ever run, so it reports
+    // startup defaults (DLSS2 available = NO) that look like a real negative --
+    // another way this decision chain lied. The failure reason from
+    // rgUtilIsUpscaleTechniqueAvailable is printed here because nothing else
+    // ever surfaced it at frame time.
+    {
+        static bool s_have = false;
+        static int  s_prev = -1;
+
+        const int state = ( int( bool( cvar::rt_available_dlss2 ) ) << 0 ) |
+                          ( int( bool( cvar::rt_available_dlss3fg ) ) << 1 ) |
+                          ( int( wantNativeRr ) << 2 ) |
+                          ( int( pDst->rayReconstruction != 0 ) << 3 ) | ( nvDlss << 4 );
+
+        if( !s_have || s_prev != state )
+        {
+            s_have = true;
+            s_prev = state;
+
+            Printf( "RT upscale/RR decision: DLSS2=%s DLSS3FG=%s nvDlss=%d "
+                    "wantNativeRr=%s -> rayReconstruction=%s\n",
+                    cvar::rt_available_dlss2 ? "yes" : "NO",
+                    cvar::rt_available_dlss3fg ? "yes" : "NO",
+                    nvDlss,
+                    wantNativeRr ? "yes" : "no",
+                    pDst->rayReconstruction ? "ON" : "OFF" );
+
+            if( !cvar::rt_available_dlss2 && cvar::rt_failreason_dlss2 )
+            {
+                Printf( "  DLSS2 unavailable, reason: %s\n",
+                        static_cast< const char* >( cvar::rt_failreason_dlss2 ) );
+            }
+        }
+    }
 
     pDst->sharpenTechnique = RT_GetSharpenTechniqueFromCvar( amdFsr || nvDlss );
 }
