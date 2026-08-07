@@ -180,7 +180,9 @@ namespace cvar
     RT_CVAR( rt_ceiling_lamp_debug,     false,  "periodic console dump of ceiling inset lamp uploads + cyan marker spheres" )
     RT_CVAR( rt_wall_tex_debug,         false,  "periodic console dump of sidedef texture names + sector lightlevel near the "
                                                 "camera. Used to name wall light-strip fixtures so they can be matched by "
-                                                "texture instead of by map position" )
+                                                "texture instead of by map position. Covers sidedefs AND sector flats — Doom 64 "
+                                                "puts fixtures on thin sector steps too, which a sidedef-only walk cannot see" )
+    RT_CVAR( rt_wall_tex_debug_dist,    256.f,  "search radius in map units for rt_wall_tex_debug" )
 
     RT_CVAR( rt_wall_strips,            true,   "upload analytic lights along Doom 64 wall light strips (SPACEAR* bulb trim). "
                                                 "RTGL1 emissive surfaces are NOT light sources — emission is only collected "
@@ -191,9 +193,10 @@ namespace cvar
                                                 "Spherical, not polygonal: RgLightPolygonalEXT exists in RTGL1's header but "
                                                 "LightManager.cpp compiles it out behind #if TRIANGLE_LIGHTS and hard-errors "
                                                 "on upload (2026-08-07)" )
-    RT_CVAR( rt_wall_strip_intensity,   250.f,  "RT intensity per strip segment. Many segments per corridor, so keep it below "
-                                                "ceiling lamps (700); roughly a hanging tech lamp (220) reads about right for "
-                                                "bulb trim" )
+    RT_CVAR( rt_wall_strip_intensity,   500.f,  "RT intensity per strip segment. 120 and 250 both read as no light at all: the "
+                                                "strip sits flush against the wall it lights, so most of the sphere is occluded "
+                                                "and the visible contribution is far below what the same number buys a ceiling "
+                                                "lamp hanging in open air. Confirmed by eye at 500 (2026-08-07)" )
     RT_CVAR( rt_wall_strip_minlight,    140.f,  "skip strips in sectors dimmer than this: the same trim texture is used in "
                                                 "unlit maintenance areas where the bulbs are meant to be dead" )
     RT_CVAR( rt_wall_strip_seglen,      64.f,   "map units between strip lights. Keep at or below rt_wall_strip_radius in map "
@@ -205,6 +208,24 @@ namespace cvar
     RT_CVAR( rt_wall_strip_max,         128,    "hard cap on strip lights per frame, so a large open map cannot flood the light "
                                                 "list and wreck ReSTIR/RR temporal reuse" )
     RT_CVAR( rt_wall_strip_debug,       false,  "periodic console dump of wall strip light uploads + rejection tally" )
+
+    RT_CVAR( rt_ceiling_edge_lamps,     true,   "place lights around the PERIMETER of lamp ceilings (SFLATAS/SFLATAQ/SFLATAP/"
+                                                "SPORT*) instead of one sphere at the centre. rt_ceiling_lamps skips any sector "
+                                                "wider than rt_ceiling_lamp_maxspan precisely because a centre sphere in a big "
+                                                "hall looks like a fake mid-ceiling light — but those halls carry their bulbs as "
+                                                "blobs along the flat's EDGES, so skipping them left the bulbs casting nothing. "
+                                                "Independent of rt_ceiling_lamps so the centre-sphere path can stay off "
+                                                "(2026-08-07)" )
+    RT_CVAR( rt_ceiling_edge_intensity, 500.f,  "RT intensity per ceiling edge lamp. High for the same reason as wall strips: the "
+                                                "light sits flush against the ceiling and wall it lights, so most of the sphere is "
+                                                "occluded" )
+    RT_CVAR( rt_ceiling_edge_seglen,    64.f,   "map units between ceiling edge lamps" )
+    RT_CVAR( rt_ceiling_edge_radius,    0.35f,  "RT source radius in meters for ceiling edge lamps" )
+    RT_CVAR( rt_ceiling_edge_zofs,      10.f,   "drop edge lamps this many map units below the ceiling plane" )
+    RT_CVAR( rt_ceiling_edge_inset,     10.f,   "pull edge lamps this many map units in from the wall, so they are not embedded "
+                                                "in the geometry they light" )
+    RT_CVAR( rt_ceiling_edge_max,       160,    "hard cap on ceiling edge lamps per frame" )
+    RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads + rejection tally" )
     RT_CVAR( rt_wall_strip_debug_marks, false,  "bright magenta marker spheres at each strip light position. Separate from "
                                                 "rt_wall_strip_debug: if the markers are visible the placement is fine and the "
                                                 "problem is intensity; if they are not, the lights are occluded by geometry" )
@@ -225,8 +246,14 @@ namespace cvar
                                                 "zero incident light times red albedo is still black. Emitting from the surface "
                                                 "is the right shape for this — a sector-center analytic sphere instead reads as a "
                                                 "light bulb floating in the corner" )
-    RT_CVAR( rt_sector_emis_minlight,   160.f,  "sector lightlevel below which surfaces do not self-emit [0..255]. Keeps ordinary "
-                                                "mid-lit walls inert so only the map's actual bright light features glow" )
+    RT_CVAR( rt_sector_emis_minlight,   160.f,  "absolute floor for self-emission [0..255]. Only a floor — the effective threshold "
+                                                "is max(this, map median + rt_sector_emis_margin), so a uniformly dim map does not "
+                                                "start glowing just because its median is low" )
+    RT_CVAR( rt_sector_emis_margin,     40.f,   "how far above the MAP'S OWN median sector lightlevel a surface must be to count as "
+                                                "a light feature. This is what stops the flood: 180 means 'glowing panel' in a dark "
+                                                "corridor and 'ordinary lit room' on a bright deck, so an absolute threshold either "
+                                                "misses the panels or turns every wall in the level into a light (2026-08-07)" )
+    RT_CVAR( rt_sector_emis_debug,      false,  "print the computed self-emission threshold and the map median it came from" )
 
     RT_CVAR( rt_sector_tint_lights,     0.85f,  "how much of a sector's Doom 64 colormap hue tints the analytic lights inside it "
                                                 "(0 = hardcoded warm white everywhere, 1 = fully saturated sector hue). This is "
@@ -654,9 +681,18 @@ static bool   g_rt_lightcut    = false;
 static double g_rt_lastresetat = -1e9;
 // Which setter raised g_rt_lightcut, for rt_rr_reset_debug. Static string only.
 static const char* g_rt_lightcut_why = "?";
+// Self-emission threshold for rt_sector_emis, derived from THIS map's own lightlevel
+// distribution rather than an absolute number. 180 means "glowing panel" in a dark
+// corridor and "ordinary lit room" in a bright engineering deck, so a fixed global
+// threshold cannot mean the right thing in both — it either misses the panels or makes
+// every wall in the level a light. Recomputed on map change; starts closed (nothing
+// emits) so a frame before the first update cannot flash the whole map bright.
+static float g_sectorEmisThreshold = 255.f;
+
 constexpr uint64_t CeilingLampId_Base = 0xB0000000ull;
 constexpr uint64_t HangLampId_Base    = 0xC0000000ull;
 constexpr uint64_t WallStripId_Base   = 0xD0000000ull;
+constexpr uint64_t CeilingEdgeId_Base = 0xE0000000ull;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 
@@ -2211,7 +2247,8 @@ private:
             }
 
             const float strength = float{ cvar::rt_sector_emis };
-            const float minLight = std::clamp( float{ cvar::rt_sector_emis_minlight }, 0.f, 254.f );
+            // Map-relative, not absolute — see RT_UpdateSectorEmisThreshold.
+            const float minLight = std::clamp( g_sectorEmisThreshold, 0.f, 254.f );
             if( strength <= 0.f )
             {
                 return 0.f;
@@ -4785,6 +4822,61 @@ static bool RT_IsHangingTechLampActor( AActor* mo )
     return false;
 }
 
+// A light feature is a surface much brighter than the rest of ITS map, not one over a
+// fixed number. Take the map's median sector lightlevel and require a margin above it,
+// with the absolute floor still applied so a uniformly dim map does not start glowing.
+void RT_UpdateSectorEmisThreshold()
+{
+    static const void* s_cachedLevel   = nullptr;
+    static unsigned    s_cachedSectors = 0;
+    static float       s_cachedMargin  = -1.f;
+    static float       s_cachedFloor   = -1.f;
+
+    if( !primaryLevel || primaryLevel->sectors.Size() == 0 )
+    {
+        g_sectorEmisThreshold = 255.f;
+        return;
+    }
+
+    const float margin   = float{ cvar::rt_sector_emis_margin };
+    const float absFloor = float{ cvar::rt_sector_emis_minlight };
+
+    // Recompute only on map change or when the tuning cvars move.
+    if( s_cachedLevel == primaryLevel && s_cachedSectors == primaryLevel->sectors.Size() &&
+        s_cachedMargin == margin && s_cachedFloor == absFloor )
+    {
+        return;
+    }
+
+    std::vector< int > levels;
+    levels.reserve( primaryLevel->sectors.Size() );
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
+    {
+        levels.push_back( primaryLevel->sectors[ i ].lightlevel );
+    }
+
+    const size_t mid = levels.size() / 2;
+    std::nth_element( levels.begin(), levels.begin() + mid, levels.end() );
+    const float median = float( levels[ mid ] );
+
+    g_sectorEmisThreshold = std::max( absFloor, median + margin );
+
+    s_cachedLevel   = primaryLevel;
+    s_cachedSectors = primaryLevel->sectors.Size();
+    s_cachedMargin  = margin;
+    s_cachedFloor   = absFloor;
+
+    if( cvar::rt_sector_emis_debug )
+    {
+        Printf( "rt_sector_emis: map median lightlevel=%.0f margin=%.0f floor=%.0f "
+                "-> only sectors above %.0f self-emit\n",
+                median,
+                margin,
+                absFloor,
+                g_sectorEmisThreshold );
+    }
+}
+
 static bool RT_IsWallStripLampTexture( const char* name )
 {
     if( !name || !*name )
@@ -4829,10 +4921,18 @@ void RT_UploadWallStripLights()
     int rejBand     = 0;
     int rejShort    = 0;
 
-    double sampleX   = 0.0;
-    double sampleY   = 0.0;
-    double sampleZ   = 0.0;
-    double sampleSec = 0.0;
+    // Placement of the lights actually near the camera, not one arbitrary sample:
+    // "the fixture matched" and "the light is where the bulbs are" are different claims,
+    // and only the second explains a strip that is found but still looks unlit.
+    struct Placed
+    {
+        double dist;
+        double x, y, z;
+        double bandLow, bandHigh;
+        int    part;
+    };
+    std::vector< Placed > placed;
+    const DVector3        vpos = r_viewpoint.Pos;
 
     for( unsigned i = 0; i < primaryLevel->lines.Size() && uploaded < maxLights; i++ )
     {
@@ -5013,14 +5113,17 @@ void RT_UploadWallStripLights()
                         RG_CHECK( mr );
                     }
 
-                    if( uploaded == 0 )
+                    if( cvar::rt_wall_strip_debug )
                     {
-                        // Sample placement, so "uploaded>0 but nothing visible" can be told
-                        // apart from a bad position without another code change.
-                        sampleX   = mx + nx * ofs;
-                        sampleY   = my + ny * ofs;
-                        sampleZ   = zMid;
-                        sampleSec = double( thisSec->lightlevel );
+                        const double lx = mx + nx * ofs;
+                        const double ly = my + ny * ofs;
+                        placed.push_back( { std::hypot( lx - vpos.X, ly - vpos.Y ),
+                                            lx,
+                                            ly,
+                                            zMid,
+                                            zLow,
+                                            zHigh,
+                                            part } );
                     }
                     uploaded++;
                 }
@@ -5043,11 +5146,153 @@ void RT_UploadWallStripLights()
                     rejShort,
                     peak,
                     float{ cvar::rt_wall_strip_radius } );
-            Printf( "  sample light xyz=(%.0f,%.0f,%.0f) sector lightlevel=%.0f\n",
-                    sampleX,
-                    sampleY,
-                    sampleZ,
-                    sampleSec );
+            Printf( "  viewer z=%.0f — strip lights nearest the camera:\n", vpos.Z );
+
+            std::sort( placed.begin(), placed.end(), []( const Placed& a, const Placed& b ) {
+                return a.dist < b.dist;
+            } );
+
+            static const char* partName[ 3 ] = { "top", "mid", "bot" };
+            for( size_t n = 0; n < std::min< size_t >( 6, placed.size() ); n++ )
+            {
+                const Placed& p = placed[ n ];
+                Printf( "    d=%.0f %s xyz=(%.0f,%.0f,%.0f) band=%.0f..%.0f (%.0f tall)\n",
+                        p.dist,
+                        partName[ p.part ],
+                        p.x,
+                        p.y,
+                        p.z,
+                        p.bandLow,
+                        p.bandHigh,
+                        p.bandHigh - p.bandLow );
+            }
+        }
+    }
+}
+
+// Doom 64 lamp ceilings put their bulbs as blobs around the EDGE of the flat, not in the
+// middle. RT_UploadCeilingInsetLamps answers that by putting one sphere at the sector
+// centre, which only reads correctly in a small booth — so it skips anything wider than
+// rt_ceiling_lamp_maxspan, and every large hall's bulbs end up casting nothing at all.
+//
+// Trace the sector perimeter instead. Works for both shapes: a ring of lights around a
+// small square ceiling panel, and a run of lights along a long corridor's edge.
+void RT_UploadCeilingEdgeLamps()
+{
+    if( !cvar::rt_ceiling_edge_lamps || !primaryLevel )
+    {
+        return;
+    }
+
+    const float peak      = std::max( 0.f, float{ cvar::rt_ceiling_edge_intensity } );
+    const float segLen    = std::max( 16.f, float{ cvar::rt_ceiling_edge_seglen } );
+    const float srcRadius = std::max( 0.01f, float{ cvar::rt_ceiling_edge_radius } );
+    const float zOfs      = float{ cvar::rt_ceiling_edge_zofs };
+    const float inset     = float{ cvar::rt_ceiling_edge_inset };
+    const int   maxLights = std::max( 0, int{ cvar::rt_ceiling_edge_max } );
+    if( peak <= 0.01f || maxLights <= 0 )
+    {
+        return;
+    }
+
+    int uploaded    = 0;
+    int lampCeils   = 0;
+    uint64_t idSeed = 0;
+
+    for( unsigned i = 0; i < primaryLevel->sectors.Size() && uploaded < maxLights; i++ )
+    {
+        const sector_t& sector = primaryLevel->sectors[ i ];
+
+        auto* gtex = TexMan.GetGameTexture( sector.GetTexture( sector_t::ceiling ), true );
+        if( !gtex || !RT_IsCeilingInsetLampTexture( gtex->GetName().GetChars() ) )
+        {
+            continue;
+        }
+        lampCeils++;
+
+        for( unsigned li = 0; li < sector.Lines.Size() && uploaded < maxLights; li++ )
+        {
+            const line_t* line = sector.Lines[ li ];
+            if( !line || !line->v1 || !line->v2 )
+            {
+                continue;
+            }
+
+            const double x1 = line->v1->fX();
+            const double y1 = line->v1->fY();
+            const double x2 = line->v2->fX();
+            const double y2 = line->v2->fY();
+
+            const double len = std::hypot( x2 - x1, y2 - y1 );
+            if( len < 1.0 )
+            {
+                continue;
+            }
+
+            const int segs = std::max( 1, int( std::ceil( len / segLen ) ) );
+
+            for( int sg = 0; sg < segs && uploaded < maxLights; sg++ )
+            {
+                const double t  = ( double( sg ) + 0.5 ) / segs;
+                const double px = x1 + ( x2 - x1 ) * t;
+                const double py = y1 + ( y2 - y1 ) * t;
+
+                // Pull inward toward the sector centre so the lamp is not embedded in the
+                // wall. Same lesson as the wall strips: a winding-convention normal put
+                // every light inside solid geometry, where it lit nothing.
+                double towardX = double( sector.centerspot.X ) - px;
+                double towardY = double( sector.centerspot.Y ) - py;
+                const double tlen = std::hypot( towardX, towardY );
+                if( tlen > 0.001 )
+                {
+                    towardX /= tlen;
+                    towardY /= tlen;
+                }
+
+                const double lx = px + towardX * inset;
+                const double ly = py + towardY * inset;
+                const double lz =
+                    sector.ceilingplane.ZatPoint( DVector2{ lx, ly } ) - zOfs;
+
+                const FVector3 hue = RT_SectorHue( sector.Colormap.LightColor,
+                                                   float{ cvar::rt_sector_tint_lights } );
+
+                auto sph = RgLightSphericalEXT{
+                    .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                    .pNext     = nullptr,
+                    .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
+                    .intensity = peak,
+                    .position  = { float( lx ) * ONEGAMEUNIT_IN_METERS,
+                                   float( ly ) * ONEGAMEUNIT_IN_METERS,
+                                   float( lz ) * ONEGAMEUNIT_IN_METERS },
+                    .radius    = srcRadius,
+                };
+
+                auto info = RgLightInfo{
+                    .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                    .pNext        = &sph,
+                    .uniqueID     = CeilingEdgeId_Base + idSeed,
+                    .isExportable = false,
+                };
+                idSeed++;
+
+                RgResult r = rt.rgUploadLight( &info );
+                RG_CHECK( r );
+                uploaded++;
+            }
+        }
+    }
+
+    if( cvar::rt_ceiling_edge_debug )
+    {
+        static int s_tick;
+        if( ( ++s_tick % 60 ) == 0 )
+        {
+            Printf( "rt_ceiling_edge: uploaded=%d (cap %d) from %d lamp ceiling(s) | I=%.0f\n",
+                    uploaded,
+                    maxLights,
+                    lampCeils,
+                    peak );
         }
     }
 }
@@ -5068,8 +5313,9 @@ void RT_DebugNearbyWallTextures()
         return;
     }
 
-    const DVector3 vp      = r_viewpoint.Pos;
-    const double   maxDist = 256.0;
+    const DVector3 vp = r_viewpoint.Pos;
+    const double   maxDist =
+        std::max( 32.0, double( float{ cvar::rt_wall_tex_debug_dist } ) );
 
     struct Hit
     {
@@ -5078,8 +5324,43 @@ void RT_DebugNearbyWallTextures()
         int         lightlevel;
         int         part;
         double      x, y;
+        double      zLow, zHigh;
     };
     std::vector< Hit > hits;
+
+    // Flats too: Doom 64 puts light fixtures on thin sector steps whose floor/ceiling
+    // carry the lamp texture, and a sidedef-only dump cannot see those at all.
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
+    {
+        const sector_t& sec = primaryLevel->sectors[ i ];
+
+        const double cx = double( sec.centerspot.X );
+        const double cy = double( sec.centerspot.Y );
+        const double d  = std::hypot( cx - vp.X, cy - vp.Y );
+        if( d > maxDist )
+        {
+            continue;
+        }
+
+        for( int pl = 0; pl < 2; pl++ )
+        {
+            auto* gtex = TexMan.GetGameTexture(
+                sec.GetTexture( pl == 0 ? sector_t::floor : sector_t::ceiling ), true );
+            if( !gtex )
+            {
+                continue;
+            }
+            const char* nm = gtex->GetName().GetChars();
+            if( !nm || !*nm )
+            {
+                continue;
+            }
+            const double zPlane = pl == 0 ? sec.floorplane.ZatPoint( sec.centerspot )
+                                          : sec.ceilingplane.ZatPoint( sec.centerspot );
+            hits.push_back(
+                { d, nm, sec.lightlevel, pl == 0 ? 3 : 4, cx, cy, zPlane, zPlane } );
+        }
+    }
 
     for( unsigned i = 0; i < primaryLevel->lines.Size(); i++ )
     {
@@ -5106,6 +5387,10 @@ void RT_DebugNearbyWallTextures()
             }
             const sector_t* sec = side->sector;
 
+            const side_t*   otherSide = line.sidedef[ 1 - s ];
+            const sector_t* otherSec  = otherSide ? otherSide->sector : nullptr;
+            const DVector2  mid{ mx, my };
+
             for( int part = 0; part < 3; part++ )
             {
                 auto* gtex = TexMan.GetGameTexture( side->GetTexture( part ), true );
@@ -5118,7 +5403,35 @@ void RT_DebugNearbyWallTextures()
                 {
                     continue;
                 }
-                hits.push_back( { d, nm, sec ? sec->lightlevel : -1, part, mx, my } );
+
+                // Height of the band this part occupies. This is what identifies a
+                // ceiling-level fixture: the name alone does not say where it sits.
+                double zLow = 0.0, zHigh = 0.0;
+                if( sec )
+                {
+                    if( part == side_t::top && otherSec )
+                    {
+                        zLow  = otherSec->ceilingplane.ZatPoint( mid );
+                        zHigh = sec->ceilingplane.ZatPoint( mid );
+                    }
+                    else if( part == side_t::bottom && otherSec )
+                    {
+                        zLow  = sec->floorplane.ZatPoint( mid );
+                        zHigh = otherSec->floorplane.ZatPoint( mid );
+                    }
+                    else
+                    {
+                        zLow  = sec->floorplane.ZatPoint( mid );
+                        zHigh = sec->ceilingplane.ZatPoint( mid );
+                    }
+                    if( zHigh < zLow )
+                    {
+                        std::swap( zLow, zHigh );
+                    }
+                }
+
+                hits.push_back(
+                    { d, nm, sec ? sec->lightlevel : -1, part, mx, my, zLow, zHigh } );
             }
         }
     }
@@ -5130,9 +5443,11 @@ void RT_DebugNearbyWallTextures()
     {
         double nearest;
         int    count;
-        bool   parts[ 3 ];
+        bool   parts[ 5 ]; // top, mid, bot, floor, ceil
         int    minLight;
         int    maxLight;
+        double zLow;
+        double zHigh;
     };
     std::unordered_map< std::string, Agg > byTex;
 
@@ -5141,7 +5456,9 @@ void RT_DebugNearbyWallTextures()
         auto it = byTex.find( h.tex );
         if( it == byTex.end() )
         {
-            Agg a{ h.dist, 1, { false, false, false }, h.lightlevel, h.lightlevel };
+            Agg a{ h.dist,      1,           { false, false, false, false, false },
+                   h.lightlevel, h.lightlevel, h.zLow,
+                   h.zHigh };
             a.parts[ h.part ] = true;
             byTex.emplace( h.tex, a );
         }
@@ -5153,6 +5470,8 @@ void RT_DebugNearbyWallTextures()
             a.parts[ h.part ] = true;
             a.minLight        = std::min( a.minLight, h.lightlevel );
             a.maxLight        = std::max( a.maxLight, h.lightlevel );
+            a.zLow            = std::min( a.zLow, h.zLow );
+            a.zHigh           = std::max( a.zHigh, h.zHigh );
         }
     }
 
@@ -5168,13 +5487,17 @@ void RT_DebugNearbyWallTextures()
     for( size_t n = 0; n < std::min< size_t >( 24, sorted.size() ); n++ )
     {
         const Agg& a = sorted[ n ].second;
-        Printf( "  '%s' nearest=%.0f uses=%d parts=%s%s%s lightlevel=%d..%d%s\n",
+        Printf( "  '%s' nearest=%.0f uses=%d parts=%s%s%s%s%s z=%.0f..%.0f lightlevel=%d..%d%s\n",
                 sorted[ n ].first.c_str(),
                 a.nearest,
                 a.count,
                 a.parts[ 0 ] ? "top " : "",
                 a.parts[ 1 ] ? "mid " : "",
-                a.parts[ 2 ] ? "bot" : "",
+                a.parts[ 2 ] ? "bot " : "",
+                a.parts[ 3 ] ? "FLOOR " : "",
+                a.parts[ 4 ] ? "CEIL" : "",
+                a.zLow,
+                a.zHigh,
                 a.minLight,
                 a.maxLight,
                 RT_IsWallStripLampTexture( sorted[ n ].first.c_str() ) ? "  <-- MATCHED as strip"
@@ -5513,7 +5836,9 @@ void RTFrameBuffer::RT_DrawFrame()
     RT_UploadGzDoomDynamicLights();
     RT_UploadCeilingInsetLamps();
     RT_UploadHangingTechLamps();
+    RT_UpdateSectorEmisThreshold();
     RT_UploadWallStripLights();
+    RT_UploadCeilingEdgeLamps();
     RT_DebugNearbyWallTextures();
 
     auto tm_params = RgDrawFrameTonemappingParams{
