@@ -290,6 +290,14 @@ namespace cvar
     RT_CVAR( rt_rr_firefly_minlum,      0.01f,  "DLSS-RR firefly clamp: absolute luminance floor below which the clamp "
                                                 "is skipped (ratios are meaningless in near-black areas)" )
 
+    RT_CVAR( rt_restir_bluenoise,       true,   "ReSTIR: place temporal/spatial reuse taps with tiled blue noise instead "
+                                                "of hash white noise. White noise makes the 8 spatial taps clump and "
+                                                "neighbouring pixels reuse overlapping neighbourhoods, correlating their "
+                                                "estimates into low-frequency blotching no denoiser can separate from "
+                                                "signal. Reduces variance at the SOURCE, so it helps A-SVGF and DLSS-RR "
+                                                "alike (RR guide 3.5 requires decorrelated reservoirs). Judge with the "
+                                                "Dev 'Unfiltered diffuse direct' view, not the final image." )
+
     RT_CVAR( rt_rr_reset_on_lightcut,   true,   "DLSS-RR: flush temporal history (InReset) on an abrupt light "
                                                 "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
                                                 "stabilized history. See also rt_rr_reset_on_dynlight." )
@@ -4839,6 +4847,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .rrDisocclusionShowMask             = static_cast< RgBool32 >( bool( cvar::rt_rr_disocc_show ) ),
         .rrFireflyThreshold                 = std::max( float( cvar::rt_rr_firefly ), 0.0f ),
         .rrFireflyMinLum                    = std::max( float( cvar::rt_rr_firefly_minlum ), 0.0f ),
+        .restirBlueNoise                    = static_cast< RgBool32 >( bool( cvar::rt_restir_bluenoise ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
