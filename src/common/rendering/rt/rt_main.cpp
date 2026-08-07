@@ -298,6 +298,28 @@ namespace cvar
                                                 "alike (RR guide 3.5 requires decorrelated reservoirs). Judge with the "
                                                 "Dev 'Unfiltered diffuse direct' view, not the final image." )
 
+    RT_CVAR( rt_shadow_samples,            1,   "Shadow rays per pixel for DIRECT lighting [1..8]. Direct illumination "
+                                                "multiplies by a single binary visibility ray, so at 1 spp a pixel is "
+                                                "fully lit or fully black — that 0/1 term dominates the raw noise and is "
+                                                "untouched by ReSTIR or by any denoiser tuning. Averaging N points on the "
+                                                "chosen light makes it a soft fraction; noise falls roughly as 1/sqrt(N). "
+                                                "Costs N-1 extra rays per pixel. Judge in the Dev 'Unfiltered diffuse "
+                                                "direct' view — the effect should be obvious there if anywhere." )
+
+    RT_CVAR( rt_debug_restir_m,       false,    "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
+                                                "radiance, as a green ramp (M/32; black = M=1, the worst case). ReSTIR at "
+                                                "1 spp only converges because temporal reuse grows M. Stand still and "
+                                                "watch it brighten, then move: if it goes dark, history is being rejected "
+                                                "and the RAW signal really is noisier in motion — upstream of every "
+                                                "denoiser, so no denoiser tuning can fix it." )
+
+    RT_CVAR( rt_restir_tjitter,        2.0f,   "ReSTIR temporal reuse tap jitter radius, in pixels (stock 2). The jitter "
+                                                "decorrelates the tap, but on grazing surfaces a 2px offset moves depth "
+                                                "well past the flat 10%% reuse threshold, so the tap is rejected and M "
+                                                "collapses to 1 exactly where variance is already worst — visible as the "
+                                                "sides going dark under rt_debug_restir_m 1 while moving. 0 = reproject "
+                                                "exactly (what RTXDI does)." )
+
     RT_CVAR( rt_rr_reset_on_lightcut,   true,   "DLSS-RR: flush temporal history (InReset) on an abrupt light "
                                                 "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
                                                 "stabilized history. See also rt_rr_reset_on_dynlight." )
@@ -4848,6 +4870,9 @@ void RTFrameBuffer::RT_DrawFrame()
         .rrFireflyThreshold                 = std::max( float( cvar::rt_rr_firefly ), 0.0f ),
         .rrFireflyMinLum                    = std::max( float( cvar::rt_rr_firefly_minlum ), 0.0f ),
         .restirBlueNoise                    = static_cast< RgBool32 >( bool( cvar::rt_restir_bluenoise ) ),
+        .shadowSamples                      = uint32_t( std::clamp( int( cvar::rt_shadow_samples ), 1, 8 ) ),
+        .debugRestirM                       = static_cast< RgBool32 >( bool( cvar::rt_debug_restir_m ) ),
+        .restirTemporalJitter               = std::clamp( float( cvar::rt_restir_tjitter ), 0.0f, 8.0f ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
