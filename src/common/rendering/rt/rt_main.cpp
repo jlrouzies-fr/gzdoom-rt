@@ -353,6 +353,25 @@ namespace cvar
                                                 "smoother when still, slower to react to change. Watch it with "
                                                 "rt_debug_restir_m 1." )
 
+    RT_CVAR( rt_rr_guide_min,          0.01f,   "DLSS-RR: floor for the diffuse/specular albedo guides. RR demodulates "
+                                                "colour by these (lighting ~ colour/guide) and remodulates with the same "
+                                                "values, so a small floor costs almost nothing — but without it the "
+                                                "division explodes wherever albedo*throughput approaches 0 (dark rooms, "
+                                                "and exactly 0 on metallic), producing correlated dark worms in dim "
+                                                "distant areas while lit near surfaces stay clean. A-SVGF never reads "
+                                                "these guides. 0 = no floor. A/B'd: does NOT fix the worm artifact (0 vs "
+                                                "0.01 is a wash, higher is worse), but 0.01 is kept because ro_d is "
+                                                "exactly 0 on metallic surfaces, which is a genuine divide-by-zero." )
+
+    RT_CVAR( rt_mip_bias,               0.0f,   "Offset added to the texture mip LOD bias. RTGL uses the DLSS-SR formula "
+                                                "log2(render/output) - 1.0, which at Balanced is ~-1.77 mips: textures are "
+                                                "sampled far sharper than the render resolution can represent. DLSS-SR "
+                                                "turns that aliasing into detail from a CLEAN image; DLSS-RR gets the same "
+                                                "over-sharp texture inside a NOISY albedo guide. Positive = softer (+1.0 "
+                                                "cancels the -1.0 term). A/B'd at +1.0 and +1.8: does NOT fix the RR worm "
+                                                "artifact on distant textures — RENDER RESOLUTION does (rt_upscale_dlss 6 "
+                                                "= DLAA resolves it, 1 = Quality partially, 2 = Balanced is worst)." )
+
     RT_CVAR( rt_rr_reset_on_lightcut,   true,   "DLSS-RR: flush temporal history (InReset) on an abrupt light "
                                                 "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
                                                 "stabilized history. See also rt_rr_reset_on_dynlight." )
@@ -4863,6 +4882,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .pNext = &volumetrics_params,
         .dynamicSamplerFilter =
             cvar::rt_smoothtextures ? RG_SAMPLER_FILTER_LINEAR : RG_SAMPLER_FILTER_NEAREST,
+        .mipLodBiasOffset       = float( cvar::rt_mip_bias ),
         .normalMapStrength      = cvar::rt_normalmap_stren,
         .emissionMapBoost       = cvar::rt_emis_mapboost,
         .emissionMaxScreenColor = cvar::rt_emis_maxscrcolor,
@@ -4913,6 +4933,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .restirSpatialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_spatial ), 0, 16 ) ),
         .restirSpatialRadius                = std::clamp( float( cvar::rt_restir_spatial_radius ), 1.0f, 64.0f ),
         .restirTemporalMCap                 = uint32_t( std::clamp( int( cvar::rt_restir_mcap ), 1, 64 ) ),
+        .rrGuideMin                         = std::clamp( float( cvar::rt_rr_guide_min ), 0.0f, 1.0f ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
