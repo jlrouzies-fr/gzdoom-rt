@@ -89,6 +89,23 @@ constexpr ECVarType ValueToCVarType =
     extern FCVarDecl const *const cvardeclref_##name; \
     MSVC_VSEG FCVarDecl const *const cvardeclref_##name GCC_VSEG = &cvardecl_##name;
 
+// Same as RT_CVAR but never written to the ini, so the cvar comes back at its
+// default on every launch. For settings that are fixes rather than preferences:
+// CVAR_ARCHIVE means a value set once during an A/B silently persists forever,
+// which has repeatedly poisoned later sessions here.
+#define RT_CVAR_NOARCH( name, default_value, description ) \
+    ValueToCVarRef< decltype( default_value ) > name; \
+    static FCVarDecl cvardecl_##name = { \
+        &name, \
+        ValueToCVarType< decltype( default_value ) >, \
+        CVAR_GLOBALCONFIG, \
+        #name, \
+        CVarValue<ValueToCVarType< decltype( default_value ) >>( default_value ), \
+        description, \
+        nullptr, }; \
+    extern FCVarDecl const *const cvardeclref_##name; \
+    MSVC_VSEG FCVarDecl const *const cvardeclref_##name GCC_VSEG = &cvardecl_##name;
+
 #define RT_CVAR_COLOR( name, default_value, description ) \
     CVARD( Color, ##name, default_value, CVAR_GLOBALCONFIG | CVAR_ARCHIVE, description )
 // clang-format on
@@ -353,6 +370,20 @@ namespace cvar
                                                 "smoother when still, slower to react to change. Watch it with "
                                                 "rt_debug_restir_m 1." )
 
+    // NOT archived: this is a bisect handle for the worm-artifact regression.
+    // A value left over from an A/B would silently decide image quality later.
+    RT_CVAR_NOARCH( rt_rr_guide_mode,      1,   "DLSS-RR: what the albedo guides contain. RR uses them for edge detection "
+                                                "and reprojection, not just demodulation, so they want to be SMOOTH "
+                                                "material properties. 0 = raw albedo/F0 (what shipped before 2026-08-05, "
+                                                "when the worm artifact was reportedly absent). 1 = ro_d/envBRDF * "
+                                                "throughput * ambient (the 2026-08-06 rework; folds in throughput, which "
+                                                "is fetched in CHECKERBOARD space so neighbouring output pixels read "
+                                                "non-adjacent texels, and getMaterialAmbient(), a thresholded quadratic "
+                                                "that hits exactly 0 at black albedo — a derivative kink along dark "
+                                                "texture contours that no guide FLOOR can remove). 2 = ro_d/envBRDF only, "
+                                                "no throughput/ambient, to separate the two changes. Does not affect the "
+                                                "composed colour, only what RR is told the albedo is." )
+
     RT_CVAR( rt_rr_guide_min,          0.01f,   "DLSS-RR: floor for the diffuse/specular albedo guides. RR demodulates "
                                                 "colour by these (lighting ~ colour/guide) and remodulates with the same "
                                                 "values, so a small floor costs almost nothing — but without it the "
@@ -369,12 +400,19 @@ namespace cvar
                                                 "turns that aliasing into detail from a CLEAN image; DLSS-RR gets the same "
                                                 "over-sharp texture inside a NOISY albedo guide. Positive = softer (+1.0 "
                                                 "cancels the -1.0 term). A/B'd at +1.0 and +1.8: does NOT fix the RR worm "
-                                                "artifact on distant textures — RENDER RESOLUTION does (rt_upscale_dlss 6 "
-                                                "= DLAA resolves it, 1 = Quality partially, 2 = Balanced is worst)." )
+                                                "artifact on distant textures. Render resolution only makes it LESS "
+                                                "VISIBLE (Balanced worst, DLAA best) — it is still present at DLAA, where "
+                                                "A-SVGF is clean, so resolution is not the cause. Still unexplained." )
 
-    RT_CVAR( rt_rr_reset_on_lightcut,   true,   "DLSS-RR: flush temporal history (InReset) on an abrupt light "
+    // NOT archived (RT_CVAR_NOARCH): this is a fix, not a preference, and it must
+    // come up enabled on every launch. It stays a cvar only so it can be flipped
+    // off for an in-session A/B -- a stuck 0 in the ini silently reinstates the
+    // ~3-7s flashlight linger, and this project has lost sessions to exactly that.
+    RT_CVAR_NOARCH( rt_rr_reset_on_lightcut, true,
+                                                "DLSS-RR: flush temporal history (InReset) on an abrupt light "
                                                 "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
-                                                "stabilized history. See also rt_rr_reset_on_dynlight." )
+                                                "stabilized history. Always on at launch (not saved to the ini); "
+                                                "set to 0 only for a temporary A/B. See rt_rr_reset_on_dynlight." )
     RT_CVAR( rt_rr_reset_delta,         0.5f,   "DLSS-RR reset: min abrupt change in emitted flashlight scale "
                                                 "(0..1) that counts as a light cut" )
     RT_CVAR( rt_rr_reset_on_dynlight,   true,   "DLSS-RR: also flush temporal history when a GZDoom dynamic "
@@ -4934,6 +4972,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .restirSpatialRadius                = std::clamp( float( cvar::rt_restir_spatial_radius ), 1.0f, 64.0f ),
         .restirTemporalMCap                 = uint32_t( std::clamp( int( cvar::rt_restir_mcap ), 1, 64 ) ),
         .rrGuideMin                         = std::clamp( float( cvar::rt_rr_guide_min ), 0.0f, 1.0f ),
+        .rrGuideMode                        = uint32_t( std::clamp( int( cvar::rt_rr_guide_mode ), 0, 2 ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
