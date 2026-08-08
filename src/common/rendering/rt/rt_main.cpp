@@ -197,8 +197,11 @@ namespace cvar
                                                 "strip sits flush against the wall it lights, so most of the sphere is occluded "
                                                 "and the visible contribution is far below what the same number buys a ceiling "
                                                 "lamp hanging in open air. Confirmed by eye at 500 (2026-08-07)" )
-    RT_CVAR( rt_wall_strip_minlight,    140.f,  "skip strips in sectors dimmer than this: the same trim texture is used in "
-                                                "unlit maintenance areas where the bulbs are meant to be dead" )
+    RT_CVAR( rt_wall_strip_minlight,    120.f,  "skip strips in sectors dimmer than this: the same trim texture is used in "
+                                                "unlit maintenance areas where the bulbs are meant to be dead. Was 140, which "
+                                                "only ever saw MAP03's SPACEAR strips at lightlevel 180 and silently dropped "
+                                                "MAP02's STRAKR/STRAKX strips at 130 — dim, but nowhere near dead against that "
+                                                "map's median of 160. Dead bulbs sit at 0-64 (2026-08-08)" )
     RT_CVAR( rt_wall_strip_seglen,      64.f,   "map units between strip lights. Keep at or below rt_wall_strip_radius in map "
                                                 "units so neighbouring pools overlap — a chain of point lights spaced too far "
                                                 "apart scallops along the wall instead of reading as one strip" )
@@ -4883,11 +4886,26 @@ static bool RT_IsWallStripLampTexture( const char* name )
     {
         return false;
     }
-    // Doom 64 bulb trim: a narrow band with a row of round lamps. Identified from
-    // MAP03 via rt_wall_tex_debug, confirmed against the fixture's height map
-    // (rt/mat/SPACEAR_h.png shows the repeating bulb row; SPACEAI1 is plain panelling).
-    // Covers SPACEAR and its SPACEAR1 variant.
-    return strncmp( name, "SPACEAR", 7 ) == 0;
+    // The bulb arrays themselves: a regular grid of round lamps.
+    //
+    //   SPACEAZ  4x4 bulbs, authored as a wall texture
+    //   SFLATAQ  4x4 bulbs, authored as a flat but ALSO hung on wall faces
+    //   SFLATAS  2x2 large bulbs
+    //   SFLATAP  same family, sparser
+    //
+    // This used to match SPACEAR instead, which is a mistake worth recording. SPACEAR is
+    // the plain trim panel that sits on the same thin step the bulb flat caps, so on
+    // MAP03 it is adjacent to an SFLATAQ bulb flat on 54 of its 57 sidedefs (95%) — the
+    // light landed a few units from the real fixture and looked correct. On MAP02 that
+    // adjacency is 4 of 41 (10%): the same rule lights blank wall and misses every actual
+    // lamp. A rule that is right by proximity on the map you tested is not a rule.
+    //
+    // Flats named SFLAT* reach this walk because Doom 64 hangs them on sidedefs too —
+    // MAP02 carries SFLATAQ as `bottom` 26 times and `middle` 4 times. The flat-side
+    // coverage is separate: see RT_UploadCeilingInsetLamps / RT_UploadCeilingEdgeLamps
+    // (2026-08-08).
+    return strcmp( name, "SPACEAZ" ) == 0 || strcmp( name, "SFLATAQ" ) == 0 ||
+           strcmp( name, "SFLATAS" ) == 0 || strcmp( name, "SFLATAP" ) == 0;
 }
 
 // Doom 64 wall light strips carry their light in the texture only. Under RTGL1 an
@@ -4930,6 +4948,7 @@ void RT_UploadWallStripLights()
         double x, y, z;
         double bandLow, bandHigh;
         int    part;
+        FString tex; // two families match now, so "which one" is part of the answer
     };
     std::vector< Placed > placed;
     const DVector3        vpos = r_viewpoint.Pos;
@@ -5012,6 +5031,17 @@ void RT_UploadWallStripLights()
                     {
                         zLow  = thisSec->floorplane.ZatPoint( mid );
                         zHigh = otherSec->floorplane.ZatPoint( mid );
+                    }
+                    else if( part == side_t::mid && otherSec )
+                    {
+                        // A middle texture on a two-sided line only covers the OPENING,
+                        // not this sector's full height. Handing it floor..ceiling put
+                        // MAP02's blue-room strips at mid-room height, floating in front
+                        // of the fixture instead of on it (2026-08-08).
+                        zLow  = std::max( thisSec->floorplane.ZatPoint( mid ),
+                                         otherSec->floorplane.ZatPoint( mid ) );
+                        zHigh = std::min( thisSec->ceilingplane.ZatPoint( mid ),
+                                          otherSec->ceilingplane.ZatPoint( mid ) );
                     }
                     else
                     {
@@ -5484,7 +5514,13 @@ void RT_DebugNearbyWallTextures()
             hits.size(),
             sorted.size(),
             maxDist );
-    for( size_t n = 0; n < std::min< size_t >( 24, sorted.size() ); n++ )
+    // Print every distinct name, not a nearest-N slice. The list is already bounded by
+    // rt_wall_tex_debug_dist, and the old cap of 24 silently dropped 6 of MAP02's 30 --
+    // sorted by distance, so the ones cut were the far ones, which is exactly where a
+    // strip on the far side of a room lands. It printed "30 distinct" and then listed 24
+    // with no truncation notice, which is the &sect;14 failure over again (2026-08-08).
+    constexpr size_t MaxRows = 96;
+    for( size_t n = 0; n < std::min( MaxRows, sorted.size() ); n++ )
     {
         const Agg& a = sorted[ n ].second;
         Printf( "  '%s' nearest=%.0f uses=%d parts=%s%s%s%s%s z=%.0f..%.0f lightlevel=%d..%d%s\n",
@@ -5502,6 +5538,11 @@ void RT_DebugNearbyWallTextures()
                 a.maxLight,
                 RT_IsWallStripLampTexture( sorted[ n ].first.c_str() ) ? "  <-- MATCHED as strip"
                                                                       : "" );
+    }
+    if( sorted.size() > MaxRows )
+    {
+        Printf( "  ... %zu more not shown -- lower rt_wall_tex_debug_dist to see them\n",
+                sorted.size() - MaxRows );
     }
 }
 
