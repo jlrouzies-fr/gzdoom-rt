@@ -248,15 +248,23 @@ namespace cvar
                                                 "MAP03's SFLATC-ceilinged stair hall. Kept behind its own cvar, colour and "
                                                 "budget precisely because it is a lie: everything the real bulb walk does stays "
                                                 "unchanged when this is off, and the two never share a light slot" )
-    RT_CVAR_COLOR( rt_faux_lamp_color,  0x6E7F94, "colour of the faux panel lights (hex): a dark blue-grey. Used RAW, not "
+    RT_CVAR_COLOR( rt_faux_lamp_color,  0x3C5078, "colour of the faux panel lights (hex): a dark blue-grey. Used RAW, not "
                                                 "normalised to hue the way sector-tint lights are, so the darkness is real "
-                                                "light output and not just a tint — 0x6E7F94 emits (0.43,0.50,0.58), roughly "
-                                                "half power and cool. That is the point: these fixtures do not exist, so they "
-                                                "should read as ambient fill the room happens to sit in rather than as a lamp "
-                                                "the player will look for. Brightness lives in rt_faux_lamp_intensity" )
-    RT_CVAR( rt_faux_lamp_intensity,    110.f,  "RT intensity per faux panel light. Deliberately below rt_ceiling_edge_intensity "
-                                                "(180): a real bulb array should still out-light an invented one, or the fake "
-                                                "fixtures become the brightest thing in the map" )
+                                                "light output and not just a tint — 0x3C5078 emits (0.24,0.31,0.47), a "
+                                                "2.0x blue:red channel spread. That is the point: these fixtures do not "
+                                                "exist, so they should read as ambient fill the room happens to sit in "
+                                                "rather than as a lamp the player will look for. Brightness lives in "
+                                                "rt_faux_lamp_intensity — but so, partially, does hue: colour is RAW, so "
+                                                "raising intensity scales all three channels together and pushes a weakly "
+                                                "saturated colour toward the tonemapper's white clip point faster than a "
+                                                "well-saturated one. 0x6E7F94 (1.35x spread) read as plain white once "
+                                                "intensity went past ~110-200; 0x3C5078 (2.0x) was chosen to survive 500 "
+                                                "(2026-08-08)" )
+    RT_CVAR( rt_faux_lamp_intensity,    500.f,  "RT intensity per faux panel light. Above rt_ceiling_edge_intensity (180) on "
+                                                "purpose, not below it as earlier reasoning here argued: playtest found 110 "
+                                                "left the rooms this feature targets still reading as too dark, and the "
+                                                "'real bulbs should out-light fake ones' worry did not survive contact with "
+                                                "actually looking at it (2026-08-08)" )
     RT_CVAR( rt_faux_lamp_stride,       2,      "subsample the bulb lattice: place a faux light on every Nth socket, on both "
                                                 "axes. 1 lights every bulb and is unaffordable — SFLATC's sockets sit 16 units "
                                                 "apart, so a 512x512 room alone wants over a thousand lights. 2 gives 32-unit "
@@ -334,17 +342,22 @@ namespace cvar
     RT_CVAR( rt_spectre_corpse_solid,   true,   "stop treating a 64Spectre as a spectre once it is dead (SAR2 frames I-N). "
                                                 "A spectre carries RG_MESH_PRIMITIVE_TRANSLUCENT, so RTGL1 rasterizes it and "
                                                 "RsWorld.inl draws vertexColor*texture with NO lighting term — the corpse "
-                                                "takes no light from anything and reads as self-lit. The DECORATE death "
-                                                "sequence ends on A_SetTranslucent(1.0) anyway, so the corpse is meant to be "
-                                                "solid: as an ordinary alpha-tested sprite it goes in the BLAS, gets lit and "
-                                                "casts a shadow like every other corpse (2026-08-08)" )
-    RT_CVAR( rt_spectre_shade,          1.0f,   "[0..1] how much the sector's sprite lightlevel dims a LIVING spectre. The "
-                                                "ghost stays rasterized to keep its see-through look, and a rasterized "
-                                                "primitive is never lit, so without this it renders at full texture "
-                                                "brightness in a pitch-dark room — the 'baked light' look. 0 = old behaviour" )
-    RT_CVAR( rt_spectre_shade_min,      0.25f,  "floor for rt_spectre_shade. Doom 64 rooms are routinely lightlevel 0 and lit "
-                                                "only by RT lamps / the flashlight, which a rasterized sprite cannot see — "
-                                                "without a floor the spectre would go pure black and unfindable there" )
+                                                "takes light from nothing and reads as self-lit. The DECORATE Death sequence "
+                                                "ends on A_SetTranslucent(1.0) anyway, so the corpse is meant to be solid: as "
+                                                "an ordinary alpha-tested sprite it goes in the BLAS, gets lit and casts a "
+                                                "shadow like every other corpse (2026-08-08)" )
+    RT_CVAR( rt_ghost_solid,            true,   "render a LIVING soft-blend monster as a solid sprite too (64Spectre SAR2, "
+                                                "64NightmareImp TRO2) — the same treatment rt_spectre_corpse_solid gives their "
+                                                "corpses. Left translucent they never enter the BLAS, so the path tracer "
+                                                "cannot light them and they sit at full texture brightness in an unlit room. "
+                                                "Solid means alpha-tested at alpha 1: traced, lit, casting a shadow, and with "
+                                                "the _e eye mask emitting as a real material — so in the dark the body goes "
+                                                "black and only the eyes show. The cost is the see-through look: 0 restores "
+                                                "the rasterized ghost, along with the baked-lit appearance (2026-08-08).\n"
+                                                "Two other routes to the same goal were tried and rejected: a vertex-colour "
+                                                "dimmer (cannot work — RsWorld.inl derives its emissive from baseColor(), so "
+                                                "darkening the body darkens the eyes by the same factor) and GLASS (traced and "
+                                                "see-through, but a refractive billboard is the wrong look here)." )
     RT_CVAR_NOARCH( rt_prim_debug,     false,   "Debug: list world textures RTGL1 will RASTERIZE rather than ray-trace. A "
                                                 "rasterized primitive is never added to the acceleration structure, so it "
                                                 "renders normally and can never block a shadow ray — which looks exactly like "
@@ -1624,6 +1637,66 @@ public:
         return rtstate.is< RtPrim::Ignored >() || mTextureMode == TM_FOGLAYER;
     }
 
+    // Retribution's two soft-blend monsters — both DECORATE RenderStyle Translucent
+    // (64Spectre at a pulsing alpha, 64NightmareImp at a flat 0.60), so both land in the
+    // same RTGL1 hole: below MESH_TRANSLUCENT_ALPHA_THRESHOLD they are rasterized rather
+    // than traced, and the rasterizer lights nothing. Keyed off the sprite prefix —
+    // there is no actor pointer down here. n[4] is the animation frame letter
+    // (rt_state.h: 'A' + animframe).
+    enum class GhostActor
+    {
+        None,
+        Spectre,       // SAR2 — living A..H, corpse I..N
+        NightmareImp,  // TRO2 — living A..K, corpse/gib L..X
+    };
+
+    auto GhostSprite( bool* outIsCorpse = nullptr ) const -> GhostActor
+    {
+        if( outIsCorpse )
+        {
+            *outIsCorpse = false;
+        }
+        if( !rt_mod_compat || !rtstate.is< RtPrim::ExportInstance >() )
+        {
+            return GhostActor::None;
+        }
+        const char* n = rtstate.get_exportinstance_name();
+        if( !n || !n[ 0 ] || !n[ 4 ] )
+        {
+            return GhostActor::None;
+        }
+        // SARG is the regular pinky and TROO the regular imp — neither is soft-blend.
+        if( n[ 0 ] == 'S' && n[ 1 ] == 'A' && n[ 2 ] == 'R' && n[ 3 ] == '2' )
+        {
+            if( outIsCorpse )
+            {
+                *outIsCorpse = ( n[ 4 ] >= 'I' );
+            }
+            return GhostActor::Spectre;
+        }
+        if( n[ 0 ] == 'T' && n[ 1 ] == 'R' && n[ 2 ] == 'O' && n[ 3 ] == '2' )
+        {
+            if( outIsCorpse )
+            {
+                *outIsCorpse = ( n[ 4 ] >= 'L' );
+            }
+            return GhostActor::NightmareImp;
+        }
+        return GhostActor::None;
+    }
+
+    // Should this sprite be an ordinary solid, path-traced, lit sprite? Alive and dead
+    // are separate cvars because the corpse fix landed first and is settled.
+    bool IsSolidGhost() const
+    {
+        bool corpse = false;
+        if( GhostSprite( &corpse ) == GhostActor::None )
+        {
+            return false;
+        }
+        return corpse ? bool( cvar::rt_spectre_corpse_solid ) : bool( cvar::rt_ghost_solid );
+    }
+
     bool IsSpectre() const
     {
         switch( mRenderStyle.BlendOp )
@@ -1636,8 +1709,14 @@ public:
             default: break;
         }
         // Retribution 64Spectre is STYLE_Translucent + SAR2, not classic Fuzz.
-        // Uses rasterized TRANSLUCENT + minalpha cap for see-through ghostly look.
-        // SARG = regular pinky demon (not spectre). Only SAR2 is the 64Spectre sprite prefix.
+        // Uses rasterized TRANSLUCENT + minalpha cap for see-through ghostly look —
+        // unless it is being rendered solid, in which case it must NOT carry
+        // RG_MESH_PRIMITIVE_TRANSLUCENT, because that flag forces rasterization on its
+        // own regardless of alpha (VulkanDevice.cpp IsRasterized).
+        if( IsSolidGhost() )
+        {
+            return false;
+        }
         if( rt_mod_compat && rtstate.is< RtPrim::ExportInstance >() )
         {
             const char* n = rtstate.get_exportinstance_name();
@@ -1649,13 +1728,13 @@ public:
                 // the DECORATE Death sequence fades in to A_SetTranslucent(1.0), so the
                 // corpse is authored as a SOLID body, not a ghost.
                 //
-                // Keeping the spectre treatment on them is what makes a dead spectre
-                // glow: spectres are flagged RG_MESH_PRIMITIVE_TRANSLUCENT, RTGL1
+                // Keeping the spectre treatment on them is what made a dead spectre take
+                // no light: spectres are flagged RG_MESH_PRIMITIVE_TRANSLUCENT, RTGL1
                 // rasterizes any translucent primitive instead of tracing it
                 // (VulkanDevice.cpp IsRasterized), and the rasterizer shader
                 // (RsWorld.inl) outputs vertexColor * texture with no lighting term
-                // whatsoever. So the corpse receives light from nothing — not the
-                // flashlight, not a lamp, not the sun — and sits at full texture
+                // whatsoever. So the corpse received light from nothing — not the
+                // flashlight, not a lamp, not the sun — and sat at full texture
                 // brightness on a dark floor. Dropping it out of IsSpectre() makes it an
                 // ordinary alpha-tested sprite: alpha 1.0 clears
                 // MESH_TRANSLUCENT_ALPHA_THRESHOLD, it enters the BLAS, and it is lit
@@ -2237,11 +2316,10 @@ private:
                 if( rtstate.is< RtPrim::ExportInstance >() )
                 {
                     // Soft blends under RT:
-                    //  - SAR2 / classic Fuzz spectre → IsSpectre() → FORCE_WATER/GLASS mesh
-                    //    (alpha-test for sprite shape cutout + refractive material on visible pixels;
-                    //    not raster TRANSLUCENT+emis through weapon).
+                    //  - SAR2 / classic Fuzz spectre → IsSpectre() → rasterized
+                    //    TRANSLUCENT overlay (the see-through ghost look).
                     //  - Additive (DestAlpha One): fire/muzzle — TRANSLUCENT.
-                    //  - Other sprites: ALPHA_TESTED cutout.
+                    //  - Other sprites (and the spectre CORPSE): ALPHA_TESTED cutout.
                     const bool additiveBlend =
                         mRenderStyle.BlendOp == STYLEOP_Add &&
                         mRenderStyle.DestAlpha == STYLEALPHA_One;
@@ -2372,6 +2450,16 @@ private:
                 return 1.0f;
             }
             float a = mStreamData.uObjectColor.a * mStreamData.uVertexColor[ 3 ];
+            // Dropping the TRANSLUCENT flag is only half of going solid: RTGL1 also
+            // rasterizes anything whose packed vertex alpha is under
+            // MESH_TRANSLUCENT_ALPHA_THRESHOLD (0.98). The spectre pulses down to 0.20
+            // and the nightmare imp sits at a flat 0.60, and rt_translucent_minalpha
+            // floors both around 0.72 — all well under the bar, so without this they
+            // would still miss the BLAS and still take no light.
+            if( IsSolidGhost() )
+            {
+                return 1.0f;
+            }
             if( IsSpectre() )
             {
                 // Spectre: force alpha to minalpha so all states (see, attack, pain, death)
@@ -2443,32 +2531,20 @@ private:
         }
         else if( forceSpriteUnlitAlbedo )
         {
-            // Dropping the sector lightlevel is right for every sprite the path tracer
-            // actually lights — it is baked shading, and RT relights the sprite itself.
-            // The living spectre is the one sprite RT never lights: it keeps
-            // RG_MESH_PRIMITIVE_TRANSLUCENT for its see-through look, so RTGL1
-            // rasterizes it and RsWorld.inl writes vertexColor * texture with no
-            // lighting term at all. With the lightlevel gone there is then nothing left
-            // to darken it, and the ghost renders at full texture brightness in an unlit
-            // room — the "baked light" look.
+            // Do NOT try to dim a spectre from here to stop it reading as self-lit in a
+            // dark room. It was tried and it cannot work: RsWorld.inl builds its emissive
+            // out of baseColor() too —
             //
-            // Put the lightlevel back on that one rasterized case. The floor matters:
-            // Doom 64 rooms are routinely lightlevel 0 and lit entirely by RT lamps and
-            // the flashlight, which a rasterized primitive cannot see, so a raw multiply
-            // would turn the spectre pure black exactly where the player needs to spot
-            // it (2026-08-08).
-            float shade = 1.0f;
-            if( float( cvar::rt_spectre_shade ) > 0.f && IsSpectre() )
-            {
-                const float ll  = std::clamp( rtstate.m_lightlevel / 255.f, 0.f, 1.f );
-                const float lit = std::max( ll, float( cvar::rt_spectre_shade_min ) );
-                shade = 1.f - std::clamp( float( cvar::rt_spectre_shade ), 0.f, 1.f ) *
-                                  ( 1.f - lit );
-            }
-
-            primColor = rt.rgUtilPackColorFloat4D( mStreamData.uObjectColor.r * shade,
-                                                  mStreamData.uObjectColor.g * shade,
-                                                  mStreamData.uObjectColor.b * shade,
+            //     ldrEmis = baseColor().rgb * emisTex.rgb;   // then *= emissiveMult
+            //
+            // so scaling this colour down to darken the body scales the eye mask down by
+            // exactly the same factor. Body and eyes are inseparable from here. The only
+            // thing that separates them is getting the primitive ray traced, which for a
+            // low-alpha sprite means GLASS/WATER/ACID (VulkanDevice.cpp IsRasterized) —
+            // tried, and rejected on looks. The living ghost stays rasterized on purpose.
+            primColor = rt.rgUtilPackColorFloat4D( mStreamData.uObjectColor.r,
+                                                  mStreamData.uObjectColor.g,
+                                                  mStreamData.uObjectColor.b,
                                                   l_spriteAlpha() );
         }
         else
