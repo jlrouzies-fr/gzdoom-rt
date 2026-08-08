@@ -304,6 +304,12 @@ namespace cvar
 
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
+    RT_CVAR_NOARCH( rt_prim_debug,     false,   "Debug: list world textures RTGL1 will RASTERIZE rather than ray-trace. A "
+                                                "rasterized primitive is never added to the acceleration structure, so it "
+                                                "renders normally and can never block a shadow ray — which looks exactly like "
+                                                "a lighting problem and is not one. Prints vertex alpha, the alpha actually "
+                                                "sent, mAlphaThreshold and whether forcealpha1 fired, so a fix aimed at this "
+                                                "can be confirmed live instead of judged by eye (2026-08-08)" )
     RT_CVAR( rt_force_mask_opaque,      true,   "force vertex alpha to 1 on alpha-TESTED world geometry (fences, grates, the "
                                                 "MAP01 cage). RTGL1 rasterizes any primitive whose packed vertex alpha is below "
                                                 "MESH_TRANSLUCENT_ALPHA_THRESHOLD (0.98), and a rasterized primitive is never "
@@ -2382,6 +2388,59 @@ private:
         {
             primColor = rtcolor_multiply(
                 mStreamData.uObjectColor, mStreamData.uVertexColor, forcealpha1 );
+        }
+
+        // Reports what RTGL1 will actually DO with each world primitive, not what we
+        // hoped it would do. Two prior fixes were judged by eye from the final image and
+        // both nulls were worthless, because "renders but casts nothing" and "casts but
+        // the shadow is washed out" look identical there.
+        //
+        // RASTERIZED is the field that matters: RTGL1 keeps a primitive out of the
+        // acceleration structure entirely when its vertex alpha is below 0.98 or it
+        // carries TRANSLUCENT (VulkanDevice.cpp IsRasterized, Const.h:54), and geometry
+        // outside the BLAS can never block a shadow ray. Printing alphaThr alongside it
+        // shows whether rt_force_mask_opaque's gate even fired on this surface
+        // (2026-08-08).
+        if( cvar::rt_prim_debug && !isUI && texname )
+        {
+            const float vAlpha = mStreamData.uObjectColor.a * mStreamData.uVertexColor[ 3 ];
+            const float sent   = forcealpha1 ? 1.0f : vAlpha;
+            const auto  pf     = makePrimFlags( isUI );
+            const bool  raster = ( pf & RG_MESH_PRIMITIVE_TRANSLUCENT ) || sent < 0.98f;
+
+            struct PrimStat
+            {
+                float vAlpha, sent, alphaThr;
+                uint32_t flags;
+                bool raster, forced;
+                int count;
+            };
+            static std::unordered_map< std::string, PrimStat > s_stats;
+            static int                                         s_tick;
+
+            auto& st = s_stats[ texname ];
+            st = PrimStat{ vAlpha, sent, mAlphaThreshold, uint32_t( pf ),
+                           raster, forcealpha1, st.count + 1 };
+
+            if( ( ++s_tick % 600 ) == 0 )
+            {
+                Printf( "rt_prim_debug: %zu distinct world texture(s) this frame\n",
+                        s_stats.size() );
+                for( const auto& [ nm, s ] : s_stats )
+                {
+                    // Only the ones that cannot cast a shadow -- the rest are working.
+                    if( !s.raster )
+                    {
+                        continue;
+                    }
+                    Printf( "  '%s' x%d  vertexAlpha=%.3f sent=%.3f alphaThr=%.3f "
+                            "flags=0x%X forcealpha1=%d  -> RASTERIZED, NOT IN BLAS, "
+                            "CANNOT CAST SHADOW\n",
+                            nm.c_str(), s.count, s.vAlpha, s.sent, s.alphaThr,
+                            s.flags, int( s.forced ) );
+                }
+                s_stats.clear();
+            }
         }
 
         auto prim = RgMeshPrimitiveInfo{
