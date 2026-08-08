@@ -461,6 +461,18 @@ namespace cvar
                                                 "Costs N-1 extra rays per pixel. Judge in the Dev 'Unfiltered diffuse "
                                                 "direct' view — the effect should be obvious there if anywhere." )
 
+    RT_CVAR_NOARCH( rt_debug_visibility,         0,    "Debug: show the shadow-ray visibility term instead of radiance. "
+                                                "1 = greyscale, BLACK where the shadow ray was blocked. 2 = normal "
+                                                "shading with shadowed pixels tinted red, to locate an umbra against "
+                                                "the geometry casting it. "
+                                                "Exists because the final image cannot separate \"the occluder never "
+                                                "blocked the ray\" from \"the shadow is cast but drowned in fill light "
+                                                "or smeared away by the denoiser\" — both read as no shadow, and four "
+                                                "A/B ladders failed to tell them apart (2026-08-08). If an occluder "
+                                                "shows black here, shadow casting works and the problem is downstream; "
+                                                "if it does not, the ray is not being blocked and the cause is in the "
+                                                "geometry upload or the shadow cull mask." )
+
     RT_CVAR_NOARCH( rt_debug_restir_m,       false,    "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
                                                 "radiance, as a green ramp (M/32; black = M=1, the worst case). ReSTIR at "
                                                 "1 spp only converges because temporal reuse grows M. Stand still and "
@@ -6213,6 +6225,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .restirBlueNoise                    = static_cast< RgBool32 >( bool( cvar::rt_restir_bluenoise ) ),
         .shadowSamples                      = uint32_t( std::clamp( int( cvar::rt_shadow_samples ), 1, 8 ) ),
         .debugRestirM                       = static_cast< RgBool32 >( bool( cvar::rt_debug_restir_m ) ),
+        .debugVisibility                    = uint32_t( std::clamp( int( cvar::rt_debug_visibility ), 0, 2 ) ),
         .restirTemporalJitter               = std::clamp( float( cvar::rt_restir_tjitter ), 0.0f, 8.0f ),
         .rrSpecularHitDistance              = static_cast< RgBool32 >( bool( cvar::rt_rr_spechitdist ) ),
         .directSamples                      = uint32_t( std::clamp( int( cvar::rt_spp_direct ), 1, 8 ) ),
