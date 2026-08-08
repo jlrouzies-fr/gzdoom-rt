@@ -240,6 +240,28 @@ namespace cvar
     RT_CVAR( rt_ceiling_edge_maxdist,   1536.f, "skip flat bulb lamps further than this from the camera. One across the level "
                                                 "contributes nothing visible but still costs a light slot and a ReSTIR reservoir" )
     RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads, split by ceiling vs floor" )
+
+    RT_CVAR( rt_faux_lamps,             true,   "treat SFLATC (flat) and SPACECE (wall) as if they were bulb arrays, and light "
+                                                "them with the same perimeter walks as the real ones. They are NOT lamp "
+                                                "textures — no bulbs in the art, nothing in the original game lights them — so "
+                                                "this is a deliberate invention to lift rooms that are simply too dark, such as "
+                                                "MAP03's SFLATC-ceilinged stair hall. Kept behind its own cvar, colour and "
+                                                "budget precisely because it is a lie: everything the real bulb walk does stays "
+                                                "unchanged when this is off, and the two never share a light slot" )
+    RT_CVAR_COLOR( rt_faux_lamp_color,  0x6E7F94, "colour of the faux panel lights (hex): a dark blue-grey. Used RAW, not "
+                                                "normalised to hue the way sector-tint lights are, so the darkness is real "
+                                                "light output and not just a tint — 0x6E7F94 emits (0.43,0.50,0.58), roughly "
+                                                "half power and cool. That is the point: these fixtures do not exist, so they "
+                                                "should read as ambient fill the room happens to sit in rather than as a lamp "
+                                                "the player will look for. Brightness lives in rt_faux_lamp_intensity" )
+    RT_CVAR( rt_faux_lamp_intensity,    110.f,  "RT intensity per faux panel light. Deliberately below rt_ceiling_edge_intensity "
+                                                "(180): a real bulb array should still out-light an invented one, or the fake "
+                                                "fixtures become the brightest thing in the map" )
+    RT_CVAR( rt_faux_lamp_max,          128,    "hard cap on faux panel lights per frame, budgeted SEPARATELY from "
+                                                "rt_ceiling_edge_max and rt_wall_strip_max. Sharing a cap would be a silent "
+                                                "regression: edge-lamp demand is already ~800 against a cap of 320, so adding "
+                                                "SFLATC's 76 flats to the same pool would push real bulbs out of the nearest-N "
+                                                "set and darken fixtures that do exist, to light ones that do not" )
     RT_CVAR( rt_light_mark_intensity,   25.f,   "intensity of every debug marker sphere. A marker is a real uploaded light, so N "
                                                 "markers flood the scene N times over: 320 cyan marks at 400 turned a whole MAP02 "
                                                 "room cyan and hid the fixtures being inspected. Section 10 recorded this for 67 "
@@ -2426,18 +2448,26 @@ private:
             {
                 Printf( "rt_prim_debug: %zu distinct world texture(s) this frame\n",
                         s_stats.size() );
-                for( const auto& [ nm, s ] : s_stats )
+                // Print EVERY world texture, not just the rasterized ones. The first
+                // version filtered to `raster` only -- and the answer turned out to be
+                // that the surface in question was NOT in that list, which the filter
+                // made indistinguishable from it not being drawn at all. Same mistake
+                // as the truncated nearby-texture dump (§14): a filtered instrument can
+                // only ever confirm the theory it was built around.
+                std::vector< std::pair< std::string, PrimStat > > rows( s_stats.begin(),
+                                                                        s_stats.end() );
+                std::sort( rows.begin(), rows.end(), []( const auto& a, const auto& b ) {
+                    return a.second.count > b.second.count;
+                } );
+                for( const auto& [ nm, s ] : rows )
                 {
-                    // Only the ones that cannot cast a shadow -- the rest are working.
-                    if( !s.raster )
-                    {
-                        continue;
-                    }
-                    Printf( "  '%s' x%d  vertexAlpha=%.3f sent=%.3f alphaThr=%.3f "
-                            "flags=0x%X forcealpha1=%d  -> RASTERIZED, NOT IN BLAS, "
-                            "CANNOT CAST SHADOW\n",
-                            nm.c_str(), s.count, s.vAlpha, s.sent, s.alphaThr,
-                            s.flags, int( s.forced ) );
+                    Printf( "  %-10s x%-4d a=%.2f sent=%.2f thr=%.3f flags=0x%-5X "
+                            "f1=%d  %s%s\n",
+                            nm.c_str(), s.count, s.vAlpha, s.sent, s.alphaThr, s.flags,
+                            int( s.forced ),
+                            s.raster ? "RASTERIZED(no shadow)" : "in BLAS",
+                            ( s.flags & RG_MESH_PRIMITIVE_ALPHA_TESTED ) ? " ALPHATESTED"
+                                                                        : "" );
                 }
                 s_stats.clear();
             }
@@ -4739,6 +4769,38 @@ static bool RT_IsCeilingInsetLampTexture( const char* name )
     return false;
 }
 
+// The faux pair, kept strictly apart from the real bulb classifiers above.
+//
+// SFLATC and SPACECE are not lamps. There are no bulbs in the art and the original game
+// never lights them; MAP03's stair hall is ceilinged in SFLATC and is simply dark. This
+// treats them as bulb arrays anyway, to lift rooms that read as too dark under RT.
+//
+// The usage split is why there are two predicates rather than one, and it mirrors the
+// real pair exactly. Across the game SFLATC appears 76 times and is a FLAT (33 floor,
+// 43 ceiling) like SFLATAQ, so it belongs to the flat perimeter walk. SPACECE appears 61
+// times and is a WALL texture (60 on sidedefs, 1 stray floor) like SPACEAZ, so it belongs
+// to the wall strip walk. Feeding either to the wrong walk would match almost nothing.
+static bool RT_IsFauxLampFlat( const char* name )
+{
+    return cvar::rt_faux_lamps && name && *name && strcmp( name, "SFLATC" ) == 0;
+}
+
+static bool RT_IsFauxLampWall( const char* name )
+{
+    return cvar::rt_faux_lamps && name && *name && strcmp( name, "SPACECE" ) == 0;
+}
+
+// Raw, not hue-normalised. RT_SectorHue forces the peak channel to 1 so a tint can never
+// darken a light; here darkness is the requested behaviour, so the colour is used as it
+// is written and rt_faux_lamp_intensity carries the brightness.
+static FVector3 RT_FauxLampHue()
+{
+    const uint32_t c = uint32_t( cvar::rt_faux_lamp_color );
+    return FVector3{ float( ( c >> 16 ) & 0xFF ) / 255.0f,
+                     float( ( c >> 8 ) & 0xFF ) / 255.0f,
+                     float( c & 0xFF ) / 255.0f };
+}
+
 void RT_UploadCeilingInsetLamps()
 {
     // Surface _e provides fixture albedo. These analytic lights blink + cast under
@@ -5108,7 +5170,13 @@ void RT_UploadWallStripLights()
     const float minLight = float{ cvar::rt_wall_strip_minlight };
     const float segLen   = std::max( 16.f, float{ cvar::rt_wall_strip_seglen } );
     const int   maxLights = std::max( 0, int{ cvar::rt_wall_strip_max } );
-    if( peak <= 0.01f || maxLights <= 0 )
+    // Faux panels have their own intensity and cap, so zeroing the real strips must not
+    // switch them off with it -- turning the real fixtures down to judge the fake ones is
+    // exactly the comparison someone will want to run.
+    const bool  fauxOn   = bool{ cvar::rt_faux_lamps } &&
+                          float{ cvar::rt_faux_lamp_intensity } > 0.01f &&
+                          int{ cvar::rt_faux_lamp_max } > 0;
+    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn )
     {
         return;
     }
@@ -5121,6 +5189,16 @@ void RT_UploadWallStripLights()
     int rejBand     = 0;
     int rejShort    = 0;
     int marked      = 0;
+
+    // Faux panels are budgeted apart from the real strips, for the same reason the flat
+    // walk splits its cap: an invented fixture must never push a real one out.
+    const int fauxMax      = std::max( 0, int{ cvar::rt_faux_lamp_max } );
+    int       fauxWalls    = 0;
+    int       fauxUploaded = 0;
+    // The walk stops only when BOTH budgets are spent -- gating the loops on the real
+    // count alone would let a run of real strips end the walk before any faux panel was
+    // even looked at.
+    auto budgetLeft = [ & ] { return uploaded < maxLights || fauxUploaded < fauxMax; };
 
     // Placement of the lights actually near the camera, not one arbitrary sample:
     // "the fixture matched" and "the light is where the bulbs are" are different claims,
@@ -5144,7 +5222,7 @@ void RT_UploadWallStripLights()
             continue;
         }
 
-        for( int s = 0; s < 2 && uploaded < maxLights; s++ )
+        for( int s = 0; s < 2 && budgetLeft(); s++ )
         {
             const side_t* side = line.sidedef[ s ];
             if( !side || !side->sector )
@@ -5156,18 +5234,34 @@ void RT_UploadWallStripLights()
             const side_t*   otherSide = line.sidedef[ 1 - s ];
             const sector_t* otherSec = otherSide ? otherSide->sector : nullptr;
 
-            for( int part = 0; part < 3 && uploaded < maxLights; part++ )
+            for( int part = 0; part < 3 && budgetLeft(); part++ )
             {
                 auto* gtex = TexMan.GetGameTexture( side->GetTexture( part ), true );
-                if( !gtex || !RT_IsWallStripLampTexture( gtex->GetName().GetChars() ) )
+                if( !gtex )
+                {
+                    continue;
+                }
+                const char* wtname = gtex->GetName().GetChars();
+                const bool  isFaux = RT_IsFauxLampWall( wtname );
+                if( !isFaux && !RT_IsWallStripLampTexture( wtname ) )
                 {
                     continue;
                 }
                 matchedTex++;
+                if( isFaux )
+                {
+                    fauxWalls++;
+                }
 
                 // Checked after the texture match so the tally can tell "no strips in
                 // this map" apart from "strips found but every one was rejected".
-                if( float( thisSec->lightlevel ) < minLight )
+                //
+                // Faux panels are exempt, and this is the whole point of them. The
+                // minlight gate exists so a real strip in an already-bright room does not
+                // double-light it; but a faux panel's only job is to lift a room that is
+                // too dark, so applying the gate would reject precisely the sectors the
+                // feature was asked for and leave it looking like it does nothing.
+                if( !isFaux && float( thisSec->lightlevel ) < minLight )
                 {
                     rejLight++;
                     continue;
@@ -5188,7 +5282,7 @@ void RT_UploadWallStripLights()
                 const int segs = std::clamp(
                     int( std::ceil( lineLen / segLen ) ), 1, int( WallStripSegsPerLine ) );
 
-                for( int sg = 0; sg < segs && uploaded < maxLights; sg++ )
+                for( int sg = 0; sg < segs && budgetLeft(); sg++ )
                 {
                     const double t0 = double( sg ) / segs;
                     const double t1 = double( sg + 1 ) / segs;
@@ -5268,8 +5362,18 @@ void RT_UploadWallStripLights()
                     const double ofs =
                         ( nx * towardX + ny * towardY ) >= 0.0 ? 2.0 : -2.0;
 
-                    const FVector3 hue = RT_SectorHue( thisSec->Colormap.LightColor,
-                                                       float{ cvar::rt_sector_tint_lights } );
+                    // Per-class budget, checked here rather than in the loop guard: the
+                    // guard only knows whether SOME budget remains, not whether this
+                    // particular light's budget does.
+                    if( isFaux ? ( fauxUploaded >= fauxMax ) : ( uploaded >= maxLights ) )
+                    {
+                        continue;
+                    }
+
+                    const FVector3 hue =
+                        isFaux ? RT_FauxLampHue()
+                               : RT_SectorHue( thisSec->Colormap.LightColor,
+                                               float{ cvar::rt_sector_tint_lights } );
 
                     auto toM = [ & ]( double x, double y, double z ) -> RgFloat3D {
                         return { float( x + nx * ofs ) * ONEGAMEUNIT_IN_METERS,
@@ -5288,7 +5392,10 @@ void RT_UploadWallStripLights()
                         .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                         .pNext     = nullptr,
                         .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
-                        .intensity = peak,
+                        .intensity = isFaux
+                                         ? std::max( 0.f,
+                                                     float{ cvar::rt_faux_lamp_intensity } )
+                                         : peak,
                         .position  = toM( mx, my, zMid ),
                         .radius = std::max( 0.01f, float{ cvar::rt_wall_strip_radius } ),
                     };
@@ -5341,7 +5448,14 @@ void RT_UploadWallStripLights()
                                             zHigh,
                                             part } );
                     }
-                    uploaded++;
+                    if( isFaux )
+                    {
+                        fauxUploaded++;
+                    }
+                    else
+                    {
+                        uploaded++;
+                    }
                 }
             }
         }
@@ -5353,7 +5467,8 @@ void RT_UploadWallStripLights()
         if( ( ++s_tick % 60 ) == 0 )
         {
             Printf( "rt_wall_strip: uploaded=%d (cap %d) | matchedTex=%d rejected: "
-                    "lightlevel=%d band=%d shortline=%d | I=%.0f radius=%.2f\n",
+                    "lightlevel=%d band=%d shortline=%d | I=%.0f radius=%.2f | "
+                    "faux %d sidedef(s), uploaded=%d (cap %d) I=%.0f\n",
                     uploaded,
                     maxLights,
                     matchedTex,
@@ -5361,7 +5476,11 @@ void RT_UploadWallStripLights()
                     rejBand,
                     rejShort,
                     peak,
-                    float{ cvar::rt_wall_strip_radius } );
+                    float{ cvar::rt_wall_strip_radius },
+                    fauxWalls,
+                    fauxUploaded,
+                    fauxMax,
+                    float{ cvar::rt_faux_lamp_intensity } );
             Printf( "  viewer z=%.0f — strip lights nearest the camera:\n", vpos.Z );
 
             std::sort( placed.begin(), placed.end(), []( const Placed& a, const Placed& b ) {
@@ -5406,7 +5525,12 @@ void RT_UploadCeilingEdgeLamps()
     const float zOfs      = float{ cvar::rt_ceiling_edge_zofs };
     const float inset     = float{ cvar::rt_ceiling_edge_inset };
     const int   maxLights = std::max( 0, int{ cvar::rt_ceiling_edge_max } );
-    if( peak <= 0.01f || maxLights <= 0 )
+    // See RT_UploadWallStripLights: the faux budget is independent, so the real lamps
+    // being off must not take the faux ones with them.
+    const bool  fauxOn    = bool{ cvar::rt_faux_lamps } &&
+                        float{ cvar::rt_faux_lamp_intensity } > 0.01f &&
+                        int{ cvar::rt_faux_lamp_max } > 0;
+    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn )
     {
         return;
     }
@@ -5414,6 +5538,7 @@ void RT_UploadCeilingEdgeLamps()
     int uploaded   = 0;
     int lampCeils  = 0;
     int lampFloors = 0;
+    int fauxFlats  = 0;
 
     // Collect first, then keep the nearest maxLights — do NOT stop the walk at the cap.
     //
@@ -5430,8 +5555,14 @@ void RT_UploadCeilingEdgeLamps()
         double   x, y, z;
         uint64_t id;
         FVector3 hue;
+        bool     faux;
     };
     std::vector< Cand > cand;
+    // Faux panels collect into their own list and get their own cap, then the two are
+    // merged. Appending them to `cand` would let invented fixtures compete with real
+    // bulbs for a budget that already binds hard (~800 demand vs 320), so the fake ones
+    // would darken the real ones — a regression no debug counter would obviously show.
+    std::vector< Cand > fauxCand;
 
     const DVector3 vpos    = r_viewpoint.Pos;
     const double   maxDist = std::max( 64.0, double( float{ cvar::rt_ceiling_edge_maxdist } ) );
@@ -5451,11 +5582,24 @@ void RT_UploadCeilingEdgeLamps()
         const bool isCeiling = ( plane == 0 );
         auto*      gtex      = TexMan.GetGameTexture(
             sector.GetTexture( isCeiling ? sector_t::ceiling : sector_t::floor ), true );
-        if( !gtex || !RT_IsCeilingInsetLampTexture( gtex->GetName().GetChars() ) )
+        if( !gtex )
         {
             continue;
         }
-        ( isCeiling ? lampCeils : lampFloors )++;
+        const char* ftname = gtex->GetName().GetChars();
+        const bool  isFaux = RT_IsFauxLampFlat( ftname );
+        if( !isFaux && !RT_IsCeilingInsetLampTexture( ftname ) )
+        {
+            continue;
+        }
+        if( isFaux )
+        {
+            fauxFlats++;
+        }
+        else
+        {
+            ( isCeiling ? lampCeils : lampFloors )++;
+        }
 
         for( unsigned li = 0; li < sector.Lines.Size(); li++ )
         {
@@ -5530,19 +5674,24 @@ void RT_UploadCeilingEdgeLamps()
                       CeilingEdgeSegsPerLine ) +
                     uint64_t( sg );
 
-                cand.push_back( Cand{ d2,
+                ( isFaux ? fauxCand : cand )
+                    .push_back( Cand{ d2,
                                       lx,
                                       ly,
                                       lz,
                                       id,
-                                      RT_SectorHue( sector.Colormap.LightColor,
-                                                    float{ cvar::rt_sector_tint_lights } ) } );
+                                      isFaux ? RT_FauxLampHue()
+                                             : RT_SectorHue(
+                                                   sector.Colormap.LightColor,
+                                                   float{ cvar::rt_sector_tint_lights } ),
+                                      isFaux } );
             }
         }
         }
     }
 
-    const int wanted = int( cand.size() );
+    const int wanted     = int( cand.size() );
+    const int fauxWanted = int( fauxCand.size() );
     if( cand.size() > size_t( maxLights ) )
     {
         std::nth_element( cand.begin(),
@@ -5551,6 +5700,19 @@ void RT_UploadCeilingEdgeLamps()
                           []( const Cand& a, const Cand& b ) { return a.dist2 < b.dist2; } );
         cand.resize( size_t( maxLights ) );
     }
+
+    // Same nearest-N trim, applied to the faux list against its own cap, before the two
+    // are merged. Trimming after the merge would defeat the point of the split budget.
+    const int fauxMax = std::max( 0, int{ cvar::rt_faux_lamp_max } );
+    if( fauxCand.size() > size_t( fauxMax ) )
+    {
+        std::nth_element( fauxCand.begin(),
+                          fauxCand.begin() + fauxMax,
+                          fauxCand.end(),
+                          []( const Cand& a, const Cand& b ) { return a.dist2 < b.dist2; } );
+        fauxCand.resize( size_t( fauxMax ) );
+    }
+    cand.insert( cand.end(), fauxCand.begin(), fauxCand.end() );
     // Nearest-first ordering, so the marker budget below lands on the lights actually in
     // front of the camera. Cheap at this size, and it makes the upload order stable.
     std::sort( cand.begin(), cand.end(), []( const Cand& a, const Cand& b ) {
@@ -5566,7 +5728,8 @@ void RT_UploadCeilingEdgeLamps()
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = rt.rgUtilPackColorFloat4D( c.hue.X, c.hue.Y, c.hue.Z, 1.0f ),
-            .intensity = peak,
+            .intensity = c.faux ? std::max( 0.f, float{ cvar::rt_faux_lamp_intensity } )
+                                : peak,
             .position  = { float( c.x ) * ONEGAMEUNIT_IN_METERS,
                            float( c.y ) * ONEGAMEUNIT_IN_METERS,
                            float( c.z ) * ONEGAMEUNIT_IN_METERS },
@@ -5617,15 +5780,23 @@ void RT_UploadCeilingEdgeLamps()
             // `wanted` vs `uploaded` is the point of this line: they were equal only
             // because the walk stopped at the cap, which hid that one sector was taking
             // the entire budget.
+            // Faux counted separately on purpose: the whole reason the budgets are split
+            // is so a glance can tell whether invented fixtures are crowding real ones.
             Printf( "rt_ceiling_edge: uploaded=%d of %d wanted (cap %d, within %.0fu) "
-                    "from %d lamp ceiling(s) + %d lamp floor(s) | I=%.0f\n",
+                    "from %d lamp ceiling(s) + %d lamp floor(s) | I=%.0f | "
+                    "faux %d flat(s), %d of %d wanted (cap %d) I=%.0f\n",
                     uploaded,
                     wanted,
                     maxLights,
                     maxDist,
                     lampCeils,
                     lampFloors,
-                    peak );
+                    peak,
+                    fauxFlats,
+                    int( fauxCand.size() ),
+                    fauxWanted,
+                    fauxMax,
+                    float{ cvar::rt_faux_lamp_intensity } );
         }
     }
 }
