@@ -236,6 +236,14 @@ namespace cvar
     RT_CVAR( rt_ceiling_edge_maxdist,   1536.f, "skip flat bulb lamps further than this from the camera. One across the level "
                                                 "contributes nothing visible but still costs a light slot and a ReSTIR reservoir" )
     RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads, split by ceiling vs floor" )
+    RT_CVAR( rt_light_mark_intensity,   25.f,   "intensity of every debug marker sphere. A marker is a real uploaded light, so N "
+                                                "markers flood the scene N times over: 320 cyan marks at 400 turned a whole MAP02 "
+                                                "room cyan and hid the fixtures being inspected. Section 10 recorded this for 67 "
+                                                "magenta marks and fixed it by splitting stats from marks — but the flood scales "
+                                                "with COUNT, so the limit has to be on the aggregate, not the single marker "
+                                                "(2026-08-08)" )
+    RT_CVAR( rt_light_mark_max,         24,     "mark only the N nearest lights of each path. Enough to read placement, few "
+                                                "enough that the marks cannot become the lighting" )
     RT_CVAR( rt_ceiling_edge_debug_marks, false, "cyan marker spheres at each flat-mounted bulb lamp. The wall path had markers "
                                                 "and this one did not, which read as 'only the wall bands are lit' when the "
                                                 "flat bands were merely invisible to the debug view (2026-08-08). Cyan vs the "
@@ -4465,7 +4473,7 @@ void RT_UploadGzDoomDynamicLights()
                 .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                 .pNext     = nullptr,
                 .color     = rt.rgUtilPackColorByte4D( 255, 0, 255, 255 ),
-                .intensity = 400.f,
+                .intensity = std::max( 0.f, float{ cvar::rt_light_mark_intensity } ),
                 .position  = sph.position,
                 .radius    = 0.05f,
             };
@@ -4952,6 +4960,7 @@ void RT_UploadWallStripLights()
     int rejLight    = 0;
     int rejBand     = 0;
     int rejShort    = 0;
+    int marked      = 0;
 
     // Placement of the lights actually near the camera, not one arbitrary sample:
     // "the fixture matched" and "the light is where the bulbs are" are different claims,
@@ -5137,13 +5146,16 @@ void RT_UploadWallStripLights()
                     RgResult r = rt.rgUploadLight( &info );
                     RG_CHECK( r );
 
-                    if( cvar::rt_wall_strip_debug_marks )
+                    // Same aggregate limit as the flat lamps: N markers are N real lights.
+                    if( cvar::rt_wall_strip_debug_marks &&
+                        marked < std::max( 0, int{ cvar::rt_light_mark_max } ) )
                     {
+                        marked++;
                         auto markSph = RgLightSphericalEXT{
                             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                             .pNext     = nullptr,
                             .color     = rt.rgUtilPackColorByte4D( 255, 0, 255, 255 ),
-                            .intensity = 400.f,
+                            .intensity = std::max( 0.f, float{ cvar::rt_light_mark_intensity } ),
                             .position  = toM( mx, my, zMid ),
                             .radius    = 0.05f,
                         };
@@ -5379,6 +5391,14 @@ void RT_UploadCeilingEdgeLamps()
                           []( const Cand& a, const Cand& b ) { return a.dist2 < b.dist2; } );
         cand.resize( size_t( maxLights ) );
     }
+    // Nearest-first ordering, so the marker budget below lands on the lights actually in
+    // front of the camera. Cheap at this size, and it makes the upload order stable.
+    std::sort( cand.begin(), cand.end(), []( const Cand& a, const Cand& b ) {
+        return a.dist2 < b.dist2;
+    } );
+
+    const int markMax = std::max( 0, int{ cvar::rt_light_mark_max } );
+    int       marked  = 0;
 
     for( const Cand& c : cand )
     {
@@ -5407,13 +5427,14 @@ void RT_UploadCeilingEdgeLamps()
         // Cyan, not the wall strips' magenta: with both paths marked at once the only
         // useful question is which one owns a given light, and two colours answer it
         // without a second toggle.
-        if( cvar::rt_ceiling_edge_debug_marks )
+        if( cvar::rt_ceiling_edge_debug_marks && marked < markMax )
         {
+            marked++;
             auto markSph = RgLightSphericalEXT{
                 .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                 .pNext     = nullptr,
                 .color     = rt.rgUtilPackColorByte4D( 0, 255, 255, 255 ),
-                .intensity = 400.f,
+                .intensity = std::max( 0.f, float{ cvar::rt_light_mark_intensity } ),
                 .position  = sph.position,
                 .radius    = 0.05f,
             };
