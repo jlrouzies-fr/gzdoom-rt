@@ -227,9 +227,14 @@ namespace cvar
     RT_CVAR( rt_ceiling_edge_zofs,      10.f,   "drop edge lamps this many map units below the ceiling plane" )
     RT_CVAR( rt_ceiling_edge_inset,     10.f,   "pull edge lamps this many map units in from the wall, so they are not embedded "
                                                 "in the geometry they light" )
-    RT_CVAR( rt_ceiling_edge_max,       160,    "hard cap on ceiling edge lamps per frame. Counts BOTH planes now that floors "
-                                                "are covered, so a map with bulb bands on floor and ceiling needs roughly twice "
-                                                "the headroom it did" )
+    RT_CVAR( rt_ceiling_edge_max,       320,    "hard cap on flat bulb lamps per frame, counting BOTH planes. Demand is ~800 "
+                                                "segments on MAP02 and MAP03, so this always binds and WHICH lights it drops is "
+                                                "the whole behaviour — the walk collects everything and keeps the nearest, rather "
+                                                "than stopping at the cap in sector-index order. Emitting in index order let "
+                                                "MAP02's sector 16 (11,614u perimeter, 364 lights) take the entire budget and "
+                                                "leave the rest of the level dark (2026-08-08)" )
+    RT_CVAR( rt_ceiling_edge_maxdist,   1536.f, "skip flat bulb lamps further than this from the camera. One across the level "
+                                                "contributes nothing visible but still costs a light slot and a ReSTIR reservoir" )
     RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads, split by ceiling vs floor" )
     RT_CVAR( rt_ceiling_edge_debug_marks, false, "cyan marker spheres at each flat-mounted bulb lamp. The wall path had markers "
                                                 "and this one did not, which read as 'only the wall bands are lit' when the "
@@ -704,6 +709,9 @@ constexpr uint64_t WallStripId_Base   = 0xD0000000ull;
 constexpr uint64_t CeilingEdgeId_Base = 0xE0000000ull;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
+// Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
+// under the 0x02000000 offset the debug markers add, so the two can never collide.
+constexpr uint64_t CeilingEdgeSegsPerLine = 32;
 
 
 
@@ -5231,21 +5239,42 @@ void RT_UploadCeilingEdgeLamps()
         return;
     }
 
-    int uploaded    = 0;
-    int lampCeils   = 0;
-    int lampFloors  = 0;
-    uint64_t idSeed = 0;
+    int uploaded   = 0;
+    int lampCeils  = 0;
+    int lampFloors = 0;
+
+    // Collect first, then keep the nearest maxLights — do NOT stop the walk at the cap.
+    //
+    // Emitting in sector-index order and breaking at the cap lets one sector take the
+    // whole budget: MAP02's sector 16 has an 11,614-unit perimeter and alone wants 364
+    // lights against a cap of 320, so every other bulb sector in the level got nothing
+    // and the debug line read "1 lamp ceiling + 1 lamp floor". Demand is ~800 segments on
+    // both MAP02 and MAP03, so the cap always binds and *which* lights it drops is the
+    // entire behaviour. Nearest-first also puts the budget where it is visible
+    // (2026-08-08).
+    struct Cand
+    {
+        double   dist2;
+        double   x, y, z;
+        uint64_t id;
+        FVector3 hue;
+    };
+    std::vector< Cand > cand;
+
+    const DVector3 vpos    = r_viewpoint.Pos;
+    const double   maxDist = std::max( 64.0, double( float{ cvar::rt_ceiling_edge_maxdist } ) );
+    const double   maxDist2 = maxDist * maxDist;
 
     // Both planes, not just the ceiling. Doom 64 runs one continuous bulb band along a
     // wall and then across whichever flat it meets — the band does not care which way it
     // is facing, and neither should this. Reading only sector_t::ceiling left 19 bulb
     // floors unlit on MAP02 and 46 on MAP03: the band visibly stopped at the corner
     // where it turned onto the floor (2026-08-08).
-    for( unsigned i = 0; i < primaryLevel->sectors.Size() && uploaded < maxLights; i++ )
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
     {
         const sector_t& sector = primaryLevel->sectors[ i ];
 
-        for( int plane = 0; plane < 2 && uploaded < maxLights; plane++ )
+        for( int plane = 0; plane < 2; plane++ )
         {
         const bool isCeiling = ( plane == 0 );
         auto*      gtex      = TexMan.GetGameTexture(
@@ -5256,7 +5285,7 @@ void RT_UploadCeilingEdgeLamps()
         }
         ( isCeiling ? lampCeils : lampFloors )++;
 
-        for( unsigned li = 0; li < sector.Lines.Size() && uploaded < maxLights; li++ )
+        for( unsigned li = 0; li < sector.Lines.Size(); li++ )
         {
             const line_t* line = sector.Lines[ li ];
             if( !line || !line->v1 || !line->v2 )
@@ -5275,9 +5304,12 @@ void RT_UploadCeilingEdgeLamps()
                 continue;
             }
 
-            const int segs = std::max( 1, int( std::ceil( len / segLen ) ) );
+            // Clamped so one very long line cannot dominate, and so the id packing below
+            // stays collision-free.
+            const int segs = std::clamp(
+                int( std::ceil( len / segLen ) ), 1, int( CeilingEdgeSegsPerLine ) );
 
-            for( int sg = 0; sg < segs && uploaded < maxLights; sg++ )
+            for( int sg = 0; sg < segs; sg++ )
             {
                 const double t  = ( double( sg ) + 0.5 ) / segs;
                 const double px = x1 + ( x2 - x1 ) * t;
@@ -5306,56 +5338,93 @@ void RT_UploadCeilingEdgeLamps()
                                         ? sector.ceilingplane.ZatPoint( lpos ) - zOfs
                                         : sector.floorplane.ZatPoint( lpos ) + zOfs;
 
-                const FVector3 hue = RT_SectorHue( sector.Colormap.LightColor,
-                                                   float{ cvar::rt_sector_tint_lights } );
-
-                auto sph = RgLightSphericalEXT{
-                    .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
-                    .pNext     = nullptr,
-                    .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
-                    .intensity = peak,
-                    .position  = { float( lx ) * ONEGAMEUNIT_IN_METERS,
-                                   float( ly ) * ONEGAMEUNIT_IN_METERS,
-                                   float( lz ) * ONEGAMEUNIT_IN_METERS },
-                    .radius    = srcRadius,
-                };
-
-                auto info = RgLightInfo{
-                    .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
-                    .pNext        = &sph,
-                    .uniqueID     = CeilingEdgeId_Base + idSeed,
-                    .isExportable = false,
-                };
-                idSeed++;
-
-                RgResult r = rt.rgUploadLight( &info );
-                RG_CHECK( r );
-                uploaded++;
-
-                // Cyan, not the wall strips' magenta: with both paths marked at once the
-                // only useful question is which one owns a given light, and two colours
-                // answer it without a second toggle.
-                if( cvar::rt_ceiling_edge_debug_marks )
+                const double dx = lx - vpos.X;
+                const double dy = ly - vpos.Y;
+                const double dz = lz - vpos.Z;
+                const double d2 = dx * dx + dy * dy + dz * dz;
+                if( d2 > maxDist2 )
                 {
-                    auto markSph = RgLightSphericalEXT{
-                        .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
-                        .pNext     = nullptr,
-                        .color     = rt.rgUtilPackColorByte4D( 0, 255, 255, 255 ),
-                        .intensity = 400.f,
-                        .position  = sph.position,
-                        .radius    = 0.05f,
-                    };
-                    auto markInfo = RgLightInfo{
-                        .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
-                        .pNext        = &markSph,
-                        .uniqueID     = info.uniqueID + 0x02000000ull,
-                        .isExportable = false,
-                    };
-                    RgResult mr = rt.rgUploadLight( &markInfo );
-                    RG_CHECK( mr );
+                    continue;
                 }
+
+                // Derived from map indices, not from a running counter. An idSeed++ makes
+                // every light's ID depend on how many lights happened to be emitted before
+                // it, so the moment the camera moves and the nearest-N set changes, every
+                // ID shifts and RTGL1 sees the entire set vanish and reappear — which
+                // flushes RR temporal history every frame. Map indices are stable.
+                const uint64_t id =
+                    CeilingEdgeId_Base +
+                    ( ( uint64_t( line->Index() ) * 2 + uint64_t( plane ) ) *
+                      CeilingEdgeSegsPerLine ) +
+                    uint64_t( sg );
+
+                cand.push_back( Cand{ d2,
+                                      lx,
+                                      ly,
+                                      lz,
+                                      id,
+                                      RT_SectorHue( sector.Colormap.LightColor,
+                                                    float{ cvar::rt_sector_tint_lights } ) } );
             }
         }
+        }
+    }
+
+    const int wanted = int( cand.size() );
+    if( cand.size() > size_t( maxLights ) )
+    {
+        std::nth_element( cand.begin(),
+                          cand.begin() + maxLights,
+                          cand.end(),
+                          []( const Cand& a, const Cand& b ) { return a.dist2 < b.dist2; } );
+        cand.resize( size_t( maxLights ) );
+    }
+
+    for( const Cand& c : cand )
+    {
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = rt.rgUtilPackColorFloat4D( c.hue.X, c.hue.Y, c.hue.Z, 1.0f ),
+            .intensity = peak,
+            .position  = { float( c.x ) * ONEGAMEUNIT_IN_METERS,
+                           float( c.y ) * ONEGAMEUNIT_IN_METERS,
+                           float( c.z ) * ONEGAMEUNIT_IN_METERS },
+            .radius    = srcRadius,
+        };
+
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = c.id,
+            .isExportable = false,
+        };
+
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+        uploaded++;
+
+        // Cyan, not the wall strips' magenta: with both paths marked at once the only
+        // useful question is which one owns a given light, and two colours answer it
+        // without a second toggle.
+        if( cvar::rt_ceiling_edge_debug_marks )
+        {
+            auto markSph = RgLightSphericalEXT{
+                .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                .pNext     = nullptr,
+                .color     = rt.rgUtilPackColorByte4D( 0, 255, 255, 255 ),
+                .intensity = 400.f,
+                .position  = sph.position,
+                .radius    = 0.05f,
+            };
+            auto markInfo = RgLightInfo{
+                .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                .pNext        = &markSph,
+                .uniqueID     = info.uniqueID + 0x02000000ull,
+                .isExportable = false,
+            };
+            RgResult mr = rt.rgUploadLight( &markInfo );
+            RG_CHECK( mr );
         }
     }
 
@@ -5364,10 +5433,15 @@ void RT_UploadCeilingEdgeLamps()
         static int s_tick;
         if( ( ++s_tick % 60 ) == 0 )
         {
-            Printf( "rt_ceiling_edge: uploaded=%d (cap %d) from %d lamp ceiling(s) + "
-                    "%d lamp floor(s) | I=%.0f\n",
+            // `wanted` vs `uploaded` is the point of this line: they were equal only
+            // because the walk stopped at the cap, which hid that one sector was taking
+            // the entire budget.
+            Printf( "rt_ceiling_edge: uploaded=%d of %d wanted (cap %d, within %.0fu) "
+                    "from %d lamp ceiling(s) + %d lamp floor(s) | I=%.0f\n",
                     uploaded,
+                    wanted,
                     maxLights,
+                    maxDist,
                     lampCeils,
                     lampFloors,
                     peak );
