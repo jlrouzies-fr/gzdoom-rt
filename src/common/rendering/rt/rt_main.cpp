@@ -261,7 +261,18 @@ namespace cvar
                                                 "with no co-located PointLight things" )
     RT_CVAR( rt_hang_lamp_intensity,    220.f,  "RT intensity for hanging tech lamps (many per room — keep below ceiling lamps)" )
     RT_CVAR( rt_hang_lamp_radius,       0.09f,  "RT source radius in meters for hanging tech lamps" )
-    RT_CVAR( rt_hang_lamp_zofs,         4.f,    "drop light this many map units below bulb estimate (SPAWNCEILING Z=bottom)" )
+    RT_CVAR( rt_hang_lamp_zofs,         4.f,    "drop light this many map units below bulb estimate (SPAWNCEILING Z=bottom). "
+                                                "Hanging lamps only — on a floor-standing pole this would walk the light down "
+                                                "into the solid shaft" )
+    RT_CVAR( rt_pole_lamp_intensity,    420.f,  "RT intensity for floor-standing tech pole lamps (64TechPoleLong/Short, sprites "
+                                                "A035/A036). Separate from rt_hang_lamp_intensity because they are a different "
+                                                "fixture in a different place: a pole lamp stands in the open with its head at "
+                                                "eye level and is often the only light in a MAP01 corridor, where a hanging lamp "
+                                                "comes in rows. These previously had no analytic light at all and were lit only "
+                                                "by whatever PointLight the actor carries through rt_dynlight at intensity 40 "
+                                                "(2026-08-08)" )
+    RT_CVAR( rt_pole_lamp_zfrac,        0.88f,  "bulb height as a fraction of actor height for pole lamps. The head is at the "
+                                                "TOP; the hanging lamps' 0.35 would put the light inside the shaft" )
     RT_CVAR( rt_hang_lamp_debug,        false,  "periodic console dump + yellow marker spheres at hanging lamp lights" )
 
     RT_CVAR( rt_sector_emis,            0.35f,  "make bright world surfaces emit light themselves, scaled by sector lightlevel "
@@ -4827,33 +4838,68 @@ void RT_UploadCeilingInsetLamps()
     }
 }
 
-static bool RT_IsHangingTechLampActor( AActor* mo )
+// Two shapes of tech lamp, and the difference that matters is where the bulb sits.
+//
+//   Hang  64LampTechLongHang (1015/LMP1), 64LampTechShortHang (1016/LMP2).
+//         +SPAWNCEILING, so mo->Z() is the BOTTOM of the bbox and the bulb hangs in the
+//         lower part of the fixture.
+//   Pole  64TechPoleLong (1031/A035, height 80), 64TechPoleShort (1032/A036, height 60).
+//         Floor-standing, bulb in the head at the TOP.
+//
+// Placing a pole lamp's light with the hanging fraction would bury it in the pole's
+// shaft, which is solid — fully occluded, and indistinguishable from no light at all
+// (§13). One enum, two height fractions (2026-08-08).
+enum class RtTechLamp
+{
+    None,
+    Hang,
+    Pole,
+};
+
+static RtTechLamp RT_TechLampKind( AActor* mo )
 {
     if( !mo )
     {
-        return false;
+        return RtTechLamp::None;
     }
-    // Doom 64 Retribution: 64LampTechLongHang (1015/LMP1), 64LampTechShortHang (1016/LMP2).
     if( mo->sprite >= 0 && mo->sprite < sprites.Size() )
     {
         const char* sn = sprites[ mo->sprite ].name;
         if( sn && sn[ 0 ] == 'L' && sn[ 1 ] == 'M' && sn[ 2 ] == 'P' &&
             ( sn[ 3 ] == '1' || sn[ 3 ] == '2' ) )
         {
-            return true;
+            return RtTechLamp::Hang;
+        }
+        // A035 / A036 are the pole lamps' only sprite. Matched in full, not by an 'A'
+        // prefix, which would swallow a large slice of the sprite table.
+        if( sn && strnicmp( sn, "A035", 4 ) == 0 )
+        {
+            return RtTechLamp::Pole;
+        }
+        if( sn && strnicmp( sn, "A036", 4 ) == 0 )
+        {
+            return RtTechLamp::Pole;
         }
     }
     // Class-name fallback (sprite table glitches / replacements).
     if( mo->GetClass() && mo->GetClass()->TypeName.IsValidName() )
     {
         const char* cn = mo->GetClass()->TypeName.GetChars();
-        if( cn && ( stricmp( cn, "64LampTechLongHang" ) == 0 ||
-                    stricmp( cn, "64LampTechShortHang" ) == 0 ) )
+        if( cn )
         {
-            return true;
+            if( stricmp( cn, "64LampTechLongHang" ) == 0 ||
+                stricmp( cn, "64LampTechShortHang" ) == 0 )
+            {
+                return RtTechLamp::Hang;
+            }
+            if( stricmp( cn, "64TechPoleLong" ) == 0 ||
+                stricmp( cn, "64TechPoleShort" ) == 0 )
+            {
+                return RtTechLamp::Pole;
+            }
         }
     }
-    return false;
+    return RtTechLamp::None;
 }
 
 // A light feature is a surface much brighter than the rest of ITS map, not one over a
@@ -5710,10 +5756,11 @@ void RT_UploadHangingTechLamps()
         return;
     }
 
-    const float peak      = std::max( 0.f, float{ cvar::rt_hang_lamp_intensity } );
+    const float hangPeak  = std::max( 0.f, float{ cvar::rt_hang_lamp_intensity } );
+    const float polePeak  = std::max( 0.f, float{ cvar::rt_pole_lamp_intensity } );
     const float srcRadius = std::max( 0.01f, float{ cvar::rt_hang_lamp_radius } );
     const float zOfs      = float{ cvar::rt_hang_lamp_zofs };
-    if( peak <= 0.01f )
+    if( hangPeak <= 0.01f && polePeak <= 0.01f )
     {
         return;
     }
@@ -5725,7 +5772,13 @@ void RT_UploadHangingTechLamps()
     AActor* mo = nullptr;
     while( ( mo = it.Next() ) != nullptr )
     {
-        if( !RT_IsHangingTechLampActor( mo ) )
+        const RtTechLamp kind = RT_TechLampKind( mo );
+        if( kind == RtTechLamp::None )
+        {
+            continue;
+        }
+        const float peak = ( kind == RtTechLamp::Pole ) ? polePeak : hangPeak;
+        if( peak <= 0.01f )
         {
             continue;
         }
@@ -5739,12 +5792,19 @@ void RT_UploadHangingTechLamps()
             continue;
         }
 
-        // SPAWNCEILING: actor Z is the bottom of the bbox (Top() touches ceiling).
-        // Bulb sits near the lower half of the hanging fixture. zofs nudges down from center.
-        const float px    = float( mo->X() ) * ONEGAMEUNIT_IN_METERS;
-        const float py    = float( mo->Y() ) * ONEGAMEUNIT_IN_METERS;
-        const float zBulb = float( mo->Z() ) + float( mo->Height ) * 0.35f - zOfs;
-        const float pz    = zBulb * ONEGAMEUNIT_IN_METERS;
+        // Hang: SPAWNCEILING, so actor Z is the bottom of the bbox (Top() touches the
+        //       ceiling) and the bulb sits in the lower part of the fixture; zofs nudges
+        //       further down.
+        // Pole: floor-standing, bulb in the head at the top. zofs is NOT applied — it
+        //       means "down from the bulb estimate", which on a pole walks the light
+        //       into the shaft.
+        const float px = float( mo->X() ) * ONEGAMEUNIT_IN_METERS;
+        const float py = float( mo->Y() ) * ONEGAMEUNIT_IN_METERS;
+        const float zBulb =
+            ( kind == RtTechLamp::Pole )
+                ? float( mo->Z() ) + float( mo->Height ) * float( cvar::rt_pole_lamp_zfrac )
+                : float( mo->Z() ) + float( mo->Height ) * 0.35f - zOfs;
+        const float pz = zBulb * ONEGAMEUNIT_IN_METERS;
 
         // Mild per-lamp phase so a dense hall doesn't hard-sync (no full blackout —
         // RR hates lights leaving the list; keep >= ~0.85).
