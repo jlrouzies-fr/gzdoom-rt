@@ -304,6 +304,16 @@ namespace cvar
 
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
+    RT_CVAR( rt_force_mask_opaque,      true,   "force vertex alpha to 1 on alpha-TESTED world geometry (fences, grates, the "
+                                                "MAP01 cage). RTGL1 rasterizes any primitive whose packed vertex alpha is below "
+                                                "MESH_TRANSLUCENT_ALPHA_THRESHOLD (0.98), and a rasterized primitive is never "
+                                                "added to the acceleration structure — so it renders perfectly and casts NO "
+                                                "shadow from any light at any intensity. That is exactly what the MAP01 fence "
+                                                "did while sprites in the same room cast fine. The cutout is unaffected: "
+                                                "RtAlphaTest.rahit tests the TEXTURE's alpha per texel, which is a separate "
+                                                "thing from the vertex alpha this controls. Only mAlphaThreshold>0 surfaces are "
+                                                "touched, so water/glass/additive FX keep their alpha and stay rasterized "
+                                                "(2026-08-08)" )
 
     RT_CVAR( rt_classic,                0.f,    "[0.0,1.0] what portion of the screen to render with a classic mode" )
     RT_CVAR( rt_classic_mus,            true,   "if true, apply high pass filter to music when classic mode is enabled" )
@@ -2234,12 +2244,34 @@ private:
             return false;
         };
 
+        // Masked world geometry — fences, grates, the MAP01 cage — is alpha-TESTED,
+        // not translucent: the texture's alpha cuts the holes, and the surface between
+        // the holes is fully solid. But it arrives carrying a vertex alpha below 1, and
+        // RTGL1 rasterizes any primitive whose packed vertex alpha is under
+        // MESH_TRANSLUCENT_ALPHA_THRESHOLD (0.98, Const.h). A rasterized primitive is
+        // never added to the acceleration structure at all, so it renders perfectly and
+        // casts NOTHING — no shadow, at any light intensity, from any light.
+        //
+        // That is why the MAP01 fence cast no shadow while sprites and props in the same
+        // room did: it was not in the BLAS to be hit. Forcing vertex alpha to 1 puts it
+        // back in; the cutout still works, because RtAlphaTest.rahit tests the TEXTURE's
+        // alpha per-texel and ignores intersections through the holes.
+        //
+        // Gated on mAlphaThreshold > 0 so only genuinely alpha-tested surfaces are
+        // affected — real translucents (water, glass, additive FX) keep their alpha and
+        // stay rasterized, which is correct for them (2026-08-08).
+        const bool worldMaskedCutout =
+            cvar::rt_force_mask_opaque && rt_mod_compat && !isUI && mAlphaThreshold > 0 &&
+            !rtstate.is< RtPrim::ExportInstance >() && !rtstate.is< RtPrim::FirstPerson >() &&
+            !rtstate.is< RtPrim::FirstPersonViewer >() && !rtstate.is< RtPrim::Sky >();
+
         // HACKHACK: replacements are ignored if a prim is rasterized, force alpha=1.0
         // Doom64-RT: always force opaque vertex color on world geometry under mod_compat.
         const bool forcealpha1 = ( mesh.flags & RG_MESH_FORCE_GLASS ) ||
                                  ( mesh.flags & RG_MESH_FORCE_MIRROR ) ||
                                  ( mesh.flags & RG_MESH_FORCE_WATER ) ||
-                                 ( rt_mod_compat && rtstate.is< RtPrim::ExportMap >() );
+                                 ( rt_mod_compat && rtstate.is< RtPrim::ExportMap >() ) ||
+                                 worldMaskedCutout;
 
         // Doom64-RT: sector lightlevel / lightcolor must NOT bake into PT albedo.
         // Otherwise: yellow key-door sectors look neon-emissive, and lightlevel-0 rooms
