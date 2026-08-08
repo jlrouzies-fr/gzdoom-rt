@@ -257,6 +257,11 @@ namespace cvar
     RT_CVAR( rt_faux_lamp_intensity,    110.f,  "RT intensity per faux panel light. Deliberately below rt_ceiling_edge_intensity "
                                                 "(180): a real bulb array should still out-light an invented one, or the fake "
                                                 "fixtures become the brightest thing in the map" )
+    RT_CVAR( rt_faux_lamp_stride,       2,      "subsample the bulb lattice: place a faux light on every Nth socket, on both "
+                                                "axes. 1 lights every bulb and is unaffordable — SFLATC's sockets sit 16 units "
+                                                "apart, so a 512x512 room alone wants over a thousand lights. 2 gives 32-unit "
+                                                "spacing. The stride counts ABSOLUTE lattice position, not a per-sector counter, "
+                                                "so the chosen bulbs stay aligned across tile and sector seams" )
     RT_CVAR( rt_faux_lamp_max,          128,    "hard cap on faux panel lights per frame, budgeted SEPARATELY from "
                                                 "rt_ceiling_edge_max and rt_wall_strip_max. Sharing a cap would be a silent "
                                                 "regression: edge-lamp demand is already ~800 against a cap of 320, so adding "
@@ -326,6 +331,20 @@ namespace cvar
 
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
+    RT_CVAR( rt_spectre_corpse_solid,   true,   "stop treating a 64Spectre as a spectre once it is dead (SAR2 frames I-N). "
+                                                "A spectre carries RG_MESH_PRIMITIVE_TRANSLUCENT, so RTGL1 rasterizes it and "
+                                                "RsWorld.inl draws vertexColor*texture with NO lighting term — the corpse "
+                                                "takes no light from anything and reads as self-lit. The DECORATE death "
+                                                "sequence ends on A_SetTranslucent(1.0) anyway, so the corpse is meant to be "
+                                                "solid: as an ordinary alpha-tested sprite it goes in the BLAS, gets lit and "
+                                                "casts a shadow like every other corpse (2026-08-08)" )
+    RT_CVAR( rt_spectre_shade,          1.0f,   "[0..1] how much the sector's sprite lightlevel dims a LIVING spectre. The "
+                                                "ghost stays rasterized to keep its see-through look, and a rasterized "
+                                                "primitive is never lit, so without this it renders at full texture "
+                                                "brightness in a pitch-dark room — the 'baked light' look. 0 = old behaviour" )
+    RT_CVAR( rt_spectre_shade_min,      0.25f,  "floor for rt_spectre_shade. Doom 64 rooms are routinely lightlevel 0 and lit "
+                                                "only by RT lamps / the flashlight, which a rasterized sprite cannot see — "
+                                                "without a floor the spectre would go pure black and unfindable there" )
     RT_CVAR_NOARCH( rt_prim_debug,     false,   "Debug: list world textures RTGL1 will RASTERIZE rather than ray-trace. A "
                                                 "rasterized primitive is never added to the acceleration structure, so it "
                                                 "renders normally and can never block a shadow ray — which looks exactly like "
@@ -780,6 +799,9 @@ constexpr uint64_t CeilingLampId_Base = 0xB0000000ull;
 constexpr uint64_t HangLampId_Base    = 0xC0000000ull;
 constexpr uint64_t WallStripId_Base   = 0xD0000000ull;
 constexpr uint64_t CeilingEdgeId_Base = 0xE0000000ull;
+// Faux panel lattice lights. Own range because their IDs are derived from a sector index
+// and a lattice cell rather than from a linedef, so they cannot share the edge encoding.
+constexpr uint64_t FauxLatticeId_Base = 0xF0000000ull;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -1622,6 +1644,26 @@ public:
             if( n && n[ 0 ] == 'S' && n[ 1 ] == 'A' && n[ 2 ] == 'R' &&
                 n[ 3 ] == '2' )  // SAR2 = 64Spectre sprite prefix
             {
+                // n[4] is the animation frame letter (rt_state.h: 'A' + animframe).
+                // SAR2 I..N are the death frames — the WAD stores them as I0..N0, and
+                // the DECORATE Death sequence fades in to A_SetTranslucent(1.0), so the
+                // corpse is authored as a SOLID body, not a ghost.
+                //
+                // Keeping the spectre treatment on them is what makes a dead spectre
+                // glow: spectres are flagged RG_MESH_PRIMITIVE_TRANSLUCENT, RTGL1
+                // rasterizes any translucent primitive instead of tracing it
+                // (VulkanDevice.cpp IsRasterized), and the rasterizer shader
+                // (RsWorld.inl) outputs vertexColor * texture with no lighting term
+                // whatsoever. So the corpse receives light from nothing — not the
+                // flashlight, not a lamp, not the sun — and sits at full texture
+                // brightness on a dark floor. Dropping it out of IsSpectre() makes it an
+                // ordinary alpha-tested sprite: alpha 1.0 clears
+                // MESH_TRANSLUCENT_ALPHA_THRESHOLD, it enters the BLAS, and it is lit
+                // and casts a shadow like every other corpse (2026-08-08).
+                if( cvar::rt_spectre_corpse_solid && n[ 4 ] >= 'I' && n[ 4 ] <= 'N' )
+                {
+                    return false;
+                }
                 return true;
             }
         }
@@ -2401,9 +2443,32 @@ private:
         }
         else if( forceSpriteUnlitAlbedo )
         {
-            primColor = rt.rgUtilPackColorFloat4D( mStreamData.uObjectColor.r,
-                                                  mStreamData.uObjectColor.g,
-                                                  mStreamData.uObjectColor.b,
+            // Dropping the sector lightlevel is right for every sprite the path tracer
+            // actually lights — it is baked shading, and RT relights the sprite itself.
+            // The living spectre is the one sprite RT never lights: it keeps
+            // RG_MESH_PRIMITIVE_TRANSLUCENT for its see-through look, so RTGL1
+            // rasterizes it and RsWorld.inl writes vertexColor * texture with no
+            // lighting term at all. With the lightlevel gone there is then nothing left
+            // to darken it, and the ghost renders at full texture brightness in an unlit
+            // room — the "baked light" look.
+            //
+            // Put the lightlevel back on that one rasterized case. The floor matters:
+            // Doom 64 rooms are routinely lightlevel 0 and lit entirely by RT lamps and
+            // the flashlight, which a rasterized primitive cannot see, so a raw multiply
+            // would turn the spectre pure black exactly where the player needs to spot
+            // it (2026-08-08).
+            float shade = 1.0f;
+            if( float( cvar::rt_spectre_shade ) > 0.f && IsSpectre() )
+            {
+                const float ll  = std::clamp( rtstate.m_lightlevel / 255.f, 0.f, 1.f );
+                const float lit = std::max( ll, float( cvar::rt_spectre_shade_min ) );
+                shade = 1.f - std::clamp( float( cvar::rt_spectre_shade ), 0.f, 1.f ) *
+                                  ( 1.f - lit );
+            }
+
+            primColor = rt.rgUtilPackColorFloat4D( mStreamData.uObjectColor.r * shade,
+                                                  mStreamData.uObjectColor.g * shade,
+                                                  mStreamData.uObjectColor.b * shade,
                                                   l_spriteAlpha() );
         }
         else
@@ -5568,6 +5633,116 @@ void RT_UploadCeilingEdgeLamps()
     const double   maxDist = std::max( 64.0, double( float{ cvar::rt_ceiling_edge_maxdist } ) );
     const double   maxDist2 = maxDist * maxDist;
 
+    // SFLATC's bulb lattice, in texture pixels within the 64x64 tile, detected from the
+    // art by tools/make_bulb_textures.py rather than assumed: 4x4 sockets at 7.5, 23.5,
+    // 39.5, 55.5 on both axes. Flats are mapped 1:1 to world units from the world origin,
+    // so these are also world offsets modulo 64.
+    static constexpr double FauxFlatLattice[] = { 7.5, 23.5, 39.5, 55.5 };
+    constexpr double        FauxTile          = 64.0;
+
+    // One light per bulb is unaffordable: at 16-unit spacing a 512x512 room wants over a
+    // thousand. The stride subsamples the lattice, so lights stay ON bulbs (which is the
+    // whole point) but not on every one.
+    const int strideN = std::max( 1, int{ cvar::rt_faux_lamp_stride } );
+
+    auto addFauxLattice = [ & ]( const sector_t& sector, unsigned secIndex, bool isCeiling ) {
+        double minx = 1.e9, miny = 1.e9, maxx = -1.e9, maxy = -1.e9;
+        for( unsigned li = 0; li < sector.Lines.Size(); li++ )
+        {
+            const line_t* line = sector.Lines[ li ];
+            if( !line )
+            {
+                continue;
+            }
+            for( const vertex_t* v : { line->v1, line->v2 } )
+            {
+                if( !v )
+                {
+                    continue;
+                }
+                minx = std::min( minx, v->fX() );
+                maxx = std::max( maxx, v->fX() );
+                miny = std::min( miny, v->fY() );
+                maxy = std::max( maxy, v->fY() );
+            }
+        }
+        if( maxx < minx || maxy < miny )
+        {
+            return;
+        }
+
+        const int nOff = int( std::size( FauxFlatLattice ) );
+        // Walk whole tiles across the sector's bounding box, then the lattice within each.
+        const long tile0x = long( std::floor( minx / FauxTile ) );
+        const long tile1x = long( std::floor( maxx / FauxTile ) );
+        const long tile0y = long( std::floor( miny / FauxTile ) );
+        const long tile1y = long( std::floor( maxy / FauxTile ) );
+
+        for( long ty = tile0y; ty <= tile1y; ty++ )
+        {
+            for( long tx = tile0x; tx <= tile1x; tx++ )
+            {
+                for( int oy = 0; oy < nOff; oy++ )
+                {
+                    for( int ox = 0; ox < nOff; ox++ )
+                    {
+                        // Stride against the ABSOLUTE lattice index, not a per-sector
+                        // counter, so the chosen bulbs line up across tile and sector
+                        // boundaries instead of jumping at every seam.
+                        const long gx = tx * nOff + ox;
+                        const long gy = ty * nOff + oy;
+                        if( ( ( gx % strideN ) + strideN ) % strideN != 0 ||
+                            ( ( gy % strideN ) + strideN ) % strideN != 0 )
+                        {
+                            continue;
+                        }
+
+                        const double px = double( tx ) * FauxTile + FauxFlatLattice[ ox ];
+                        const double py = double( ty ) * FauxTile + FauxFlatLattice[ oy ];
+                        if( px < minx || px > maxx || py < miny || py > maxy )
+                        {
+                            continue;
+                        }
+
+                        const double dx = px - vpos.X;
+                        const double dy = py - vpos.Y;
+                        const double d2 = dx * dx + dy * dy;
+                        if( d2 > maxDist2 )
+                        {
+                            continue;
+                        }
+
+                        // The bounding box is not the sector: an L-shaped room would
+                        // otherwise get lights hanging in the neighbouring one.
+                        if( primaryLevel->PointInSector( DVector2( px, py ) ) != &sector )
+                        {
+                            continue;
+                        }
+
+                        const DVector2 at{ px, py };
+                        const double   pz = isCeiling
+                                                ? sector.ceilingplane.ZatPoint( at ) - zOfs
+                                                : sector.floorplane.ZatPoint( at ) + zOfs;
+
+                        // Stable ID from position, not from an emit counter: the nearest-N
+                        // set changes as the camera moves, and a counter-derived ID would
+                        // renumber every light and flush RR temporal history each frame.
+                        const uint64_t id =
+                            FauxLatticeId_Base +
+                            ( uint64_t( secIndex ) << 20 ) +
+                            ( uint64_t( ( gy & 0x3FF ) ) << 10 ) +
+                            uint64_t( gx & 0x3FF ) +
+                            ( isCeiling ? 0ull : 0x80000ull );
+
+                        fauxCand.push_back(
+                            Cand{ d2, px, py, pz, id, RT_FauxLampHue(), true } );
+                    }
+                }
+            }
+        }
+    };
+
+
     // Both planes, not just the ceiling. Doom 64 runs one continuous bulb band along a
     // wall and then across whichever flat it meets — the band does not care which way it
     // is facing, and neither should this. Reading only sector_t::ceiling left 19 bulb
@@ -5595,11 +5770,22 @@ void RT_UploadCeilingEdgeLamps()
         if( isFaux )
         {
             fauxFlats++;
+
+            // Faux flats do NOT use the perimeter walk below, and that is the whole
+            // point of this branch. The perimeter walk drops a light every
+            // rt_ceiling_edge_seglen units around the sector edge, which has no relation
+            // to where the art puts its bulbs — on SFLATC the sockets are a 4x4 lattice
+            // at 16-unit spacing, so perimeter lights land between bulbs, in the middle
+            // of blank plate, and read as light coming from nowhere. Placing them on the
+            // lattice instead means every faux light sits inside a painted socket.
+            //
+            // Doom flats are mapped 1:1 to world units and anchored at the world origin,
+            // so a socket at texture u appears at every world x with x mod 64 == u. The
+            // lattice below is expressed as offsets within that 64-unit tile.
+            addFauxLattice( sector, i, isCeiling );
+            continue;
         }
-        else
-        {
-            ( isCeiling ? lampCeils : lampFloors )++;
-        }
+        ( isCeiling ? lampCeils : lampFloors )++;
 
         for( unsigned li = 0; li < sector.Lines.Size(); li++ )
         {
