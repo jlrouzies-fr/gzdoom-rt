@@ -275,6 +275,34 @@ namespace cvar
                                                 "regression: edge-lamp demand is already ~800 against a cap of 320, so adding "
                                                 "SFLATC's 76 flats to the same pool would push real bulbs out of the nearest-N "
                                                 "set and darken fixtures that do exist, to light ones that do not" )
+
+    RT_CVAR( rt_solo_lamps,             true,   "light SFLATDE and SFLATCH: single-bulb ceiling flats that DO show a lit bulb "
+                                                "in the art (unlike SFLATC/SPACECE's blank sockets) but that the original game "
+                                                "never gave a light to. Not part of the faux/invented family — the bulb is "
+                                                "real, so the light is white and placed exactly on it, one per texture tile, "
+                                                "with its own cvars, colour and budget so it can never crowd rt_faux_lamps or "
+                                                "the real ceiling-edge walk out of their light slots (2026-08-08)" )
+    RT_CVAR_COLOR( rt_solo_lamp_color,  0xFFFFFF, "colour of the solo bulb lights (hex): plain white, used RAW like the faux "
+                                                "colour. Unlike the faux panels, these fixtures genuinely show a lit bulb in "
+                                                "the art, so there is no case for tinting them — white is not a placeholder "
+                                                "here, it is the answer" )
+    RT_CVAR( rt_solo_lamp_intensity,    90.f,   "RT intensity per solo bulb light. Deliberately modest — well under "
+                                                "rt_ceiling_edge_intensity (180), rt_faux_lamp_intensity (500) and "
+                                                "rt_ceiling_lamp_intensity (700): a single small ceiling bulb over a room "
+                                                "should read as a normal fixture, not as the brightest thing in it" )
+    RT_CVAR( rt_solo_lamp_radius,       0.06f,  "RT source radius in meters for solo bulb lights. Tighter than the faux/real "
+                                                "lattice/edge lamps (0.35/0.10): a single visible bulb reads better with a "
+                                                "harder, more precise source than a soft wide one" )
+    RT_CVAR( rt_solo_lamp_zofs,         8.f,    "drop solo bulb lights this many map units below the ceiling plane" )
+    RT_CVAR( rt_solo_lamp_max,          64,     "hard cap on solo bulb lights per frame, budgeted separately from "
+                                                "rt_faux_lamp_max and rt_ceiling_edge_max for the same reason those two are "
+                                                "split from each other — SFLATDE alone tiles across a 768x768 MAP03 room "
+                                                "(144 positions at stride 1), which must not be able to starve the real or "
+                                                "faux lattices of light slots" )
+    RT_CVAR( rt_solo_lamp_stride,       1,      "subsample the solo bulb lattice like rt_faux_lamp_stride. Default 1 (light "
+                                                "every bulb) because these are a handful of genuine fixtures per map, not a "
+                                                "dense invented grid — raise it if a large SFLATDE/SFLATCH room turns out to "
+                                                "want fewer, stronger lights instead" )
     RT_CVAR( rt_light_mark_intensity,   25.f,   "intensity of every debug marker sphere. A marker is a real uploaded light, so N "
                                                 "markers flood the scene N times over: 320 cyan marks at 400 turned a whole MAP02 "
                                                 "room cyan and hid the fixtures being inspected. Section 10 recorded this for 67 "
@@ -346,18 +374,20 @@ namespace cvar
                                                 "ends on A_SetTranslucent(1.0) anyway, so the corpse is meant to be solid: as "
                                                 "an ordinary alpha-tested sprite it goes in the BLAS, gets lit and casts a "
                                                 "shadow like every other corpse (2026-08-08)" )
-    RT_CVAR( rt_ghost_solid,            true,   "render a LIVING soft-blend monster as a solid sprite too (64Spectre SAR2, "
-                                                "64NightmareImp TRO2) — the same treatment rt_spectre_corpse_solid gives their "
-                                                "corpses. Left translucent they never enter the BLAS, so the path tracer "
-                                                "cannot light them and they sit at full texture brightness in an unlit room. "
-                                                "Solid means alpha-tested at alpha 1: traced, lit, casting a shadow, and with "
-                                                "the _e eye mask emitting as a real material — so in the dark the body goes "
-                                                "black and only the eyes show. The cost is the see-through look: 0 restores "
-                                                "the rasterized ghost, along with the baked-lit appearance (2026-08-08).\n"
-                                                "Two other routes to the same goal were tried and rejected: a vertex-colour "
-                                                "dimmer (cannot work — RsWorld.inl derives its emissive from baseColor(), so "
-                                                "darkening the body darkens the eyes by the same factor) and GLASS (traced and "
-                                                "see-through, but a refractive billboard is the wrong look here)." )
+    RT_CVAR( rt_ghost_solid,            false,  "render a LIVING soft-blend monster (64Spectre SAR2, 64NightmareImp TRO2) as an "
+                                                "ordinary solid sprite instead of the rasterized translucent overlay. "
+                                                "Superseded by rt_illum_volume, which fixes the baked-lit look WITHOUT giving "
+                                                "up transparency — leave this at 0 unless rt_illum_volume is unavailable (old "
+                                                "RTGL1.dll) or looks wrong. When on: alpha-tested at alpha 1, so the sprite is "
+                                                "traced, lit and shadow-casting, and its _e eye mask emits as a real material — "
+                                                "but the ghost look is gone; the body is a solid dark silhouette. Two other "
+                                                "routes to solving the darkening problem were tried and rejected before "
+                                                "rt_illum_volume was found: a vertex-colour dimmer (cannot work — RsWorld.inl "
+                                                "derives its emissive from baseColor(), so darkening the body darkens the eyes "
+                                                "by the same factor) and GLASS (traced and see-through, but a refractive "
+                                                "billboard is the wrong look). Corpses are unaffected by this cvar — see "
+                                                "rt_spectre_corpse_solid, which stays on: a dead spectre/imp is meant to read "
+                                                "as a solid body, not a ghost (2026-08-08)" )
     RT_CVAR_NOARCH( rt_prim_debug,     false,   "Debug: list world textures RTGL1 will RASTERIZE rather than ray-trace. A "
                                                 "rasterized primitive is never added to the acceleration structure, so it "
                                                 "renders normally and can never block a shadow ray — which looks exactly like "
@@ -669,6 +699,18 @@ namespace cvar
     RT_CVAR( rt_volume_lintensity,      1.f,    "intensity of lights for scattering" )
     RT_CVAR( rt_volume_lassymetry,      0.5f,   "scaterring phase function assymetry" )
     RT_CVAR( rt_volume_history,         8.f,    "max history length for scaterring accumulation (in frames)" )
+    RT_CVAR( rt_illum_volume,           true,   "sample the traced illumination volume (RtVolumetric.rgen output) when shading "
+                                                "RASTERIZED translucent primitives (spectres, nightmare imps, particles, "
+                                                "additive FX), instead of the RTGL1 default max(1, avgLuminance), which can "
+                                                "only brighten and never darkens a sprite to match a dark room. This is the "
+                                                "lever that lets a see-through ghost dim in the dark without going solid: "
+                                                "RsWorld.inl multiplies only outColor (the body) by the volume sample, and "
+                                                "computes ldrEmis (the _e emissive -- eyes) from baseColor() afterward, so the "
+                                                "eyes are never touched by the dimming. Requires RTGL1.dll built with "
+                                                "ILLUMINATION_VOLUME=1 (deps/RTGL/Source/Volumetric.h + "
+                                                "Generated/GenerateShaderCommon.py) -- on an older DLL this cvar has no "
+                                                "effect, RTGL1 silently ignores useIlluminationVolume. Needs "
+                                                "rt_volume_type != 0 to have data to sample (2026-08-08)" )
 
     RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
@@ -815,6 +857,11 @@ constexpr uint64_t CeilingEdgeId_Base = 0xE0000000ull;
 // Faux panel lattice lights. Own range because their IDs are derived from a sector index
 // and a lattice cell rather than from a linedef, so they cannot share the edge encoding.
 constexpr uint64_t FauxLatticeId_Base = 0xF0000000ull;
+// Solo bulb lattice lights. NOT the next round number after FauxLatticeId_Base: that
+// formula is secIndex<<20 + ..., and secIndex alone can push the faux range past 32 bits
+// on a map with thousands of sectors, so "the next range" is not a safe assumption here.
+// Bit 40 is comfortably above anything that formula can produce.
+constexpr uint64_t SoloLatticeId_Base = 1ull << 40;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -4942,6 +4989,61 @@ static FVector3 RT_FauxLampHue()
                      float( c & 0xFF ) / 255.0f };
 }
 
+// The solo pair: SFLATDE and SFLATCH. Different from the faux pair in the one way that
+// matters — these textures DO show a lit bulb baked into the art (a bright white blob
+// dead centre in an X-shaped or ringed housing), the base game simply never wired a light
+// to it. So this is not an invention like rt_faux_lamps; it is the same "texture implies a
+// fixture" reasoning as the real bulb arrays (SFLATAS/SFLATAQ/SPORT*), just for two names
+// that classifier does not cover. Kept off that classifier and given its own cvars/budget
+// rather than folded in, because RT_UploadCeilingInsetLamps' shared intensity (700, and
+// currently switched off entirely via rt_ceiling_lamps 0 in the launcher) is tuned for a
+// different fixture family and reusing it would either relight nothing (feature off) or
+// retune those fixtures as a side effect of this one.
+//
+// Each texture is single-bulb, not a lattice — the geometry is one offset per 64-unit
+// tile, not a grid within it — so unlike SFLATC's shared 4-value array, the two textures
+// carry their OWN centre, detected the same way (flood-fill centroid of the bright blob):
+//   SFLATDE  centre (31.5, 30.5)
+//   SFLATCH  centre (32.0, 32.0)
+struct SoloBulbTex
+{
+    const char* name;
+    double      ox, oy;
+};
+static constexpr SoloBulbTex SoloBulbTextures[] = {
+    { "SFLATDE", 31.5, 30.5 },
+    { "SFLATCH", 32.0, 32.0 },
+};
+
+static bool RT_FindSoloBulbOffset( const char* name, double& ox, double& oy )
+{
+    if( !cvar::rt_solo_lamps || !name || !*name )
+    {
+        return false;
+    }
+    for( const SoloBulbTex& t : SoloBulbTextures )
+    {
+        if( strcmp( name, t.name ) == 0 )
+        {
+            ox = t.ox;
+            oy = t.oy;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Plain white, used raw like RT_FauxLampHue — but unlike the faux colour, there is no
+// darkening intent here, so this exists mainly so the colour is a cvar rather than a
+// hardcoded constant, in case a texture is added later whose bulb is not white.
+static FVector3 RT_SoloLampHue()
+{
+    const uint32_t c = uint32_t( cvar::rt_solo_lamp_color );
+    return FVector3{ float( ( c >> 16 ) & 0xFF ) / 255.0f,
+                     float( ( c >> 8 ) & 0xFF ) / 255.0f,
+                     float( c & 0xFF ) / 255.0f };
+}
+
 void RT_UploadCeilingInsetLamps()
 {
     // Surface _e provides fixture albedo. These analytic lights blink + cast under
@@ -5666,12 +5768,15 @@ void RT_UploadCeilingEdgeLamps()
     const float zOfs      = float{ cvar::rt_ceiling_edge_zofs };
     const float inset     = float{ cvar::rt_ceiling_edge_inset };
     const int   maxLights = std::max( 0, int{ cvar::rt_ceiling_edge_max } );
-    // See RT_UploadWallStripLights: the faux budget is independent, so the real lamps
-    // being off must not take the faux ones with them.
+    // See RT_UploadWallStripLights: the faux and solo budgets are independent, so the
+    // real lamps being off must not take either of them with it.
     const bool  fauxOn    = bool{ cvar::rt_faux_lamps } &&
                         float{ cvar::rt_faux_lamp_intensity } > 0.01f &&
                         int{ cvar::rt_faux_lamp_max } > 0;
-    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn )
+    const bool  soloOn    = bool{ cvar::rt_solo_lamps } &&
+                        float{ cvar::rt_solo_lamp_intensity } > 0.01f &&
+                        int{ cvar::rt_solo_lamp_max } > 0;
+    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn && !soloOn )
     {
         return;
     }
@@ -5680,6 +5785,7 @@ void RT_UploadCeilingEdgeLamps()
     int lampCeils  = 0;
     int lampFloors = 0;
     int fauxFlats  = 0;
+    int soloFlats  = 0;
 
     // Collect first, then keep the nearest maxLights — do NOT stop the walk at the cap.
     //
@@ -5696,14 +5802,17 @@ void RT_UploadCeilingEdgeLamps()
         double   x, y, z;
         uint64_t id;
         FVector3 hue;
-        bool     faux;
+        float    intensity;
+        float    radius;
     };
     std::vector< Cand > cand;
-    // Faux panels collect into their own list and get their own cap, then the two are
-    // merged. Appending them to `cand` would let invented fixtures compete with real
-    // bulbs for a budget that already binds hard (~800 demand vs 320), so the fake ones
-    // would darken the real ones — a regression no debug counter would obviously show.
+    // Faux panels and solo bulbs each collect into their own list and get their own cap,
+    // then all three are merged. Appending them to `cand` would let invented/solo fixtures
+    // compete with real bulbs for a budget that already binds hard (~800 demand vs 320),
+    // so they would darken the real ones — a regression no debug counter would obviously
+    // show.
     std::vector< Cand > fauxCand;
+    std::vector< Cand > soloCand;
 
     const DVector3 vpos    = r_viewpoint.Pos;
     const double   maxDist = std::max( 64.0, double( float{ cvar::rt_ceiling_edge_maxdist } ) );
@@ -5714,14 +5823,30 @@ void RT_UploadCeilingEdgeLamps()
     // 39.5, 55.5 on both axes. Flats are mapped 1:1 to world units from the world origin,
     // so these are also world offsets modulo 64.
     static constexpr double FauxFlatLattice[] = { 7.5, 23.5, 39.5, 55.5 };
-    constexpr double        FauxTile          = 64.0;
+    constexpr double        TileSize          = 64.0;
 
     // One light per bulb is unaffordable: at 16-unit spacing a 512x512 room wants over a
     // thousand. The stride subsamples the lattice, so lights stay ON bulbs (which is the
-    // whole point) but not on every one.
-    const int strideN = std::max( 1, int{ cvar::rt_faux_lamp_stride } );
+    // whole point) but not on every one. Faux and solo get independent strides because
+    // they are different densities of invention: SFLATC is a dense invented grid, the
+    // solo textures are a handful of genuine fixtures.
+    const int fauxStrideN = std::max( 1, int{ cvar::rt_faux_lamp_stride } );
+    const int soloStrideN = std::max( 1, int{ cvar::rt_solo_lamp_stride } );
+    const float fauxIntensity = std::max( 0.f, float{ cvar::rt_faux_lamp_intensity } );
+    const float soloIntensity = std::max( 0.f, float{ cvar::rt_solo_lamp_intensity } );
+    const float soloRadius    = std::max( 0.01f, float{ cvar::rt_solo_lamp_radius } );
+    const float soloZofs      = float{ cvar::rt_solo_lamp_zofs };
 
-    auto addFauxLattice = [ & ]( const sector_t& sector, unsigned secIndex, bool isCeiling ) {
+    // Shared by both the faux (4x4 grid) and solo (single bulb) placements: walk whole
+    // 64-unit tiles across a sector's bounding box, and within each tile drop a light at
+    // every (offX[ox], offY[oy]) pair — a 4x4 cross product for SFLATC's grid, or a single
+    // point for a solo texture's one bulb. offX/offY are separate arrays (not one shared
+    // array reused for both axes) because a solo bulb's centre need not be exactly square
+    // — SFLATDE's detected centre is (31.5, 30.5), not (31.5, 31.5).
+    auto addLattice = [ & ]( const sector_t& sector, unsigned secIndex, bool isCeiling,
+                             const double* offX, const double* offY, int nOff, int stride,
+                             FVector3 hue, float intensity, float radius, float zofs,
+                             uint64_t idBase, std::vector< Cand >& out ) {
         double minx = 1.e9, miny = 1.e9, maxx = -1.e9, maxy = -1.e9;
         for( unsigned li = 0; li < sector.Lines.Size(); li++ )
         {
@@ -5747,12 +5872,11 @@ void RT_UploadCeilingEdgeLamps()
             return;
         }
 
-        const int nOff = int( std::size( FauxFlatLattice ) );
         // Walk whole tiles across the sector's bounding box, then the lattice within each.
-        const long tile0x = long( std::floor( minx / FauxTile ) );
-        const long tile1x = long( std::floor( maxx / FauxTile ) );
-        const long tile0y = long( std::floor( miny / FauxTile ) );
-        const long tile1y = long( std::floor( maxy / FauxTile ) );
+        const long tile0x = long( std::floor( minx / TileSize ) );
+        const long tile1x = long( std::floor( maxx / TileSize ) );
+        const long tile0y = long( std::floor( miny / TileSize ) );
+        const long tile1y = long( std::floor( maxy / TileSize ) );
 
         for( long ty = tile0y; ty <= tile1y; ty++ )
         {
@@ -5767,14 +5891,14 @@ void RT_UploadCeilingEdgeLamps()
                         // boundaries instead of jumping at every seam.
                         const long gx = tx * nOff + ox;
                         const long gy = ty * nOff + oy;
-                        if( ( ( gx % strideN ) + strideN ) % strideN != 0 ||
-                            ( ( gy % strideN ) + strideN ) % strideN != 0 )
+                        if( ( ( gx % stride ) + stride ) % stride != 0 ||
+                            ( ( gy % stride ) + stride ) % stride != 0 )
                         {
                             continue;
                         }
 
-                        const double px = double( tx ) * FauxTile + FauxFlatLattice[ ox ];
-                        const double py = double( ty ) * FauxTile + FauxFlatLattice[ oy ];
+                        const double px = double( tx ) * TileSize + offX[ ox ];
+                        const double py = double( ty ) * TileSize + offY[ oy ];
                         if( px < minx || px > maxx || py < miny || py > maxy )
                         {
                             continue;
@@ -5797,25 +5921,38 @@ void RT_UploadCeilingEdgeLamps()
 
                         const DVector2 at{ px, py };
                         const double   pz = isCeiling
-                                                ? sector.ceilingplane.ZatPoint( at ) - zOfs
-                                                : sector.floorplane.ZatPoint( at ) + zOfs;
+                                                ? sector.ceilingplane.ZatPoint( at ) - zofs
+                                                : sector.floorplane.ZatPoint( at ) + zofs;
 
                         // Stable ID from position, not from an emit counter: the nearest-N
                         // set changes as the camera moves, and a counter-derived ID would
                         // renumber every light and flush RR temporal history each frame.
                         const uint64_t id =
-                            FauxLatticeId_Base +
+                            idBase +
                             ( uint64_t( secIndex ) << 20 ) +
                             ( uint64_t( ( gy & 0x3FF ) ) << 10 ) +
                             uint64_t( gx & 0x3FF ) +
                             ( isCeiling ? 0ull : 0x80000ull );
 
-                        fauxCand.push_back(
-                            Cand{ d2, px, py, pz, id, RT_FauxLampHue(), true } );
+                        out.push_back( Cand{ d2, px, py, pz, id, hue, intensity, radius } );
                     }
                 }
             }
         }
+    };
+
+    auto addFauxLattice = [ & ]( const sector_t& sector, unsigned secIndex, bool isCeiling ) {
+        addLattice( sector, secIndex, isCeiling, FauxFlatLattice, FauxFlatLattice,
+                    int( std::size( FauxFlatLattice ) ), fauxStrideN, RT_FauxLampHue(),
+                    fauxIntensity, srcRadius, zOfs, FauxLatticeId_Base, fauxCand );
+    };
+
+    auto addSoloLattice = [ & ]( const sector_t& sector, unsigned secIndex, bool isCeiling,
+                                 double ox, double oy ) {
+        const double offX[ 1 ] = { ox };
+        const double offY[ 1 ] = { oy };
+        addLattice( sector, secIndex, isCeiling, offX, offY, 1, soloStrideN, RT_SoloLampHue(),
+                    soloIntensity, soloRadius, soloZofs, SoloLatticeId_Base, soloCand );
     };
 
 
@@ -5839,7 +5976,9 @@ void RT_UploadCeilingEdgeLamps()
         }
         const char* ftname = gtex->GetName().GetChars();
         const bool  isFaux = RT_IsFauxLampFlat( ftname );
-        if( !isFaux && !RT_IsCeilingInsetLampTexture( ftname ) )
+        double      soloOx = 0.0, soloOy = 0.0;
+        const bool  isSolo = !isFaux && RT_FindSoloBulbOffset( ftname, soloOx, soloOy );
+        if( !isFaux && !isSolo && !RT_IsCeilingInsetLampTexture( ftname ) )
         {
             continue;
         }
@@ -5859,6 +5998,15 @@ void RT_UploadCeilingEdgeLamps()
             // so a socket at texture u appears at every world x with x mod 64 == u. The
             // lattice below is expressed as offsets within that 64-unit tile.
             addFauxLattice( sector, i, isCeiling );
+            continue;
+        }
+        if( isSolo )
+        {
+            soloFlats++;
+            // Same lattice mechanism as faux, same reason (the perimeter walk has no
+            // relation to where the art puts its one bulb per tile), just one point per
+            // tile instead of sixteen.
+            addSoloLattice( sector, i, isCeiling, soloOx, soloOy );
             continue;
         }
         ( isCeiling ? lampCeils : lampFloors )++;
@@ -5936,17 +6084,18 @@ void RT_UploadCeilingEdgeLamps()
                       CeilingEdgeSegsPerLine ) +
                     uint64_t( sg );
 
-                ( isFaux ? fauxCand : cand )
-                    .push_back( Cand{ d2,
-                                      lx,
-                                      ly,
-                                      lz,
-                                      id,
-                                      isFaux ? RT_FauxLampHue()
-                                             : RT_SectorHue(
-                                                   sector.Colormap.LightColor,
-                                                   float{ cvar::rt_sector_tint_lights } ),
-                                      isFaux } );
+                // isFaux and isSolo are always false down here: both branch to their own
+                // lattice function and `continue` before reaching this perimeter walk, so
+                // this path only ever runs for the real RT_IsCeilingInsetLampTexture case.
+                cand.push_back( Cand{
+                    d2,
+                    lx,
+                    ly,
+                    lz,
+                    id,
+                    RT_SectorHue( sector.Colormap.LightColor, float{ cvar::rt_sector_tint_lights } ),
+                    peak,
+                    srcRadius } );
             }
         }
         }
@@ -5954,6 +6103,7 @@ void RT_UploadCeilingEdgeLamps()
 
     const int wanted     = int( cand.size() );
     const int fauxWanted = int( fauxCand.size() );
+    const int soloWanted = int( soloCand.size() );
     if( cand.size() > size_t( maxLights ) )
     {
         std::nth_element( cand.begin(),
@@ -5963,8 +6113,9 @@ void RT_UploadCeilingEdgeLamps()
         cand.resize( size_t( maxLights ) );
     }
 
-    // Same nearest-N trim, applied to the faux list against its own cap, before the two
-    // are merged. Trimming after the merge would defeat the point of the split budget.
+    // Same nearest-N trim, applied to the faux and solo lists against their OWN caps,
+    // before all three are merged. Trimming after the merge would defeat the point of the
+    // split budgets.
     const int fauxMax = std::max( 0, int{ cvar::rt_faux_lamp_max } );
     if( fauxCand.size() > size_t( fauxMax ) )
     {
@@ -5974,7 +6125,17 @@ void RT_UploadCeilingEdgeLamps()
                           []( const Cand& a, const Cand& b ) { return a.dist2 < b.dist2; } );
         fauxCand.resize( size_t( fauxMax ) );
     }
+    const int soloMax = std::max( 0, int{ cvar::rt_solo_lamp_max } );
+    if( soloCand.size() > size_t( soloMax ) )
+    {
+        std::nth_element( soloCand.begin(),
+                          soloCand.begin() + soloMax,
+                          soloCand.end(),
+                          []( const Cand& a, const Cand& b ) { return a.dist2 < b.dist2; } );
+        soloCand.resize( size_t( soloMax ) );
+    }
     cand.insert( cand.end(), fauxCand.begin(), fauxCand.end() );
+    cand.insert( cand.end(), soloCand.begin(), soloCand.end() );
     // Nearest-first ordering, so the marker budget below lands on the lights actually in
     // front of the camera. Cheap at this size, and it makes the upload order stable.
     std::sort( cand.begin(), cand.end(), []( const Cand& a, const Cand& b ) {
@@ -5990,12 +6151,11 @@ void RT_UploadCeilingEdgeLamps()
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = rt.rgUtilPackColorFloat4D( c.hue.X, c.hue.Y, c.hue.Z, 1.0f ),
-            .intensity = c.faux ? std::max( 0.f, float{ cvar::rt_faux_lamp_intensity } )
-                                : peak,
+            .intensity = c.intensity,
             .position  = { float( c.x ) * ONEGAMEUNIT_IN_METERS,
                            float( c.y ) * ONEGAMEUNIT_IN_METERS,
                            float( c.z ) * ONEGAMEUNIT_IN_METERS },
-            .radius    = srcRadius,
+            .radius    = c.radius,
         };
 
         auto info = RgLightInfo{
@@ -6042,11 +6202,13 @@ void RT_UploadCeilingEdgeLamps()
             // `wanted` vs `uploaded` is the point of this line: they were equal only
             // because the walk stopped at the cap, which hid that one sector was taking
             // the entire budget.
-            // Faux counted separately on purpose: the whole reason the budgets are split
-            // is so a glance can tell whether invented fixtures are crowding real ones.
+            // Faux and solo counted separately on purpose: the whole reason the budgets
+            // are split is so a glance can tell whether invented or solo fixtures are
+            // crowding real ones.
             Printf( "rt_ceiling_edge: uploaded=%d of %d wanted (cap %d, within %.0fu) "
                     "from %d lamp ceiling(s) + %d lamp floor(s) | I=%.0f | "
-                    "faux %d flat(s), %d of %d wanted (cap %d) I=%.0f\n",
+                    "faux %d flat(s), %d of %d wanted (cap %d) I=%.0f | "
+                    "solo %d flat(s), %d of %d wanted (cap %d) I=%.0f\n",
                     uploaded,
                     wanted,
                     maxLights,
@@ -6058,7 +6220,12 @@ void RT_UploadCeilingEdgeLamps()
                     int( fauxCand.size() ),
                     fauxWanted,
                     fauxMax,
-                    float{ cvar::rt_faux_lamp_intensity } );
+                    fauxIntensity,
+                    soloFlats,
+                    int( soloCand.size() ),
+                    soloWanted,
+                    soloMax,
+                    soloIntensity );
         }
     }
 }
@@ -6693,7 +6860,7 @@ void RTFrameBuffer::RT_DrawFrame()
                                      cvar::rt_volume_ambient },
         .scaterring              = cvar::rt_volume_scatter,
         .assymetry               = cvar::rt_volume_lassymetry,
-        .useIlluminationVolume   = false,
+        .useIlluminationVolume   = cvar::rt_illum_volume && cvar::rt_volume_type != 0,
         .fallbackSourceColor     = { 0, 0, 0 },
         .fallbackSourceDirection = { 0, -1, 0 },
         .lightMultiplier         = cvar::rt_volume_lintensity,
