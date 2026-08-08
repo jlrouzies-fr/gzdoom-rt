@@ -193,10 +193,13 @@ namespace cvar
                                                 "Spherical, not polygonal: RgLightPolygonalEXT exists in RTGL1's header but "
                                                 "LightManager.cpp compiles it out behind #if TRIANGLE_LIGHTS and hard-errors "
                                                 "on upload (2026-08-07)" )
-    RT_CVAR( rt_wall_strip_intensity,   500.f,  "RT intensity per strip segment. 120 and 250 both read as no light at all: the "
-                                                "strip sits flush against the wall it lights, so most of the sphere is occluded "
-                                                "and the visible contribution is far below what the same number buys a ceiling "
-                                                "lamp hanging in open air. Confirmed by eye at 500 (2026-08-07)" )
+    RT_CVAR( rt_wall_strip_intensity,   180.f,  "RT intensity per strip segment. Was 500, chosen when 120 and 250 both read as no "
+                                                "light at all — a strip sits flush against the wall it lights, so most of its "
+                                                "sphere is occluded (§19). That premise did not survive: those readings were "
+                                                "taken while ONE sector could consume the whole light budget, so only a handful "
+                                                "of lights ever reached the scene. With the budget distributed by distance and "
+                                                "both flat planes walked, 500 overexposed and fizzled. 180 confirmed by eye "
+                                                "(2026-08-08)" )
     RT_CVAR( rt_wall_strip_minlight,    120.f,  "skip strips in sectors dimmer than this: the same trim texture is used in "
                                                 "unlit maintenance areas where the bulbs are meant to be dead. Was 140, which "
                                                 "only ever saw MAP03's SPACEAR strips at lightlevel 180 and silently dropped "
@@ -219,9 +222,10 @@ namespace cvar
                                                 "blobs along the flat's EDGES, so skipping them left the bulbs casting nothing. "
                                                 "Independent of rt_ceiling_lamps so the centre-sphere path can stay off "
                                                 "(2026-08-07)" )
-    RT_CVAR( rt_ceiling_edge_intensity, 500.f,  "RT intensity per ceiling edge lamp. High for the same reason as wall strips: the "
-                                                "light sits flush against the ceiling and wall it lights, so most of the sphere is "
-                                                "occluded" )
+    RT_CVAR( rt_ceiling_edge_intensity, 180.f,  "RT intensity per flat bulb lamp. Kept equal to rt_wall_strip_intensity on "
+                                                "purpose: the two walks light the SAME physical band where it turns a corner, so "
+                                                "a mismatch shows up as a brightness step at every corner. Was 500; see that "
+                                                "cvar for why the high value stopped applying (2026-08-08)" )
     RT_CVAR( rt_ceiling_edge_seglen,    64.f,   "map units between ceiling edge lamps" )
     RT_CVAR( rt_ceiling_edge_radius,    0.35f,  "RT source radius in meters for ceiling edge lamps" )
     RT_CVAR( rt_ceiling_edge_zofs,      10.f,   "drop edge lamps this many map units below the ceiling plane" )
@@ -4604,8 +4608,13 @@ static bool RT_IsCeilingInsetLampTexture( const char* name )
     }
     // Doom 64 inset ceiling lamps: round bright blobs on dark flats (MAP01 spawn
     // booths over the first zombies use SFLATAS).
-    if( strncmp( name, "SFLATAS", 7 ) == 0 || strncmp( name, "SFLATAQ", 7 ) == 0 ||
-        strncmp( name, "SFLATAP", 7 ) == 0 )
+    //
+    // NOT SFLATAP: it is a recessed grille/vent panel with slats, and the original game
+    // does not light it. It was in this list from the start and only became visible once
+    // the flat walk covered floors and stopped letting one sector eat the budget — a
+    // false positive can sit unnoticed for as long as the path around it is broken
+    // (2026-08-08).
+    if( strncmp( name, "SFLATAS", 7 ) == 0 || strncmp( name, "SFLATAQ", 7 ) == 0 )
     {
         return true;
     }
@@ -4913,7 +4922,9 @@ static bool RT_IsWallStripLampTexture( const char* name )
     //   SPACEAZ  4x4 bulbs, authored as a wall texture
     //   SFLATAQ  4x4 bulbs, authored as a flat but ALSO hung on wall faces
     //   SFLATAS  2x2 large bulbs
-    //   SFLATAP  same family, sparser
+    //
+    // SFLATAP is deliberately absent despite the matching name: it is a recessed grille,
+    // not a lamp, and the original game does not light it.
     //
     // This used to match SPACEAR instead, which is a mistake worth recording. SPACEAR is
     // the plain trim panel that sits on the same thin step the bulb flat caps, so on
@@ -4927,7 +4938,7 @@ static bool RT_IsWallStripLampTexture( const char* name )
     // coverage is separate: see RT_UploadCeilingInsetLamps / RT_UploadCeilingEdgeLamps
     // (2026-08-08).
     return strcmp( name, "SPACEAZ" ) == 0 || strcmp( name, "SFLATAQ" ) == 0 ||
-           strcmp( name, "SFLATAS" ) == 0 || strcmp( name, "SFLATAP" ) == 0;
+           strcmp( name, "SFLATAS" ) == 0;
 }
 
 // Doom 64 wall light strips carry their light in the texture only. Under RTGL1 an
