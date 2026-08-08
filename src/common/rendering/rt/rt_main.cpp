@@ -227,8 +227,14 @@ namespace cvar
     RT_CVAR( rt_ceiling_edge_zofs,      10.f,   "drop edge lamps this many map units below the ceiling plane" )
     RT_CVAR( rt_ceiling_edge_inset,     10.f,   "pull edge lamps this many map units in from the wall, so they are not embedded "
                                                 "in the geometry they light" )
-    RT_CVAR( rt_ceiling_edge_max,       160,    "hard cap on ceiling edge lamps per frame" )
-    RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads + rejection tally" )
+    RT_CVAR( rt_ceiling_edge_max,       160,    "hard cap on ceiling edge lamps per frame. Counts BOTH planes now that floors "
+                                                "are covered, so a map with bulb bands on floor and ceiling needs roughly twice "
+                                                "the headroom it did" )
+    RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads, split by ceiling vs floor" )
+    RT_CVAR( rt_ceiling_edge_debug_marks, false, "cyan marker spheres at each flat-mounted bulb lamp. The wall path had markers "
+                                                "and this one did not, which read as 'only the wall bands are lit' when the "
+                                                "flat bands were merely invisible to the debug view (2026-08-08). Cyan vs the "
+                                                "wall strips' magenta so both can be on at once" )
     RT_CVAR( rt_wall_strip_debug_marks, false,  "bright magenta marker spheres at each strip light position. Separate from "
                                                 "rt_wall_strip_debug: if the markers are visible the placement is fine and the "
                                                 "problem is intensity; if they are not, the lights are occluded by geometry" )
@@ -5227,18 +5233,28 @@ void RT_UploadCeilingEdgeLamps()
 
     int uploaded    = 0;
     int lampCeils   = 0;
+    int lampFloors  = 0;
     uint64_t idSeed = 0;
 
+    // Both planes, not just the ceiling. Doom 64 runs one continuous bulb band along a
+    // wall and then across whichever flat it meets — the band does not care which way it
+    // is facing, and neither should this. Reading only sector_t::ceiling left 19 bulb
+    // floors unlit on MAP02 and 46 on MAP03: the band visibly stopped at the corner
+    // where it turned onto the floor (2026-08-08).
     for( unsigned i = 0; i < primaryLevel->sectors.Size() && uploaded < maxLights; i++ )
     {
         const sector_t& sector = primaryLevel->sectors[ i ];
 
-        auto* gtex = TexMan.GetGameTexture( sector.GetTexture( sector_t::ceiling ), true );
+        for( int plane = 0; plane < 2 && uploaded < maxLights; plane++ )
+        {
+        const bool isCeiling = ( plane == 0 );
+        auto*      gtex      = TexMan.GetGameTexture(
+            sector.GetTexture( isCeiling ? sector_t::ceiling : sector_t::floor ), true );
         if( !gtex || !RT_IsCeilingInsetLampTexture( gtex->GetName().GetChars() ) )
         {
             continue;
         }
-        lampCeils++;
+        ( isCeiling ? lampCeils : lampFloors )++;
 
         for( unsigned li = 0; li < sector.Lines.Size() && uploaded < maxLights; li++ )
         {
@@ -5281,8 +5297,14 @@ void RT_UploadCeilingEdgeLamps()
 
                 const double lx = px + towardX * inset;
                 const double ly = py + towardY * inset;
-                const double lz =
-                    sector.ceilingplane.ZatPoint( DVector2{ lx, ly } ) - zOfs;
+                // zOfs pulls the lamp away from its own plane, so it flips sign with the
+                // plane: down from a ceiling, up from a floor. Sharing one sign would
+                // bury every floor lamp below the floor, fully occluded — the same
+                // failure as the wall strips' inverted normal (§13).
+                const DVector2 lpos{ lx, ly };
+                const double   lz = isCeiling
+                                        ? sector.ceilingplane.ZatPoint( lpos ) - zOfs
+                                        : sector.floorplane.ZatPoint( lpos ) + zOfs;
 
                 const FVector3 hue = RT_SectorHue( sector.Colormap.LightColor,
                                                    float{ cvar::rt_sector_tint_lights } );
@@ -5309,7 +5331,31 @@ void RT_UploadCeilingEdgeLamps()
                 RgResult r = rt.rgUploadLight( &info );
                 RG_CHECK( r );
                 uploaded++;
+
+                // Cyan, not the wall strips' magenta: with both paths marked at once the
+                // only useful question is which one owns a given light, and two colours
+                // answer it without a second toggle.
+                if( cvar::rt_ceiling_edge_debug_marks )
+                {
+                    auto markSph = RgLightSphericalEXT{
+                        .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                        .pNext     = nullptr,
+                        .color     = rt.rgUtilPackColorByte4D( 0, 255, 255, 255 ),
+                        .intensity = 400.f,
+                        .position  = sph.position,
+                        .radius    = 0.05f,
+                    };
+                    auto markInfo = RgLightInfo{
+                        .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                        .pNext        = &markSph,
+                        .uniqueID     = info.uniqueID + 0x02000000ull,
+                        .isExportable = false,
+                    };
+                    RgResult mr = rt.rgUploadLight( &markInfo );
+                    RG_CHECK( mr );
+                }
             }
+        }
         }
     }
 
@@ -5318,10 +5364,12 @@ void RT_UploadCeilingEdgeLamps()
         static int s_tick;
         if( ( ++s_tick % 60 ) == 0 )
         {
-            Printf( "rt_ceiling_edge: uploaded=%d (cap %d) from %d lamp ceiling(s) | I=%.0f\n",
+            Printf( "rt_ceiling_edge: uploaded=%d (cap %d) from %d lamp ceiling(s) + "
+                    "%d lamp floor(s) | I=%.0f\n",
                     uploaded,
                     maxLights,
                     lampCeils,
+                    lampFloors,
                     peak );
         }
     }
