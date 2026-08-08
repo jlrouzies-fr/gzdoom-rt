@@ -264,7 +264,7 @@ namespace cvar
     RT_CVAR( rt_hang_lamp_zofs,         4.f,    "drop light this many map units below bulb estimate (SPAWNCEILING Z=bottom). "
                                                 "Hanging lamps only — on a floor-standing pole this would walk the light down "
                                                 "into the solid shaft" )
-    RT_CVAR( rt_pole_lamp_intensity,    420.f,  "RT intensity for floor-standing tech pole lamps (64TechPoleLong/Short, sprites "
+    RT_CVAR( rt_pole_lamp_intensity,    300.f,  "RT intensity for floor-standing tech pole lamps (64TechPoleLong/Short, sprites "
                                                 "A035/A036). Separate from rt_hang_lamp_intensity because they are a different "
                                                 "fixture in a different place: a pole lamp stands in the open with its head at "
                                                 "eye level and is often the only light in a MAP01 corridor, where a hanging lamp "
