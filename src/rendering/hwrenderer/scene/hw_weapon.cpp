@@ -437,6 +437,12 @@ void HUDSprite::SetBright(bool isbelow)
 
 #if HAVE_RT
 EXTERN_CVAR( Int, rt_mod_compat );
+// Not EXTERN_CVAR: the RT_CVAR macro declares these inside namespace cvar, so the plain
+// global declaration EXTERN_CVAR emits does not link.
+namespace cvar
+{
+extern FBoolCVarRef rt_wpn_solid_bright;
+}
 #endif
 
 bool HUDSprite::GetWeaponRenderStyle(DPSprite *psp, AActor *playermo, sector_t *viewsector, WeaponLighting &lighting)
@@ -513,7 +519,22 @@ bool HUDSprite::GetWeaponRenderStyle(DPSprite *psp, AActor *playermo, sector_t *
 #if HAVE_RT
 	if( rt_mod_compat )
 	{
-		if( bright )
+		// Making a FULLBRIGHT psprite additive is right for a flash OVERLAY and wrong for
+		// the gun itself. Additive is how a flash sprite is supposed to composite, but on
+		// the weapon layer it means the gun's dark texels add nothing and the world shows
+		// through the chassis — and downstream it also sends the prim through RTGL1's
+		// additive branch, which uploads it TRANSLUCENT with the alpha test off.
+		//
+		// Retribution marks the plasma rifle's WEAPON-layer fire frames BRIGHT (PLSG R,
+		// PLSF A/B) and no other weapon's body frames, which is why that one gun went
+		// half see-through while shooting and every other gun was fine.
+		//
+		// Restricting this to the non-weapon layers keeps every flash overlay exactly as
+		// it was — the unmaker's UNMF is its ONLY bright frame, its art is dithered, and
+		// forcing that to an opaque cutout turned the whole gun into red speckle
+		// (screen/brokenunmaker.png). The gun body's brightness comes from its emissive
+		// mask instead. rt_wpn_solid_bright 0 restores the old blanket behaviour.
+		if( bright && ( !cvar::rt_wpn_solid_bright || psp->GetID() != PSP_WEAPON ) )
 		{
 			RenderStyle.DestAlpha = STYLEALPHA_One;
 		}

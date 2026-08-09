@@ -24,6 +24,7 @@
 #include "image.h"
 #include "texturemanager.h"
 #include "actor.h"
+#include "d_player.h" // player_t::ReadyWeapon, for RT_AddWeaponGlow
 #include "r_state.h"
 
 #include "rt_state.h"
@@ -48,6 +49,9 @@
 
 #define RG_USE_SURFACE_WIN32
 #include <RTGL1/RTGL1.h>
+
+// Generated fist offsets + colours for RT_UploadHandGlowLights.
+#include "rt_hand_lights.h"
 
 RgInterface rt      = {};
 FRtState    rtstate = {};
@@ -347,6 +351,31 @@ namespace cvar
                                                 "TOP; the hanging lamps' 0.35 would put the light inside the shaft" )
     RT_CVAR( rt_hang_lamp_debug,        false,  "periodic console dump + yellow marker spheres at hanging lamp lights" )
 
+    RT_CVAR( rt_hand_light_on,          true,   "upload one analytic light per FIST for the Baron family — BOS2 Hell Knight "
+                                                "(green) and BOSS Baron of Hell (red) — at the fist's real body-relative "
+                                                "position, instead of relying on the sprite's attached light. RTGL1 attaches "
+                                                "a sprite light at the CENTRE of the billboard quad (VulkanDevice.cpp: "
+                                                "center = average of the 4 quad verts), so the hand glow emitted from the "
+                                                "torso, and the two fists averaged into a single point BETWEEN them. "
+                                                "Emissive cannot substitute: RTGL1 emissive surfaces are not light sources "
+                                                "(see rt_wall_strips), so the bright fists cannot light the forearm beside "
+                                                "them at any emissiveMult. Offsets and per-monster colour are generated from "
+                                                "the mod's authored brightmaps by tools/gen_hand_light_offsets.py" )
+    RT_CVAR( rt_hand_light_intensity,   45.f,   "RT intensity per FIST, shared by both monsters. Two lights each, so the "
+                                                "perceived total is roughly double this. Deliberately small — a passive "
+                                                "knight should barely wash its own hands, not light the room; its BAL7 "
+                                                "projectile (1000) is what lights a room during an attack" )
+    RT_CVAR( rt_hand_light_radius,      0.06f,  "RT source radius in meters per fist. Small: a fist is a fist, and a wide "
+                                                "source here washes the body flat instead of reading as a held glow" )
+    RT_CVAR( rt_hand_light_maxdist,     2048.f, "cull fist lights beyond this many map units from the viewpoint" )
+    RT_CVAR( rt_hand_light_max,         48,     "budget: max fist lights uploaded per frame, nearest first. 2 per monster, "
+                                                "so this covers 24 simultaneously visible Hell Knights / Barons" )
+    // NOARCH on purpose, unlike the older *_debug cvars next to it. This one uploads
+    // magenta marker spheres at 350 intensity; archived, a single debug launch would
+    // leave them burned into the ini and silently wreck every later visual judgement.
+    // That is the "A/B cvars must not persist" failure this project has already paid for.
+    RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at Baron-family fist lights" )
+
     RT_CVAR( rt_sector_emis,            0.35f,  "make bright world surfaces emit light themselves, scaled by sector lightlevel "
                                                 "(0 = off). Doom 64 draws its light features as flat-shaded bright surfaces with "
                                                 "no light actor anywhere — the red MAP02 corridor panels are lit purely by "
@@ -575,6 +604,45 @@ namespace cvar
     RT_CVAR( rt_mzlflsh_f,              3.0f,   "muzzle flash light offset - forward (in meteres)" )
     RT_CVAR( rt_mzlflsh_u,              -0.9f,  "muzzle flash light offset - up (in meteres)" )
     RT_CVAR( rt_mzlflsh_fade,           5.f,    "soft fade-out duration in tics when extralight ends (0 = hard cut; reduces RR residual sparkle)" )
+
+    // Per-weapon muzzle flash colour. rt_mzlflsh_color above stays the default for
+    // everything not listed here (pistol / shotgun / SSG / rocket: their flash art means
+    // out warm, #ffd5ae, which is what that default already is).
+    //
+    // These four are NOT invented — each is the mean of the bright texels of that
+    // weapon's own flash sprite in D64RTR_v15.WAD, peak-normalised:
+    //   CHGF (chaingun) #9677ff   BFGF (BFG) #a0ffa0
+    //   UNMF (unmaker)  #ff1111   PLSF (plasma) #7dbfff
+    // Plasma is pinned to the same blue as the bolt and the gun's core rather than its
+    // sampled #7dbfff, which reads cyan next to them.
+    RT_CVAR( rt_mzlflsh_perweapon,      true,   "tint the muzzle flash per weapon (plasma blue, BFG green, unmaker red, "
+                                                "chaingun blue-purple); 0 = always rt_mzlflsh_color" )
+    RT_CVAR_COLOR( rt_mzlflsh_color_plasma,   0x3355FF, "muzzle flash color for the plasma rifle (hex)" )
+    RT_CVAR_COLOR( rt_mzlflsh_color_bfg,      0xA0FFA0, "muzzle flash color for the BFG (hex)" )
+    RT_CVAR_COLOR( rt_mzlflsh_color_unmaker,  0xFF1111, "muzzle flash color for the unmaker / laser (hex)" )
+    RT_CVAR_COLOR( rt_mzlflsh_color_chaingun, 0x9677FF, "muzzle flash color for the chaingun (hex)" )
+
+    // Passive glow from a weapon that has a lit element in its art (the plasma rifle's
+    // electric core). This CANNOT be done with a lightIntensity on the sprite's own
+    // texture: a first-person prim is rasterized, so RTGL1 attaches the light to the
+    // very quad it is meant to illuminate, and the plasma rifle was the only weapon
+    // carrying one — which is exactly why the artefact showed up on that gun and on no
+    // other. Emission cannot do it either: RsWorld.inl writes a view weapon's emission
+    // to outScreenEmission, a screen-space additive overlay that lights nothing.
+    // So the light lives here, at the viewer, like the flashlight and the muzzle flash.
+    RT_CVAR( rt_gunglow,                true,   "enable the ready weapon's passive core glow as a real light source" )
+    RT_CVAR( rt_gunglow_intensity,      150.f,  "weapon core glow intensity" )
+    RT_CVAR_COLOR( rt_gunglow_color,  0x3355FF, "weapon core glow color (hex); plasma rifle blue" )
+    RT_CVAR( rt_gunglow_radius,         0.05f,  "weapon core glow light sphere radius (in meters)" )
+    RT_CVAR( rt_gunglow_f,              0.7f,   "weapon core glow offset - forward (in meters)" )
+    RT_CVAR( rt_gunglow_u,             -0.35f,  "weapon core glow offset - up (in meters); negative = below eye, at the gun" )
+
+    RT_CVAR( rt_wpn_solid_bright,       true,   "draw FULLBRIGHT view-weapon frames as alpha-tested cutouts instead of "
+                                                "translucent UI overlays. 0 restores the old behaviour, where a BRIGHT "
+                                                "weapon frame (Retribution's plasma rifle fire frames) went see-through." )
+    RT_CVAR( rt_wpn_debug,              false,  "log every first-person weapon primitive: texture, prim flags, alpha chain. "
+                                                "One line per distinct texture+flags combination, so shooting prints a few "
+                                                "lines and then goes quiet. For diagnosing view-weapon blending." )
 
     RT_CVAR( rt_illum_sens_direct,      1.0f,   "[0,1] lighting-change sensitivity for direct diffuse (higher = faster history invalidation)" )
     RT_CVAR( rt_illum_sens_indirect,    0.75f,  "[0,1] lighting-change sensitivity for indirect diffuse (stock RTGL default bias)" )
@@ -887,6 +955,10 @@ enum
 constexpr uint64_t FlashlightLightId  = 0xFFFFFFF + 0;
 constexpr uint64_t SunLightId         = 0xFFFFFFF + 1;
 constexpr uint64_t MuzzleFlashLightId = 0xFFFFFFF + 2;
+// NOT 0xFFFFFFF + n: SectorLightId_Base starts at +3 and runs to +sectorCount, so any
+// small offset here would collide with a sector's light. Own decade, like the lattices.
+// Bit 50, far above SoloLatticeId_Base's (1<<40) sector-derived range.
+constexpr uint64_t GunGlowLightId     = 1ull << 50;
 constexpr uint64_t SectorLightId_Base = 0xFFFFFFF + 3;
 // Keep clear of sector-light IDs (base + sectorIndex).
 constexpr uint64_t DynLightId_Base    = 0xA0000000ull;
@@ -922,6 +994,11 @@ constexpr uint64_t FauxLatticeId_Base = 0xF0000000ull;
 // on a map with thousands of sectors, so "the next range" is not a safe assumption here.
 // Bit 40 is comfortably above anything that formula can produce.
 constexpr uint64_t SoloLatticeId_Base = 1ull << 40;
+// Hell Knight fist lights. Bit 42, not "the next value after SoloLatticeId_Base": that
+// base is 1<<40 and its IDs add secIndex<<20 + cell, which can climb well past 1<<40
+// itself. Bit 42 clears the whole reachable solo range with room to spare. Two lights per
+// actor, so the low bit of the id is the hand index.
+constexpr uint64_t HandLightId_Base      = 1ull << 42;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -2717,8 +2794,27 @@ private:
 
             const float strength = float{ cvar::rt_sector_emis };
             // Map-relative, not absolute — see RT_UpdateSectorEmisThreshold.
-            const float minLight = std::clamp( g_sectorEmisThreshold, 0.f, 254.f );
+            const float minLight = g_sectorEmisThreshold;
             if( strength <= 0.f )
+            {
+                return 0.f;
+            }
+
+            // A threshold at or above 255 means THIS map has no light features: its own
+            // median is already so high that nothing stands out above it. Bail out.
+            //
+            // This used to clamp minLight to 254 instead, which inverted the whole
+            // feature on exactly the maps it was meant to protect. MAP09 and MAP31 are
+            // authored fullbright (median lightlevel 255), so the threshold comes out at
+            // 295 — "nothing emits" — but the clamp pulled it back to 254 and the ramp
+            // below then evaluated (255-254)/(255-254) = 1.0, i.e. FULL strength, on
+            // every one of MAP09's 74 lightlevel-255 sectors out of 81. The result was a
+            // night courtyard where every wall, pillar and floor self-glowed evenly with
+            // no shadow anywhere, while the imps and barrels standing in it stayed pitch
+            // black — RTGL1 emissive is not a light source (see rt_wall_strips), so the
+            // glow lit the surface it was on and nothing else. MAP07 (threshold 260) was
+            // the same bug in milder form, 119 sectors of 429.
+            if( minLight >= 255.f )
             {
                 return 0.f;
             }
@@ -2872,6 +2968,38 @@ private:
         }
 #endif
 
+        // Why this exists: the plasma rifle goes half see-through while firing and no
+        // other weapon does. The sprite's own alpha is binary (0/255, measured on every
+        // frame) and RsWorld.inl's alpha test is a discard, so neither can produce a
+        // PARTIAL fade — that needs alpha BLENDING, which means the quad is being
+        // rasterized as translucent. RTGL1 rasterizes anything whose packed vertex alpha
+        // is under MESH_TRANSLUCENT_ALPHA_THRESHOLD (0.98), so the question is simply
+        // what the alpha chain below evaluates to on the fire frames. Print it.
+        if( cvar::rt_wpn_debug &&
+            ( rtstate.is< RtPrim::FirstPerson >() || rtstate.is< RtPrim::FirstPersonViewer >() ) )
+        {
+            // Dedup on texture+flags+quantised alpha so a held trigger does not spam.
+            static std::unordered_set< uint64_t > s_seen;
+            const uint32_t                        a8 = uint32_t( primColor >> 24 );
+            const uint64_t key = ( uint64_t( prim.flags ) << 32 ) ^
+                                 ( uint64_t( a8 ) << 24 ) ^
+                                 std::hash< std::string_view >{}( texname ? texname : "" );
+            if( s_seen.insert( key ).second )
+            {
+                Printf( "RTWPN %s flags=0x%X alphaThresh=%.2f objA=%.3f vertA=%.3f "
+                        "packedA=%u emis=%.3f blendop=%d destalpha=%d\n",
+                        texname ? texname : "?",
+                        unsigned( prim.flags ),
+                        mAlphaThreshold,
+                        mStreamData.uObjectColor.a,
+                        mStreamData.uVertexColor[ 3 ],
+                        a8,
+                        prim.emissive,
+                        int( mRenderStyle.BlendOp ),
+                        int( mRenderStyle.DestAlpha ) );
+            }
+        }
+
         RgResult r = rt.rgUploadMeshPrimitive( &mesh, &prim );
         RG_CHECK( r );
     }
@@ -2943,6 +3071,7 @@ public:
 
         RT_AddFlashlight( info.position, forward, up, right );
         RT_AddMuzzleFlash( viewpoint.ViewActor, viewpoint.extralight, info.position, forward, up );
+        RT_AddWeaponGlow( viewpoint.camera, info.position, forward, up );
     }
 
     void RT_AddFlashlight( const RgFloat3D& basePosition,
@@ -3236,6 +3365,39 @@ public:
         RG_CHECK( r );
     }
 
+    // Doom 64's flash art is not all orange: the chaingun's is blue-purple, the plasma
+    // rifle's blue, the BFG's green, the unmaker's red. Substring match because the mod
+    // REPLACES the IWAD classes with 64-prefixed ones (64Chaingun, 64BFG9000, ...) and
+    // both names must hit. 64Nailgun inherits ChaingunBackup but is not named "Chaingun",
+    // so it keeps the default — deliberate, its flash art is warm.
+    RgColor4DPacked32 MuzzleFlashColorFor( AActor* viewactor ) const
+    {
+        if( cvar::rt_mzlflsh_perweapon && viewactor && viewactor->player &&
+            viewactor->player->ReadyWeapon )
+        {
+            if( const char* c = viewactor->player->ReadyWeapon->GetClass()->TypeName.GetChars() )
+            {
+                if( strstr( c, "PlasmaRifle" ) )
+                {
+                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_plasma );
+                }
+                if( strstr( c, "BFG" ) )
+                {
+                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_bfg );
+                }
+                if( strstr( c, "Unmaker" ) )
+                {
+                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_unmaker );
+                }
+                if( strstr( c, "Chaingun" ) )
+                {
+                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_chaingun );
+                }
+            }
+        }
+        return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color );
+    }
+
     void RT_AddMuzzleFlash( AActor*          viewactor,
                             int              extralight,
                             const RgFloat3D& basePosition,
@@ -3247,6 +3409,9 @@ public:
         static float    s_fade     = 0.f;
         static FVector3 s_lastPos  = {};
         static bool     s_havePos  = false;
+        // Latched with the position, for the same reason: the fade outlives the shot, and
+        // a weapon switch mid-fade would otherwise recolour a flash already in the air.
+        static RgColor4DPacked32 s_color = 0;
 
         const bool wantFlash =
             extralight > 0 && cvar::rt_mzlflsh && viewactor && viewactor->Sector;
@@ -3328,6 +3493,7 @@ public:
 
             s_lastPos = pos;
             s_havePos = true;
+            s_color   = MuzzleFlashColorFor( viewactor );
         }
         else
         {
@@ -3337,7 +3503,7 @@ public:
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
-            .color     = cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color ),
+            .color     = s_color,
             .intensity = cvar::rt_mzlflsh_intensity * s_fade,
             .position  = { pos.X, pos.Y, pos.Z },
             .radius    = cvar::rt_mzlflsh_radius,
@@ -3347,6 +3513,61 @@ public:
             .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
             .pNext        = &sph,
             .uniqueID     = MuzzleFlashLightId,
+            .isExportable = false,
+        };
+
+        RgResult r = rt.rgUploadLight( &light );
+        RG_CHECK( r );
+    }
+
+    // Passive glow from the ready weapon's own lit element — the plasma rifle's electric
+    // core. See the rt_gunglow cvar block for why this cannot be a lightIntensity on the
+    // sprite's texture (it attaches the light to the rasterized quad it is meant to
+    // light, and that gun was the only one carrying such a light) nor an emissiveMult
+    // (a view weapon's emission is a screen-space overlay and illuminates nothing).
+    //
+    // Not uploading the light is how it turns off — same contract as the muzzle flash:
+    // RTGL1 tracks a light by uniqueID per frame, so an absent upload is an absent light.
+    void RT_AddWeaponGlow( AActor*          camera,
+                           const RgFloat3D& basePosition,
+                           const RgFloat3D& forward,
+                           const RgFloat3D& up )
+    {
+        if( !cvar::rt_gunglow || !camera || !camera->player )
+        {
+            return;
+        }
+        AActor* ready = camera->player->ReadyWeapon;
+        if( !ready )
+        {
+            return;
+        }
+
+        // Substring, not equality: the IWAD class is PlasmaRifle and Retribution
+        // REPLACES it with 64PlasmaRifle. Both must light.
+        const char* cls = ready->GetClass()->TypeName.GetChars();
+        if( !cls || !strstr( cls, "PlasmaRifle" ) )
+        {
+            return;
+        }
+
+        auto pos = gzvec3( basePosition );
+        pos += gzvec3( up ) * float( cvar::rt_gunglow_u );
+        pos += gzvec3( forward ) * float( cvar::rt_gunglow_f );
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = cvarcolor_to_rtcolor( cvar::rt_gunglow_color ),
+            .intensity = cvar::rt_gunglow_intensity,
+            .position  = { pos.X, pos.Y, pos.Z },
+            .radius    = cvar::rt_gunglow_radius,
+        };
+
+        auto light = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = GunGlowLightId,
             .isExportable = false,
         };
 
@@ -6779,6 +7000,232 @@ void RT_UploadHangingTechLamps()
     }
 }
 
+// Which Baron-family monster is this, if any? Both carry a magic glow on their fists:
+// BOS2 the Hell Knight (green), BOSS the Baron of Hell (red). Sprite first, class name as
+// the fallback — same order as RT_TechLampKind, because a sprite replacement can desync
+// the two.
+//
+// Matched in FULL, never on a 'BOS' prefix: the two differ only in the 4th character and
+// they need different colours, so a prefix match would silently give the Baron the Hell
+// Knight's green.
+static int RT_HandGlowMonster( AActor* mo )
+{
+    if( !mo )
+    {
+        return -1;
+    }
+    if( mo->sprite >= 0 && mo->sprite < int( sprites.Size() ) )
+    {
+        const char* sn = sprites[ mo->sprite ].name;
+        if( sn && strnicmp( sn, "BOS2", 4 ) == 0 )
+        {
+            return RT_HAND_HELLKNIGHT;
+        }
+        if( sn && strnicmp( sn, "BOSS", 4 ) == 0 )
+        {
+            return RT_HAND_BARON;
+        }
+    }
+    if( mo->GetClass() && mo->GetClass()->TypeName.IsValidName() )
+    {
+        const char* cn = mo->GetClass()->TypeName.GetChars();
+        if( cn && strnicmp( cn, "64HellKnight", 12 ) == 0 )
+        {
+            return RT_HAND_HELLKNIGHT;
+        }
+        // "64BaronOfHell" — not a prefix of the Hell Knight's name, so order is safe here.
+        if( cn && strnicmp( cn, "64BaronOfHell", 13 ) == 0 )
+        {
+            return RT_HAND_BARON;
+        }
+    }
+    return -1;
+}
+
+void RT_UploadHandGlowLights()
+{
+    // The Hell Knight carries a green magic glow on its fists. That glow is texture
+    // emissive, and RTGL1 emissive is never a light source (rt_wall_strips explains why),
+    // so the only illumination was the sprite's attached light — which RTGL1 pins to the
+    // CENTRE of the billboard quad. Result: light out of the torso, and the two fists
+    // collapsed to one point between them. Here each fist gets its own analytic sphere at
+    // its real body-relative position, taken from the authored brightmaps.
+    if( !cvar::rt_hand_light_on || !primaryLevel )
+    {
+        return;
+    }
+
+    const float intensity = std::max( 0.f, float{ cvar::rt_hand_light_intensity } );
+    if( intensity <= 0.01f )
+    {
+        return;
+    }
+    const float  srcRadius = std::max( 0.01f, float{ cvar::rt_hand_light_radius } );
+    const double maxDist   = std::max( 64.0, double( float{ cvar::rt_hand_light_maxdist } ) );
+    const double maxDist2  = maxDist * maxDist;
+    const int    budget    = std::max( 0, int{ cvar::rt_hand_light_max } );
+    if( budget == 0 )
+    {
+        return;
+    }
+
+    const DVector3 vpos = r_viewpoint.Pos;
+
+    // Collect then trim nearest-first. Same shape as the ceiling-edge/solo systems: a
+    // distance filter alone does not bound the count, and letting the far half win by
+    // iteration order is what made distant lamps pop in there.
+    struct HandCand
+    {
+        double   d2;
+        float    px, py, pz;
+        uint64_t id;
+        int      monster; // index into RT_HAND_COLOR — green knight vs red baron
+    };
+    std::vector< HandCand > cand;
+
+    auto    it = primaryLevel->GetThinkerIterator< AActor >();
+    AActor* mo = nullptr;
+    while( ( mo = it.Next() ) != nullptr )
+    {
+        const int monster = RT_HandGlowMonster( mo );
+        if( monster < 0 )
+        {
+            continue;
+        }
+        if( mo->renderflags & RF_INVISIBLE )
+        {
+            continue;
+        }
+        if( mo->Alpha <= 0.01 )
+        {
+            continue;
+        }
+        // Frames I..N are death/gib. They have no entry in the table and must not light:
+        // the gore reuses the hand glow's own palette ramp, so a lit corpse would flare.
+        const int frame = mo->frame;
+        if( frame < 0 || frame >= RT_HAND_FRAME_COUNT )
+        {
+            continue;
+        }
+        const RtHandFrame& hk = RT_HAND_FRAMES[ monster ][ frame ];
+        if( hk.count <= 0 )
+        {
+            continue;
+        }
+
+        // Offsets are body-relative, so rotate them by the actor's facing. Doom angle 0
+        // is +X; "right of facing" is yaw - 90 degrees.
+        const double yaw = mo->Angles.Yaw.Radians();
+        const double fx = std::cos( yaw ), fy = std::sin( yaw );
+        const double rx = std::sin( yaw ), ry = -std::cos( yaw );
+
+        for( int h = 0; h < hk.count && h < 2; ++h )
+        {
+            const RtHandPos& hand = hk.hands[ h ];
+
+            const double wx = double( mo->X() ) + rx * hand.lateral + fx * hand.fwd;
+            const double wy = double( mo->Y() ) + ry * hand.lateral + fy * hand.fwd;
+            const double wz = double( mo->Z() ) + hand.up;
+
+            const double dx = wx - vpos.X, dy = wy - vpos.Y, dz = wz - vpos.Z;
+            const double d2 = dx * dx + dy * dy + dz * dz;
+            if( d2 > maxDist2 )
+            {
+                continue;
+            }
+
+            // Stable across frames: actor identity + hand index. An id that shifted per
+            // tick would make RTGL1 see the set vanish and reappear.
+            const uint64_t id = HandLightId_Base +
+                                ( ( uint64_t{ reinterpret_cast< uintptr_t >( mo ) } &
+                                    0xFFFFFFFFull )
+                                  << 1 ) +
+                                uint64_t( h );
+
+            cand.push_back( HandCand{
+                d2,
+                float( wx ) * ONEGAMEUNIT_IN_METERS,
+                float( wy ) * ONEGAMEUNIT_IN_METERS,
+                float( wz ) * ONEGAMEUNIT_IN_METERS,
+                id,
+                monster,
+            } );
+        }
+    }
+
+    const size_t wanted = cand.size();
+    if( wanted > size_t( budget ) )
+    {
+        std::partial_sort( cand.begin(),
+                           cand.begin() + budget,
+                           cand.end(),
+                           []( const HandCand& a, const HandCand& b ) { return a.d2 < b.d2; } );
+        cand.resize( size_t( budget ) );
+    }
+
+    for( const HandCand& c : cand )
+    {
+        // Colour comes from the generated table, never a literal here: it is the same
+        // value the mask generator tints with, and a hardcoded copy would drift the cast
+        // light away from the glow the moment either was retuned.
+        const unsigned rgb = RT_HAND_COLOR[ c.monster ];
+        const float    kR  = ( ( rgb >> 16 ) & 0xFF ) / 255.0f;
+        const float    kG  = ( ( rgb >> 8 ) & 0xFF ) / 255.0f;
+        const float    kB  = ( rgb & 0xFF ) / 255.0f;
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = rt.rgUtilPackColorFloat4D( kR, kG, kB, 1.0f ),
+            .intensity = intensity,
+            .position  = { c.px, c.py, c.pz },
+            .radius    = srcRadius,
+        };
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = c.id,
+            .isExportable = false,
+        };
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        if( cvar::rt_hand_light_debug )
+        {
+            auto markSph = RgLightSphericalEXT{
+                .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                .pNext     = nullptr,
+                .color     = rt.rgUtilPackColorByte4D( 255, 0, 255, 255 ),
+                .intensity = 350.f,
+                .position  = { c.px, c.py, c.pz },
+                .radius    = 0.05f,
+            };
+            auto markInfo = RgLightInfo{
+                .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                .pNext        = &markSph,
+                .uniqueID     = c.id + ( 1ull << 41 ),
+                .isExportable = false,
+            };
+            r = rt.rgUploadLight( &markInfo );
+            RG_CHECK( r );
+        }
+    }
+
+    if( cvar::rt_hand_light_debug )
+    {
+        static int s_tick;
+        if( ( ++s_tick % 60 ) == 0 )
+        {
+            Printf( "rt_hand_light: uploaded=%zu of %zu wanted (cap %d, within %.0fu) I=%.0f\n",
+                    cand.size(),
+                    wanted,
+                    budget,
+                    maxDist,
+                    intensity );
+        }
+    }
+}
+
 } // anonymous namespace
 
 //
@@ -6976,6 +7423,7 @@ void RTFrameBuffer::RT_DrawFrame()
     RT_UploadGzDoomDynamicLights();
     RT_UploadCeilingInsetLamps();
     RT_UploadHangingTechLamps();
+    RT_UploadHandGlowLights();
     RT_UpdateSectorEmisThreshold();
     RT_UploadWallStripLights();
     RT_UploadCeilingEdgeLamps();
