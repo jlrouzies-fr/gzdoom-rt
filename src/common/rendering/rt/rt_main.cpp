@@ -1831,6 +1831,18 @@ public:
         return 1.f - amount * ( 1.f - lit );
     }
 
+    // A soft-blend monster that is alive and is NOT being forced solid. These must be
+    // rasterized TRANSLUCENT overlays, never ALPHA_TESTED cutouts — see makePrimFlags.
+    bool IsLivingGhost() const
+    {
+        bool corpse = false;
+        if( GhostSprite( &corpse ) == GhostActor::None || corpse )
+        {
+            return false;
+        }
+        return !IsSolidGhost();
+    }
+
     bool IsSpectre() const
     {
         switch( mRenderStyle.BlendOp )
@@ -2452,8 +2464,10 @@ private:
                     // Soft blends under RT:
                     //  - SAR2 / classic Fuzz spectre → IsSpectre() → rasterized
                     //    TRANSLUCENT overlay (the see-through ghost look).
+                    //  - Any other LIVING soft-blend monster (64NightmareImp / TRO2) →
+                    //    same treatment, see IsLivingGhost() below.
                     //  - Additive (DestAlpha One): fire/muzzle — TRANSLUCENT.
-                    //  - Other sprites (and the spectre CORPSE): ALPHA_TESTED cutout.
+                    //  - Other sprites (and the spectre/imp CORPSE): ALPHA_TESTED cutout.
                     const bool additiveBlend =
                         mRenderStyle.BlendOp == STYLEOP_Add &&
                         mRenderStyle.DestAlpha == STYLEALPHA_One;
@@ -2463,10 +2477,30 @@ private:
                         add |= RG_MESH_PRIMITIVE_TRANSLUCENT;
                         alphaTest = false;
                     }
-                    else if( IsSpectre() )
+                    else if( IsSpectre() || IsLivingGhost() )
                     {
                         // Spectre: rasterized TRANSLUCENT overlay with alpha floor.
                         // Gives the purple-dark see-through look (like classic alpha blend).
+                        //
+                        // IsLivingGhost() extends this to 64NightmareImp, which used to
+                        // fall through to the ALPHA_TESTED branch below. That was wrong for
+                        // a "RenderStyle Translucent, Alpha 0.60" monster and it actively
+                        // broke it: RsWorld.inl ends with
+                        //
+                        //     if( alphaTest != 0 ) { if( outColor.a < 0.5 ) discard; }
+                        //
+                        // and `discard` kills the WHOLE fragment — including
+                        // outScreenEmission, so the emissive eyes died with the body. The
+                        // imp only ever survived because the old max(a, 0.80) floor happened
+                        // to hold it above 0.5; that floor's real job was clearing this
+                        // threshold, not looks. Dropping the floor to the authored 0.60 left
+                        // almost no margin, and once rt_ghost_lightscale dimmed a room past
+                        // ~0.83x the imp did not fade, it POPPED OUT ENTIRELY. At
+                        // rt_nightmareimp_alpha 0.35 it was invisible everywhere.
+                        //
+                        // As a TRANSLUCENT overlay there is no threshold to fall off: the
+                        // body fades smoothly to nothing and the eyes, on an ONE/ONE
+                        // attachment, are never discarded at any alpha (2026-08-09).
                         add |= RG_MESH_PRIMITIVE_TRANSLUCENT;
                         alphaTest = false;
                     }
