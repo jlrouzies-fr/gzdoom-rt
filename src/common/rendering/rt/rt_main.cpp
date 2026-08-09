@@ -286,10 +286,11 @@ namespace cvar
                                                 "colour. Unlike the faux panels, these fixtures genuinely show a lit bulb in "
                                                 "the art, so there is no case for tinting them — white is not a placeholder "
                                                 "here, it is the answer" )
-    RT_CVAR( rt_solo_lamp_intensity,    90.f,   "RT intensity per solo bulb light. Deliberately modest — well under "
+    RT_CVAR( rt_solo_lamp_intensity,    45.f,   "RT intensity per solo bulb light. Deliberately modest — well under "
                                                 "rt_ceiling_edge_intensity (180), rt_faux_lamp_intensity (500) and "
                                                 "rt_ceiling_lamp_intensity (700): a single small ceiling bulb over a room "
-                                                "should read as a normal fixture, not as the brightest thing in it" )
+                                                "should read as a normal fixture, not as the brightest thing in it. Was 90; "
+                                                "halved on request after the first pass still read too strong (2026-08-08)" )
     RT_CVAR( rt_solo_lamp_radius,       0.06f,  "RT source radius in meters for solo bulb lights. Tighter than the faux/real "
                                                 "lattice/edge lamps (0.35/0.10): a single visible bulb reads better with a "
                                                 "harder, more precise source than a soft wide one" )
@@ -376,18 +377,38 @@ namespace cvar
                                                 "shadow like every other corpse (2026-08-08)" )
     RT_CVAR( rt_ghost_solid,            false,  "render a LIVING soft-blend monster (64Spectre SAR2, 64NightmareImp TRO2) as an "
                                                 "ordinary solid sprite instead of the rasterized translucent overlay. "
-                                                "Superseded by rt_illum_volume, which fixes the baked-lit look WITHOUT giving "
-                                                "up transparency — leave this at 0 unless rt_illum_volume is unavailable (old "
-                                                "RTGL1.dll) or looks wrong. When on: alpha-tested at alpha 1, so the sprite is "
+                                                "Superseded by rt_ghost_lightscale, which fixes the baked-lit look WITHOUT "
+                                                "giving up transparency — leave this at 0. When on: alpha-tested at alpha 1, so the sprite is "
                                                 "traced, lit and shadow-casting, and its _e eye mask emits as a real material — "
                                                 "but the ghost look is gone; the body is a solid dark silhouette. Two other "
-                                                "routes to solving the darkening problem were tried and rejected before "
-                                                "rt_illum_volume was found: a vertex-colour dimmer (cannot work — RsWorld.inl "
-                                                "derives its emissive from baseColor(), so darkening the body darkens the eyes "
-                                                "by the same factor) and GLASS (traced and see-through, but a refractive "
-                                                "billboard is the wrong look). Corpses are unaffected by this cvar — see "
+                                                "routes to solving the darkening problem were tried and rejected first: a "
+                                                "vertex-colour dimmer (cannot work — RsWorld.inl derives its emissive from "
+                                                "baseColor(), so darkening the body darkens the eyes by the same factor) and "
+                                                "GLASS (traced and see-through, but a refractive billboard is the wrong look). "
+                                                "Corpses are unaffected by this cvar — see "
                                                 "rt_spectre_corpse_solid, which stays on: a dead spectre/imp is meant to read "
                                                 "as a solid body, not a ghost (2026-08-08)" )
+    RT_CVAR( rt_ghost_lightscale,       1.00f,  "how strongly a LIVING soft-blend monster (64Spectre SAR2, 64NightmareImp "
+                                                "TRO2) fades out in a dark room [0 = never fades, always full-bright as "
+                                                "before; 1 = fully tracks the sector light]. This is the fix for 'the ghost "
+                                                "looks baked-lit / self-lit in a pitch black room'. "
+                                                "\n"
+                                                "It works by scaling the sprite's ALPHA, not its colour, which is what "
+                                                "separates the body from the eyes — the thing the vertex-colour attempt could "
+                                                "not do. RasterizerPipelines.cpp gives the two rasterizer outputs different "
+                                                "blend factors: attachment 0 (the body) blends SRC_ALPHA, while attachment 1 "
+                                                "(outScreenEmission — the _e eye mask) blends ONE/ONE and so ignores alpha "
+                                                "completely. Fading alpha to 0 therefore dissolves the body while leaving the "
+                                                "eyes at full strength: in pure dark a nightmare imp is a pair of floating "
+                                                "eyes, and a spectre (whose _e is fully transparent) disappears outright. "
+                                                "\n"
+                                                "Unlike rt_illum_volume this is per-primitive, costs nothing, touches no "
+                                                "other effect, and adds no temporal lag or froxel fuzz. It reads "
+                                                "Sector->GetSpriteLight() via rtstate.m_lightlevel — static sector light only, "
+                                                "so the flashlight and muzzle flashes do NOT brighten the ghost back up. That "
+                                                "is deliberate: routing dynamic lights here is what made the illumination "
+                                                "volume look foggy. Corpses are excluded — they are solid and genuinely traced "
+                                                "and lit, see rt_spectre_corpse_solid (2026-08-09)" )
     RT_CVAR_NOARCH( rt_prim_debug,     false,   "Debug: list world textures RTGL1 will RASTERIZE rather than ray-trace. A "
                                                 "rasterized primitive is never added to the acceleration structure, so it "
                                                 "renders normally and can never block a shadow ray — which looks exactly like "
@@ -699,18 +720,21 @@ namespace cvar
     RT_CVAR( rt_volume_lintensity,      1.f,    "intensity of lights for scattering" )
     RT_CVAR( rt_volume_lassymetry,      0.5f,   "scaterring phase function assymetry" )
     RT_CVAR( rt_volume_history,         8.f,    "max history length for scaterring accumulation (in frames)" )
-    RT_CVAR( rt_illum_volume,           true,   "sample the traced illumination volume (RtVolumetric.rgen output) when shading "
-                                                "RASTERIZED translucent primitives (spectres, nightmare imps, particles, "
-                                                "additive FX), instead of the RTGL1 default max(1, avgLuminance), which can "
-                                                "only brighten and never darkens a sprite to match a dark room. This is the "
-                                                "lever that lets a see-through ghost dim in the dark without going solid: "
-                                                "RsWorld.inl multiplies only outColor (the body) by the volume sample, and "
-                                                "computes ldrEmis (the _e emissive -- eyes) from baseColor() afterward, so the "
-                                                "eyes are never touched by the dimming. Requires RTGL1.dll built with "
-                                                "ILLUMINATION_VOLUME=1 (deps/RTGL/Source/Volumetric.h + "
-                                                "Generated/GenerateShaderCommon.py) -- on an older DLL this cvar has no "
-                                                "effect, RTGL1 silently ignores useIlluminationVolume. Needs "
-                                                "rt_volume_type != 0 to have data to sample (2026-08-08)" )
+    RT_CVAR( rt_illum_volume,           false,  "sample the traced illumination volume (RtVolumetric.rgen output) when shading "
+                                                "RASTERIZED translucent primitives, instead of the RTGL1 default "
+                                                "max(1, avgLuminance). OFF: tried as a way to dim ghost sprites in dark rooms "
+                                                "and rejected, because the thing it samples is NOT surface irradiance -- "
+                                                "RtVolumetric.rgen writes g_illuminationVolume from the same froxel pass that "
+                                                "feeds volumetric FOG: coarse 3D grid, temporally blended at 0.05 (~20 frame "
+                                                "lag), storing absolute unnormalized radiance. Multiplying a sprite by it gave "
+                                                "exactly the artifacts you would predict from that: a muzzle flash or the "
+                                                "flashlight lights up whole froxel cells, so the sprite reads foggy/fuzzy and "
+                                                "haloed, and because the radiance is unnormalized (>1 under a light) the "
+                                                "additive-blended body brightens until it stops looking see-through. It is "
+                                                "also a GLOBAL switch in RsWorld.inl, hitting every particle and additive FX, "
+                                                "not just the ghosts. Superseded by rt_ghost_lightscale, which is per-sprite "
+                                                "and needs no shader support. Left in (and RTGL1 still built with "
+                                                "ILLUMINATION_VOLUME=1) only so the path can be re-tested (2026-08-09)" )
 
     RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
@@ -1744,6 +1768,39 @@ public:
         return corpse ? bool( cvar::rt_spectre_corpse_solid ) : bool( cvar::rt_ghost_solid );
     }
 
+    // Multiplier for a LIVING ghost's vertex alpha, so the body fades out in a dark room
+    // while its eyes do not. See rt_ghost_lightscale for why alpha (and not colour) is
+    // the channel that separates the two: RasterizerPipelines.cpp blends attachment 0
+    // (body) with SRC_ALPHA and attachment 1 (outScreenEmission / the _e eye mask) with
+    // ONE,ONE — the emission output never sees alpha at all.
+    float GhostLightScale() const
+    {
+        bool corpse = false;
+        if( GhostSprite( &corpse ) == GhostActor::None || corpse )
+        {
+            return 1.f;
+        }
+
+        const float amount = std::clamp( float( cvar::rt_ghost_lightscale ), 0.f, 1.f );
+        if( amount <= 0.f )
+        {
+            return 1.f;
+        }
+
+        // m_lightlevel is the sprite-only field (hw_sprites.cpp sets it from
+        // actor->Sector->GetSpriteLight(), defaulting to 255). NOT m_sectorLightLevel —
+        // that one is only ever pushed for walls and flats, so on a sprite it is stale
+        // and would have read as a permanently pitch-black room.
+        const float ll = std::clamp( float( rtstate.m_lightlevel ) / 255.f, 0.f, 1.f );
+
+        // sqrt, not linear: Doom lightlevels read far brighter than their numeric value,
+        // so a linear curve crushes an ordinary dim-but-lit corridor down to nearly
+        // invisible. Only genuinely unlit rooms should erase the body.
+        const float lit = std::sqrt( ll );
+
+        return 1.f - amount * ( 1.f - lit );
+    }
+
     bool IsSpectre() const
     {
         switch( mRenderStyle.BlendOp )
@@ -2519,7 +2576,10 @@ private:
                 // Other soft-blend sprites: floor so they're not ghostly-clear.
                 a = std::max( a, float( cvar::rt_translucent_minalpha ) );
             }
-            return a;
+            // Applied AFTER the minalpha floor/cap on purpose: those pin how see-through
+            // the ghost is at full light, this then fades that whole look out with the
+            // room. Folding it in before would let minalpha clamp the darkness back off.
+            return a * GhostLightScale();
         };
 
         // The map's bright surfaces become the emitters. primColor below already carries
@@ -2578,17 +2638,19 @@ private:
         }
         else if( forceSpriteUnlitAlbedo )
         {
-            // Do NOT try to dim a spectre from here to stop it reading as self-lit in a
-            // dark room. It was tried and it cannot work: RsWorld.inl builds its emissive
-            // out of baseColor() too —
+            // Do NOT try to dim a spectre via the RGB here to stop it reading as self-lit
+            // in a dark room. It was tried and it cannot work: RsWorld.inl builds its
+            // emissive out of baseColor() too —
             //
             //     ldrEmis = baseColor().rgb * emisTex.rgb;   // then *= emissiveMult
             //
             // so scaling this colour down to darken the body scales the eye mask down by
-            // exactly the same factor. Body and eyes are inseparable from here. The only
-            // thing that separates them is getting the primitive ray traced, which for a
-            // low-alpha sprite means GLASS/WATER/ACID (VulkanDevice.cpp IsRasterized) —
-            // tried, and rejected on looks. The living ghost stays rasterized on purpose.
+            // exactly the same factor. Body and eyes are inseparable *in this channel*.
+            //
+            // The channel that does separate them is ALPHA, one stage later: the body
+            // (attachment 0) blends SRC_ALPHA while outScreenEmission (attachment 1)
+            // blends ONE,ONE and never sees alpha. That is what GhostLightScale() in
+            // l_spriteAlpha() uses. The living ghost stays rasterized on purpose.
             primColor = rt.rgUtilPackColorFloat4D( mStreamData.uObjectColor.r,
                                                   mStreamData.uObjectColor.g,
                                                   mStreamData.uObjectColor.b,
