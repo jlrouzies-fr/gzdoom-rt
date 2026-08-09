@@ -272,11 +272,14 @@ namespace cvar
                                                 "apart, so a 512x512 room alone wants over a thousand lights. 2 gives 32-unit "
                                                 "spacing. The stride counts ABSOLUTE lattice position, not a per-sector counter, "
                                                 "so the chosen bulbs stay aligned across tile and sector seams" )
-    RT_CVAR( rt_faux_lamp_max,          128,    "hard cap on faux panel lights per frame, budgeted SEPARATELY from "
+    RT_CVAR( rt_faux_lamp_max,          256,    "hard cap on faux panel lights per frame, budgeted SEPARATELY from "
                                                 "rt_ceiling_edge_max and rt_wall_strip_max. Sharing a cap would be a silent "
                                                 "regression: edge-lamp demand is already ~800 against a cap of 320, so adding "
                                                 "SFLATC's 76 flats to the same pool would push real bulbs out of the nearest-N "
-                                                "set and darken fixtures that do exist, to light ones that do not" )
+                                                "set and darken fixtures that do exist, to light ones that do not. Was 128, "
+                                                "which left only 128 of ~215 wanted lit (nearest-N truncation reads as flats "
+                                                "popping in as the camera approaches, not as a distance cutoff); raised to "
+                                                "cover typical demand (2026-08-09)" )
 
     RT_CVAR( rt_solo_lamps,             true,   "light SFLATDE and SFLATCH: single-bulb ceiling flats that DO show a lit bulb "
                                                 "in the art (unlike SFLATC/SPACECE's blank sockets) but that the original game "
@@ -297,11 +300,14 @@ namespace cvar
                                                 "lattice/edge lamps (0.35/0.10): a single visible bulb reads better with a "
                                                 "harder, more precise source than a soft wide one" )
     RT_CVAR( rt_solo_lamp_zofs,         8.f,    "drop solo bulb lights this many map units below the ceiling plane" )
-    RT_CVAR( rt_solo_lamp_max,          64,     "hard cap on solo bulb lights per frame, budgeted separately from "
+    RT_CVAR( rt_solo_lamp_max,          384,    "hard cap on solo bulb lights per frame, budgeted separately from "
                                                 "rt_faux_lamp_max and rt_ceiling_edge_max for the same reason those two are "
                                                 "split from each other — SFLATDE alone tiles across a 768x768 MAP03 room "
                                                 "(144 positions at stride 1), which must not be able to starve the real or "
-                                                "faux lattices of light slots" )
+                                                "faux lattices of light slots. Was 64, which left only 64 of ~260 wanted lit "
+                                                "(~24%) -- the nearest-N cap, not rt_ceiling_edge_maxdist, was why a solo bulb "
+                                                "lit up only once it became one of the 64 closest, i.e. as the camera moved "
+                                                "toward it, at any distance well inside the maxdist radius (2026-08-09)" )
     RT_CVAR( rt_solo_lamp_stride,       1,      "subsample the solo bulb lattice like rt_faux_lamp_stride. Default 1 (light "
                                                 "every bulb) because these are a handful of genuine fixtures per map, not a "
                                                 "dense invented grid — raise it if a large SFLATDE/SFLATCH room turns out to "
