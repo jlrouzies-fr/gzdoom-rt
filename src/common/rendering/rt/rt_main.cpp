@@ -237,8 +237,10 @@ namespace cvar
                                                 "than stopping at the cap in sector-index order. Emitting in index order let "
                                                 "MAP02's sector 16 (11,614u perimeter, 364 lights) take the entire budget and "
                                                 "leave the rest of the level dark (2026-08-08)" )
-    RT_CVAR( rt_ceiling_edge_maxdist,   1536.f, "skip flat bulb lamps further than this from the camera. One across the level "
-                                                "contributes nothing visible but still costs a light slot and a ReSTIR reservoir" )
+    RT_CVAR( rt_ceiling_edge_maxdist,   3072.f, "skip flat bulb lamps further than this from the camera. One across the level "
+                                                "contributes nothing visible but still costs a light slot and a ReSTIR reservoir. "
+                                                "Doubled from 1536 -- that cut lamps (incl. faux/solo, which share this same "
+                                                "distance check) at ~48m, visibly popping in as the camera approached (2026-08-09)" )
     RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads, split by ceiling vs floor" )
 
     RT_CVAR( rt_faux_lamps,             true,   "treat SFLATC (flat) and SPACECE (wall) as if they were bulb arrays, and light "
