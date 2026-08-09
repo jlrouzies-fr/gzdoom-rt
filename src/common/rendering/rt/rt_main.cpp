@@ -370,6 +370,34 @@ namespace cvar
 
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
+    RT_CVAR( rt_spectre_alpha,          0.20f,  "the single alpha a LIVING 64Spectre (SAR2) renders at, in every state "
+                                                "[0 = disable, use whatever DECORATE's A_SetTranslucent last set]. 0.20 is the "
+                                                "value the actor's own See/Melee/Pain states use, so this changes nothing "
+                                                "about a spectre that is awake and chasing you — it only pulls the Spawn/Idle "
+                                                "loop down to match. That loop calls A_SetTranslucent(1.0) once and then never "
+                                                "lowers it again, so an idle spectre used to sit at alpha 1.0 (clipped to "
+                                                "rt_translucent_minalpha 0.80) — 4x more opaque than the same monster after it "
+                                                "wakes up, which is why it still read as lit in a pitch black room while a "
+                                                "charging one looked correct. Cost: the Idle state's 0.25->1.0 alpha pulse is "
+                                                "flattened; under path tracing that pulse reads as the ghost glowing on and "
+                                                "off rather than as a shimmer (2026-08-09)" )
+    RT_CVAR( rt_nightmareimp_alpha,     0.35f,  "the single alpha a LIVING 64NightmareImp (TRO2) renders at, in every state "
+                                                "[0 = disable, use DECORATE's value]. The companion to rt_spectre_alpha, but "
+                                                "note the two monsters had DIFFERENT bugs. The imp declares a flat "
+                                                "\"Alpha 0.60\" and none of its states call A_SetTranslucent, so unlike the "
+                                                "spectre its idle and chase alpha already agreed — it never had the "
+                                                "Spawn-loop discrepancy. What it had instead was the opposite problem: the "
+                                                "rt_translucent_minalpha FLOOR (max(a, 0.80)) applied to soft-blend sprites "
+                                                "was raising it from the authored 0.60 to 0.80, i.e. making it MORE opaque "
+                                                "than the actor asks for, which is the same too-visible-in-a-dark-room "
+                                                "complaint by another route. Living ghosts now bypass that floor entirely. "
+                                                "The default was briefly 0.60 (the authored value, once the floor was gone) "
+                                                "and is now 0.35 by eye — deliberately BELOW what DECORATE asks for, on the "
+                                                "same reasoning that settled the spectre: sector lightlevel is a poor proxy "
+                                                "for real RT brightness in this mod, so a faint sprite is what actually makes "
+                                                "imperfect light tracking stop being visible. Still well above the spectre's "
+                                                "0.20 — a nightmare imp is a semi-transparent monster, not an invisible one "
+                                                "(2026-08-09)" )
     RT_CVAR( rt_spectre_corpse_solid,   true,   "stop treating a 64Spectre as a spectre once it is dead (SAR2 frames I-N). "
                                                 "A spectre carries RG_MESH_PRIMITIVE_TRANSLUCENT, so RTGL1 rasterizes it and "
                                                 "RsWorld.inl draws vertexColor*texture with NO lighting term — the corpse "
@@ -2566,11 +2594,61 @@ private:
             {
                 return 1.0f;
             }
-            if( IsSpectre() )
+
+            bool             ghostCorpse = false;
+            const GhostActor ghost       = GhostSprite( &ghostCorpse );
+            const bool       livingGhost = ( ghost != GhostActor::None ) && !ghostCorpse;
+
+            if( livingGhost && ghost == GhostActor::Spectre )
             {
-                // Spectre: force alpha to minalpha so all states (see, attack, pain, death)
-                // render uniformly semi-transparent. Some states don't call A_SetTranslucent
-                // and default to alpha=1.0 (opaque) which makes them look wrong.
+                // FORCE, don't cap. 64Spectre's DECORATE only lowers alpha in states that
+                // call A_SetTranslucent, and its Spawn/Idle loop never does:
+                //
+                //     Spawn:  SAR2 A 0 A_SetTranslucent(1.0, 0)
+                //             SAR2 BD 10 A_Look
+                //             Goto Spawn+1          <- loops here, alpha stays 1.0
+                //     See:    ... A_SetTranslucent(0.75) 0.50 0.25 0.20
+                //
+                // so an idle spectre sits at 1.0 while a chasing one sits at 0.20. The old
+                // min(a, minalpha) only clipped the top, leaving idle at 0.80 — 4x more
+                // opaque than the same monster once it wakes up. That is why an idle
+                // spectre still read as lit in a pitch black room while a charging one
+                // looked right: rt_ghost_lightscale was working, it was just scaling a body
+                // 4x more opaque to begin with (2026-08-09).
+                //
+                // Forcing one value is what the old comment here already claimed to do
+                // ("uniformly semi-transparent") but min() never actually did. Cost: the
+                // Idle state's 0.25->1.0 alpha pulse is flattened out. That pulse is what
+                // reads as "glowing on and off" under PT — set rt_spectre_alpha 0 to hand
+                // control back to DECORATE if the shimmer is wanted.
+                const float forced = float( cvar::rt_spectre_alpha );
+                if( forced > 0.f )
+                {
+                    a = std::min( forced, 1.f );
+                }
+            }
+            else if( livingGhost )
+            {
+                // 64NightmareImp. Same treatment as the spectre above — one forced alpha,
+                // and critically NOT run through the rt_translucent_minalpha floor further
+                // down, because max(0.60, 0.80) would push it MORE opaque than DECORATE
+                // asks for: the same too-visible-in-a-dark-room complaint by another route.
+                //
+                // Unlike the spectre there is no idle-vs-active discrepancy to repair here:
+                // 64NightmareImp declares a flat "Alpha 0.60" and none of its states ever
+                // call A_SetTranslucent, so Spawn and See already agree. The default is 0.35
+                // — tuned by eye, below the authored 0.60, for the same reason the spectre
+                // settled at 0.20: a faint enough sprite makes the imperfect light tracking
+                // stop being visible (2026-08-09).
+                const float forced = float( cvar::rt_nightmareimp_alpha );
+                if( forced > 0.f )
+                {
+                    a = std::min( forced, 1.f );
+                }
+            }
+            else if( IsSpectre() )
+            {
+                // Classic Fuzz spectres (not SAR2): cap only, no authored alpha to respect.
                 a = std::min( a, float( cvar::rt_translucent_minalpha ) );
             }
             else if( rt_mod_compat && rtstate.is< RtPrim::ExportInstance >() )
