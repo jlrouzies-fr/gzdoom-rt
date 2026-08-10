@@ -246,6 +246,14 @@ namespace cvar
                                                 "Doubled from 1536 -- that cut lamps (incl. faux/solo, which share this same "
                                                 "distance check) at ~48m, visibly popping in as the camera approached (2026-08-09)" )
     RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads, split by ceiling vs floor" )
+    RT_CVAR( rt_ceiling_edge_lattice,   true,   "place SFLATAS/SFLATAQ lights ON their painted bulbs (a per-64-unit-tile lattice, "
+                                                "like rt_faux_lamps does for SFLATC) instead of around the sector perimeter. The "
+                                                "perimeter walk lights a room's EDGES, but these two textures tile their bulbs "
+                                                "across the whole flat, so every bulb away from a wall cast nothing and a wide "
+                                                "panel stayed dark down its own middle — the exact objection the faux path was "
+                                                "built to answer, which was never applied to the real arrays. Off = the old "
+                                                "perimeter placement, for A/B. SPORT* keeps the perimeter walk either way: a "
+                                                "teleporter pad is one fixture per sector, not a lattice (2026-08-10)" )
 
     RT_CVAR( rt_faux_lamps,             true,   "treat SFLATC (flat) and SPACECE (wall) as if they were bulb arrays, and light "
                                                 "them with the same perimeter walks as the real ones. They are NOT lamp "
@@ -1210,6 +1218,13 @@ constexpr uint64_t HandLightId_Base      = 1ull << 42;
 // but the margin is only there by arithmetic. Flame IDs use the same ptr-derived low bits
 // with NO shift, so they occupy 1<<43 + 32 bits and cannot reach 1<<44.
 constexpr uint64_t FlameLightId_Base     = 1ull << 43;
+// Real bulb-array lattice lights (SFLATAS/SFLATAQ). Bit 44, one clear bit above the flame
+// range, and NOT sharing CeilingEdgeId_Base even though these come from the same walk and
+// the same budget: that base's IDs are line-derived (line->Index() * 2 * segsPerLine + sg)
+// while a lattice ID is secIndex<<20 + cell, so the two encodings would overlap
+// unpredictably inside one range. Bit 41 is technically free but the solo range below it
+// is secIndex-derived and its headroom is only there by arithmetic — see SoloLatticeId_Base.
+constexpr uint64_t CeilingLatticeId_Base = 1ull << 44;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -6845,6 +6860,11 @@ void RT_UploadCeilingEdgeLamps()
     int lampFloors = 0;
     int fauxFlats  = 0;
     int soloFlats  = 0;
+    // Counted separately from lampCeils/lampFloors, which now mean "flats that took the
+    // perimeter walk" — without the split, a level whose bulb flats all moved onto the
+    // lattice would report an unchanged lamp count while placing lights somewhere else
+    // entirely, which is precisely the kind of silent move this debug line exists to catch.
+    int bulbLattices = 0;
 
     // Collect first, then keep the nearest maxLights — do NOT stop the walk at the cap.
     //
@@ -6883,6 +6903,34 @@ void RT_UploadCeilingEdgeLamps()
     // so these are also world offsets modulo 64.
     static constexpr double FauxFlatLattice[] = { 7.5, 23.5, 39.5, 55.5 };
     constexpr double        TileSize          = 64.0;
+
+    // The REAL bulb arrays' lattices, detected the same way as SFLATC's and just as much
+    // NOT assumed: these are the blob centroids of the authored `_e` masks
+    // (tools/gen_bulb_flat_masks.py). SFLATAS is 2x2 at 32-unit spacing, SFLATAQ 4x4 at 16.
+    static constexpr double BulbLatticeAS[] = { 15.5, 47.5 };
+    static constexpr double BulbLatticeAQ[] = { 7.5, 23.5, 39.5, 55.5 };
+    const bool              latticeOn       = bool{ cvar::rt_ceiling_edge_lattice };
+
+    // Stride lives in this table rather than in a cvar, and is per texture rather than
+    // shared, because the two lattices are different densities and one number cannot mean
+    // the same thing on both. Stride 1 on SFLATAS (bulbs already 32 units apart) and 2 on
+    // SFLATAQ (16 -> 32) lands a light every ~32 units on either texture. That matters for
+    // the same reason rt_ceiling_edge_intensity is pinned equal to rt_wall_strip_intensity:
+    // one physical bulb band crosses between these textures, and a density step reads as a
+    // brightness step at the seam.
+    auto bulbLatticeFor = []( const char* n, const double*& off, int& nOff, int& stride ) {
+        if( strncmp( n, "SFLATAS", 7 ) == 0 )
+        {
+            off = BulbLatticeAS, nOff = 2, stride = 1;
+            return true;
+        }
+        if( strncmp( n, "SFLATAQ", 7 ) == 0 )
+        {
+            off = BulbLatticeAQ, nOff = 4, stride = 2;
+            return true;
+        }
+        return false;
+    };
 
     // One light per bulb is unaffordable: at 16-unit spacing a 512x512 room wants over a
     // thousand. The stride subsamples the lattice, so lights stay ON bulbs (which is the
@@ -7069,6 +7117,40 @@ void RT_UploadCeilingEdgeLamps()
             continue;
         }
         ( isCeiling ? lampCeils : lampFloors )++;
+
+        // Lattice placement for the real bulb arrays, for exactly the reason the isFaux
+        // branch above gives — it was simply never applied to them. SFLATAS/SFLATAQ tile
+        // their bulbs across the WHOLE flat, so a perimeter walk lights the room's edges
+        // and leaves every interior bulb casting nothing: a wide panel stayed dark down
+        // its own middle while its art showed lit bulbs there (open-issues 1.6g). Feeds
+        // the SAME `cand` list, budget and intensity as the perimeter path, because this
+        // changes only WHERE the lights go, not how many or how bright.
+        //
+        // SPORT* deliberately has no entry and falls through: a teleporter pad is one
+        // fixture filling its sector, not a tiled lattice, so the perimeter walk is right
+        // for it.
+        const double* bulbOff    = nullptr;
+        int           bulbN      = 0;
+        int           bulbStride = 1;
+        if( latticeOn && bulbLatticeFor( ftname, bulbOff, bulbN, bulbStride ) )
+        {
+            bulbLattices++;
+            addLattice( sector,
+                        i,
+                        isCeiling,
+                        bulbOff,
+                        bulbOff,
+                        bulbN,
+                        bulbStride,
+                        RT_SectorHue( sector.Colormap.LightColor,
+                                      float{ cvar::rt_sector_tint_lights } ),
+                        peak,
+                        srcRadius,
+                        zOfs,
+                        CeilingLatticeId_Base,
+                        cand );
+            continue;
+        }
 
         for( unsigned li = 0; li < sector.Lines.Size(); li++ )
         {
@@ -7265,7 +7347,7 @@ void RT_UploadCeilingEdgeLamps()
             // are split is so a glance can tell whether invented or solo fixtures are
             // crowding real ones.
             Printf( "rt_ceiling_edge: uploaded=%d of %d wanted (cap %d, within %.0fu) "
-                    "from %d lamp ceiling(s) + %d lamp floor(s) | I=%.0f | "
+                    "from %d lamp ceiling(s) + %d lamp floor(s) + %d bulb lattice(s) | I=%.0f | "
                     "faux %d flat(s), %d of %d wanted (cap %d) I=%.0f | "
                     "solo %d flat(s), %d of %d wanted (cap %d) I=%.0f\n",
                     uploaded,
@@ -7274,6 +7356,7 @@ void RT_UploadCeilingEdgeLamps()
                     maxDist,
                     lampCeils,
                     lampFloors,
+                    bulbLattices,
                     peak,
                     fauxFlats,
                     int( fauxCand.size() ),
