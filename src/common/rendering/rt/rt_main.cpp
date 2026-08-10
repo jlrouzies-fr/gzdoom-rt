@@ -638,6 +638,36 @@ namespace cvar
     RT_CVAR( rt_sun_b,                  0.f,    "[0, 360] sun azimuth angle; hotizontal angle, counter-clockwise")
     RT_CVAR_COLOR( rt_sun_color,      0xFFFFFF, "sun color (hex)")
 
+    // Doom64-RT: aiming the moon from the console.
+    //
+    // rt_sun_* moves the LIGHT. The moon you can see is a disc painted into the
+    // sky texture (tools/gen_moon_sky.py), so on its own rt_sun_b would swing the
+    // shafts around while the disc stayed put. These rotate the sky dome to match,
+    // which works because the sky's horizontal offset (LevelLocals::hw_sky1pos,
+    // degrees) is applied as a rotation about the up axis in
+    // FSkyVertexBuffer::SetupMatrices -- the same knob a scrolling sky uses.
+    //
+    // Rotating the whole sky rather than the disc alone is the point: the
+    // starfield is uniform, so nothing else in it reads as having moved, and
+    // under RT the dome is rasterised into the sky cubemap, so the disc lands at
+    // the new bearing in the environment map too, not just on screen.
+    //
+    // Use the `moon` CCMD rather than setting these by hand.
+    RT_CVAR( rt_moon_track,             true,   "rotate the sky so the painted moon disc follows rt_sun_b. Off = the "
+                                                "sky stays where the texture put it and only the light moves, which "
+                                                "is what you want while A/B-ing shaft direction alone." )
+    RT_CVAR( rt_moon_tex_b,             135.f,  "azimuth the moon is PAINTED at in the sky texture. Must match "
+                                                "tools/gen_moon_sky.py --azimuth; it is the reference point the "
+                                                "tracking rotates away from, not a position in itself." )
+    RT_CVAR( rt_moon_yawsign,           1.f,    "+1 or -1: which way the sky turns per degree of rt_sun_b. The sky "
+                                                "dome mirrors in x AND negates u, so this sign cancels out of any "
+                                                "derivation and has to be settled by looking. If moving the moon "
+                                                "sends it the wrong way, flip this. 0 pins the sky." )
+    RT_CVAR( rt_sky_yaw,                0.f,    "extra sky rotation in degrees, added on top of the tracking above. "
+                                                "This is the one-time calibration: with rt_sun_b and the painted "
+                                                "azimuth agreeing, dial this until the disc sits where the shafts "
+                                                "come from, then keep the number." )
+
     RT_CVAR( rt_reflrefr_depth,         8,      "max depth of reflect/refract") 
     RT_CVAR( rt_refr_glass,             1.52f,  "glass index of refraction") 
     RT_CVAR( rt_refr_water,             1.33f,  "water index of refraction") 
@@ -953,8 +983,12 @@ namespace cvar
     RT_CVAR( rt_water_glow,             0.15f,  "stylized water: unlit on-screen sheen on the caustic veins, "
                                                 "so the pattern still reads in near-black rooms. Casts no "
                                                 "light. 0 = fully lighting-dependent." )
-    RT_CVAR( rt_water_veinref,          0.03f,  "stylized water: luminance of the flat's brightest texel, used "
-                                                "to normalize the vein mask. Lower = wider, brighter veins." )
+    RT_CVAR( rt_water_veinref,          0.016f, "stylized water: LINEAR luminance that saturates the caustic "
+                                                "vein mask. Measured on D64W2_01: median texel 0.0024, p90 "
+                                                "0.0064, p95 0.0113, p99 0.0161, max 0.0327 — the flat is far "
+                                                "darker in linear space than its sRGB thumbnail suggests, so a "
+                                                "value near the p99 is what makes the vein cores read while the "
+                                                "body stays deep. Lower = wider, brighter veins." )
     // NOT archived: a diagnostic left at 1 in the ini would paint every water
     // surface magenta on every later launch, and this project has lost time to
     // exactly that class of stuck cvar.
@@ -5113,6 +5147,85 @@ namespace classic_toggle
                     "  whenever the nvDlssRr object merely exists) -> no denoiser at all.\n"
                     "  Relaunch with -rtdebug to see the DLSSRR: lines from RTGL.\n" );
         }
+    }
+
+    // Aim the moon from the console: `moon <azimuth> [altitude] [intensity]`.
+    //
+    // The moon is two things that have to agree -- an analytic directional light
+    // (rt_sun_*) that casts the shafts, and a disc painted into the sky texture
+    // that you can actually see. Setting rt_sun_b alone swings the shafts away
+    // from the disc. This moves both: the angles here, and the sky rotation that
+    // carries the disc, via rt_moon_track in R_UpdateSky.
+    //
+    // Bare `moon` prints the current aim rather than changing it, because the
+    // first thing you want after walking into a room is to know where it thinks
+    // the moon is.
+    CCMD( moon )
+    {
+        auto report = []() {
+            Printf( "moon: azimuth %.1f, altitude %.1f, intensity %.0f, %s\n",
+                    float{ cvar::rt_sun_b },
+                    float{ cvar::rt_sun_a },
+                    float{ cvar::rt_sun_intensity },
+                    bool{ cvar::rt_sun } ? "ON" : "OFF (set rt_sun 1)" );
+            Printf( "  sky: painted at %.1f, tracking %s, yawsign %+.0f, extra yaw %.1f\n",
+                    float{ cvar::rt_moon_tex_b },
+                    bool{ cvar::rt_moon_track } ? "ON" : "OFF (disc will not follow)",
+                    float{ cvar::rt_moon_yawsign },
+                    float{ cvar::rt_sky_yaw } );
+        };
+
+        if( argv.argc() < 2 )
+        {
+            report();
+            Printf( "  usage: moon <azimuth 0..360> [altitude -90..90] [intensity]\n"
+                    "         moon flip     - disc moves the wrong way? reverse it\n"
+                    "         moon nudge <deg> - shift the disc alone, to calibrate\n" );
+            return;
+        }
+
+        // The sign of the sky rotation cancels out of any derivation off the dome
+        // vertices (it mirrors in x AND negates u), so it is settled by looking at
+        // it, not by reasoning. One word, then look again.
+        if( stricmp( argv[ 1 ], "flip" ) == 0 )
+        {
+            cvar::rt_moon_yawsign = -float{ cvar::rt_moon_yawsign };
+            Printf( "moon: yawsign now %+.0f\n", float{ cvar::rt_moon_yawsign } );
+            return;
+        }
+
+        // Calibration: with the light where you want it, walk the disc until the
+        // two line up, then keep the number in the launcher as +rt_sky_yaw.
+        if( stricmp( argv[ 1 ], "nudge" ) == 0 )
+        {
+            if( argv.argc() < 3 )
+            {
+                Printf( "moon nudge: needs degrees, e.g. `moon nudge 15`\n" );
+                return;
+            }
+            cvar::rt_sky_yaw = float{ cvar::rt_sky_yaw } + float( atof( argv[ 2 ] ) );
+            Printf( "moon: sky yaw %.1f (pin it with +rt_sky_yaw %.1f)\n",
+                    float{ cvar::rt_sky_yaw }, float{ cvar::rt_sky_yaw } );
+            return;
+        }
+
+        cvar::rt_sun_b = float( fmod( atof( argv[ 1 ] ), 360.0 ) );
+        if( argv.argc() >= 3 )
+        {
+            cvar::rt_sun_a = std::clamp( float( atof( argv[ 2 ] ) ), -90.f, 90.f );
+        }
+        if( argv.argc() >= 4 )
+        {
+            cvar::rt_sun_intensity = std::max( 0.f, float( atof( argv[ 3 ] ) ) );
+        }
+        // Aiming a light that is switched off looks like the command did nothing,
+        // so turn it on rather than making that a second thing to remember.
+        if( !bool{ cvar::rt_sun } )
+        {
+            cvar::rt_sun = true;
+            Printf( "moon: rt_sun was off, turned on\n" );
+        }
+        report();
     }
 
     CCMD( rt_dump_dynlights )
