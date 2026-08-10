@@ -417,7 +417,28 @@ static void RT_DrawCloudDeck(HWDrawInfo* di, FRenderState& state,
 	const uint32_t tintc = *(cvar::rt_clouds_tint);
 	const float tint[3] = { RPART(tintc) / 255.f, GPART(tintc) / 255.f, BPART(tintc) / 255.f };
 	const float pass = clamp<float>(cvar::rt_clouds_transmit, 0.f, 1.f);
-	float transmittance[3] = { 1.f, 1.f, 1.f };
+
+	// How much of the moon's ray is still clear sky, accumulated over the shells
+	// as they are placed. The tint and `pass` are applied ONCE at the end, to
+	// the covered fraction, rather than per shell.
+	//
+	// That distinction is the whole behaviour of the knob. Folding them in per
+	// shell -- which is what this used to do -- raises `pass` to the power of
+	// the shell count: at the shipping 0.22 over 6 shells a fully covered ray
+	// transmitted 1e-4, which is not "a dim tinted remainder", it is nothing.
+	// Every covered ray then hit the hard floor in RT_SetCloudSunTransmittance,
+	// and because that floor was a per-channel clamp it landed on
+	// (0.02, 0.02, 0.02) -- grey. So the documented headline feature, moonlight
+	// under a purple deck arriving purple, did not happen at all under actual
+	// cover: the deck went opaque and the tint was clamped back out of it. It
+	// only ever showed in the narrow partial-cover band.
+	//
+	// Treating the deck as one slab of coverage A = 1 - clearsky makes `pass`
+	// mean what its description says -- what a FULLY covered patch transmits --
+	// independently of how many shells are stacked to build that patch. Shell
+	// count then changes the picture and the volume, not the light, which is
+	// what makes rt_clouds_shells safe to raise.
+	float clearsky = 1.f;
 
 	state.AlphaFunc(Alpha_Greater, 0.f);
 	state.EnableTexture(true);
@@ -461,13 +482,11 @@ static void RT_DrawCloudDeck(HWDrawInfo* di, FRenderState& state,
 					                                      (p.X / R) * tiles + ou,
 					                                      (p.Z / R) * tiles + ov)
 					                      * fade * alpha, 0.f, 1.f);
-					// Clear sky passes everything; solid cloud passes `pass`,
-					// tinted. Per channel, which is the whole point -- a scalar
-					// here would dim the moon without ever colouring it.
-					for (int c = 0; c < 3; c++)
-					{
-						transmittance[c] *= (1.f - a) + a * tint[c] * pass;
-					}
+					// Accumulate how much of the ray is still CLEAR sky. The
+					// tint and `pass` are applied once, after the loop, to the
+					// covered fraction -- see the note where `clearsky` is
+					// declared for why this is not folded in per shell.
+					clearsky *= (1.f - a);
 				}
 			}
 		}
@@ -523,6 +542,16 @@ static void RT_DrawCloudDeck(HWDrawInfo* di, FRenderState& state,
 	state.EnableTextureMatrix(false);
 	state.SetObjectColor(0xffffffff);
 	state.SetRenderStyle(STYLE_Translucent);
+
+	// The deck as one slab: the clear fraction passes everything, the covered
+	// fraction passes `pass`, tinted. Per channel, which is the whole point --
+	// a scalar here would dim the moon without ever colouring it.
+	const float covered = 1.f - clearsky;
+	float transmittance[3];
+	for (int c = 0; c < 3; c++)
+	{
+		transmittance[c] = clearsky + covered * tint[c] * pass;
+	}
 
 	// Blend toward white by rt_clouds_occlude so the effect can be dialled back
 	// without turning the deck off. rt_clouds_transmit is the real floor here

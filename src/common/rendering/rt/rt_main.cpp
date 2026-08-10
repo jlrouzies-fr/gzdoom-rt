@@ -5932,58 +5932,70 @@ struct CloudPreset
     uint32_t    tint;     // 0 = keep the global rt_clouds_tint
     float       alpha;    // < 0 = keep
     float       wind;     // < 0 = keep
+    int         shells;   // <= 0 = keep. Cost AND volume: see rt_clouds_shells
+    float       thick;    // < 0 = keep
+    float       transmit; // < 0 = keep. What a FULLY covered patch passes
     const char* note;
 };
 
 constexpr CloudPreset RT_CLOUD_PRESETS[] = {
-    { "map01", false, 0, -1.f, -1.f,
+    { "map01", false, 0, -1.f, -1.f, -1, -1.f, -1.f,
       "Explicitly OFF, and listed rather than left to the default so the decision "
       "is recorded. MAP01's moon preset is altitude 90 -- straight overhead, light "
       "falling vertically through the roof slots, which is the whole look of the "
       "map (see RT_MOON_PRESETS). A cloud deck sits directly across that path and "
       "would attenuate exactly the shafts the map is built around." },
-    { "map11", true, 0x9AA6C8, 0.9f, 0.014f,
+    { "map11", true, 0x9AA6C8, 0.9f, 0.014f, -1, -1.f, -1.f,
       "The storm. This is the map the whole deck exists for: it carries the "
       "MAPINFO `lightning` keyword, and it is authored WITH clouds (a CLOUDPRP "
       "skybox room, ACS script 670) that RT never draws. Slightly desaturated "
       "cool grey rather than the default blue -- the level is lit green-grey and "
       "a strongly blue sky reads as a separate scene behind it." },
-    { "map14", true, 0x8C7AB4, 0.85f, 0.010f,
+    { "map14", true, 0x8C7AB4, 0.85f, 0.010f, -1, -1.f, -1.f,
       "Purple. Thinner and slower than MAP11 -- this is weather, not a storm, so "
       "the deck should sit still enough to read as a backdrop." },
-    { "map10", true, 0xC28153, 0.85f, 0.010f,
+    { "map10", true, 0xC28153, 0.85f, 0.010f, -1, -1.f, -1.f,
       "Burnt orange. MAP10's skybox room is a CLOUDBRN overcast over a MOUNTB "
       "ridge, and the tint is that flat's own hue lifted to the luminance the "
       "other presets sit at -- the slice art is achromatic, so the tint is the "
       "cloud colour outright. Wind 0.010 because ACS script 670 scrolls the "
       "authored ceiling at 3, the same rate MAP14 does; MAP11's storm is 4." },
-    { "map16", true, 0xC28153, 0.85f, 0.010f,
+    { "map16", true, 0xC28153, 0.85f, 0.010f, -1, -1.f, -1.f,
       "The other CLOUDBRN map, same room and same scroll rate as MAP10, so the "
       "same orange. Kept as its own row rather than shared, because the table is "
       "keyed by map and a shared row would hide which maps are actually on." },
-    { "map12", true, 0x795EA4, 0.85f, 0.010f,
-      "Dark purple. Deliberately dimmer than MAP14's 8C7AB4 even though both "
-      "rooms are CLOUDPRP: MAP14 is thin daylight weather, MAP12 and MAP30 are "
-      "the heavy overcast the level is lit under." },
-    { "map30", true, 0x795EA4, 0.85f, 0.010f,
+    { "map12", true, 0x7B4FC0, 1.0f, 0.010f, 8, 1.0f, 0.45f,
+      "MAXED, and the one map that leans on the deck as a light rather than as "
+      "scenery. Full alpha, all 8 shells, double the global thickness: the sky "
+      "is solid cloud with no clear patches to speak of.\n"
+      "  A more saturated purple than MAP30's 795EA4 because the tint is doing "
+      "two jobs here -- it is the colour of the picture AND the colour of every "
+      "bit of moonlight that reaches the level, and under total cover the second "
+      "job is the only light the outdoors gets.\n"
+      "  transmit 0.45 against the global 0.22 is what makes that survivable. "
+      "The deck's transmittance is now a slab (see hw_skyportal.cpp), so this is "
+      "literally what a fully covered patch passes: 0.45 of the tint, which "
+      "works out at about a sixth of the moon's luminance arriving strongly "
+      "violet. At the global 0.22 a deck this thick would be a lid." },
+    { "map30", true, 0x795EA4, 0.85f, 0.010f, -1, -1.f, -1.f,
       "Same dark purple as MAP12 -- same CLOUDPRP room, same MOUNTC ridge, same "
       "scroll rate." },
-    { "map09", true, 0xE85062, 0.85f, 0.014f,
+    { "map09", true, 0xE85062, 0.85f, 0.014f, -1, -1.f, -1.f,
       "Red-pink. The CLOUDPNK rooms are a lurid magenta-crimson (the flat's mean "
       "is 740317); this is that hue pushed off magenta towards red, which is "
       "what the level's own lighting sits under. Wind 0.014 rather than the 0.010 "
       "its neighbours get: MAP09's ACS scrolls the authored ceiling at 4, the "
       "storm's rate, not 3." },
-    { "map15", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
-    { "map18", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
-    { "map19", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
-    { "map20", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
-    { "map17", true, 0xA67454, 0.85f, 0.010f,
+    { "map15", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
+    { "map18", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
+    { "map19", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
+    { "map20", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
+    { "map17", true, 0xA67454, 0.85f, 0.010f, -1, -1.f, -1.f,
       "Brown. Same CLOUDBRN flat as MAP10/16 but deliberately duller and dimmer "
       "than their C28153 -- those two are a lit orange overcast over a ridge, "
       "these two are a flat brown sky with no ridge at all in the room, and the "
       "same orange over them reads as a sunset the level does not have." },
-    { "map27", true, 0xA67454, 0.85f, 0.010f, "CLOUDBRN, as MAP17." },
+    { "map27", true, 0xA67454, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDBRN, as MAP17." },
 };
 
 bool  g_cloud_base_set   = false;
@@ -5991,6 +6003,9 @@ bool  g_cloud_base_on    = false;
 uint32_t g_cloud_base_tint = 0;
 float g_cloud_base_alpha = 0.f;
 float g_cloud_base_wind  = 0.f;
+int   g_cloud_base_shells   = 0;
+float g_cloud_base_thick    = 0.f;
+float g_cloud_base_transmit = 0.f;
 
 const CloudPreset* RT_FindCloudPreset( const char* mapname )
 {
@@ -6021,6 +6036,9 @@ void RT_ApplyCloudPreset( const char* mapname )
         g_cloud_base_tint  = *( cvar::rt_clouds_tint );
         g_cloud_base_alpha = float{ cvar::rt_clouds_alpha };
         g_cloud_base_wind  = float{ cvar::rt_clouds_wind };
+        g_cloud_base_shells   = int{ cvar::rt_clouds_shells };
+        g_cloud_base_thick    = float{ cvar::rt_clouds_thick };
+        g_cloud_base_transmit = float{ cvar::rt_clouds_transmit };
     }
 
     if( !bool{ cvar::rt_clouds_presets } )
@@ -6033,6 +6051,15 @@ void RT_ApplyCloudPreset( const char* mapname )
     cvar::rt_clouds       = p ? p->clouds : g_cloud_base_on;
     cvar::rt_clouds_alpha = ( p && p->alpha >= 0.f ) ? p->alpha : g_cloud_base_alpha;
     cvar::rt_clouds_wind  = ( p && p->wind >= 0.f ) ? p->wind : g_cloud_base_wind;
+    // Shape, for the maps that use the deck as a light source rather than as
+    // scenery. shells is the cost knob as well as the volume knob, so raising it
+    // is a per-map decision, not something to lift globally.
+    cvar::rt_clouds_shells =
+        ( p && p->shells > 0 ) ? p->shells : g_cloud_base_shells;
+    cvar::rt_clouds_thick =
+        ( p && p->thick >= 0.f ) ? p->thick : g_cloud_base_thick;
+    cvar::rt_clouds_transmit =
+        ( p && p->transmit >= 0.f ) ? p->transmit : g_cloud_base_transmit;
     RT_SetColorCVar( cvar::rt_clouds_tint,
                      ( p && p->tint != 0 ) ? p->tint : g_cloud_base_tint );
 }
@@ -6156,9 +6183,28 @@ void RT_SetCloudSunTransmittance( float r, float g, float b )
     // A hard floor well under rt_clouds_transmit, which is the knob that is
     // actually meant to bound this. Purely a guard against a cvar combination
     // that would black out a map lit only by the moon.
-    g_cloudSunTransmittance[ 0 ] = std::clamp( r, 0.02f, 1.f );
-    g_cloudSunTransmittance[ 1 ] = std::clamp( g, 0.02f, 1.f );
-    g_cloudSunTransmittance[ 2 ] = std::clamp( b, 0.02f, 1.f );
+    //
+    // Floored on LUMINANCE and applied as a scale, not clamped per channel. A
+    // per-channel clamp destroys the hue exactly when it binds: three channels
+    // all under the floor come out (0.02, 0.02, 0.02), which is grey -- so the
+    // deck's colour vanished from the light in precisely the case, a thick
+    // overcast, where it should have been strongest. Scaling all three together
+    // lifts the brightness to the floor and keeps the ratio between them, so a
+    // heavy purple deck still delivers purple, just dim.
+    constexpr float FLOOR = 0.02f;
+
+    const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    if( lum < FLOOR )
+    {
+        const float scale = FLOOR / std::max( lum, 1e-9f );
+        r *= scale;
+        g *= scale;
+        b *= scale;
+    }
+
+    g_cloudSunTransmittance[ 0 ] = std::clamp( r, 0.f, 1.f );
+    g_cloudSunTransmittance[ 1 ] = std::clamp( g, 0.f, 1.f );
+    g_cloudSunTransmittance[ 2 ] = std::clamp( b, 0.f, 1.f );
 }
 
 // 0..1 flash strength right now. Cheap and side-effect-light, so both the
@@ -6535,12 +6581,17 @@ namespace classic_toggle
                         mn,
                         have ? "a preset" : "NO preset (deck follows the global rt_clouds)",
                         bool{ cvar::rt_clouds_presets } ? "" : " -- but rt_clouds_presets is OFF" );
-                Printf( "    { \"%s\", %s, 0x%06X, %.2ff, %.3ff, \"...\" },\n",
+                Printf( "    { \"%s\", %s, 0x%06X, %.2ff, %.3ff, %d, %.2ff, %.2ff, \"...\" },\n",
                         mn,
                         bool{ cvar::rt_clouds } ? "true" : "false",
                         uint32_t( *( cvar::rt_clouds_tint ) ) & 0xFFFFFF,
                         float{ cvar::rt_clouds_alpha },
-                        float{ cvar::rt_clouds_wind } );
+                        float{ cvar::rt_clouds_wind },
+                        int{ cvar::rt_clouds_shells },
+                        float{ cvar::rt_clouds_thick },
+                        float{ cvar::rt_clouds_transmit } );
+                Printf( "    (shells/thick/transmit as -1 mean \"keep the "
+                        "launcher's\" -- most maps want that)\n" );
             }
         };
 
