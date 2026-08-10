@@ -391,6 +391,18 @@ namespace cvar
                                                 "must not be able to starve the real fixtures of light slots" )
     RT_CVAR( rt_spin_panel_debug,       false,  "periodic console dump of each spinning light: sector, current frame, bearing "
                                                 "and world position" )
+    // Answers "what is blinking" without needing to know which texture or sector to
+    // look at first, which is the gap rt_tex_probe leaves: that one needs a name, and
+    // naming the wrong surface produces silence rather than an answer.
+    //
+    // Each frame it compares every sector's lightlevel against the previous frame and
+    // prints the ones that moved. If a surface visibly pulses and NOTHING prints, the
+    // sector is not animating and the cause is a light or the denoiser -- which is a
+    // real answer, arrived at in one run instead of a chain of eliminations.
+    RT_CVAR_NOARCH( rt_lightlevel_watch, false, "print every sector whose lightlevel changes, as it changes: "
+                                                "'sector 126: 200 -> 255'. The direct test for 'what is making "
+                                                "this blink'. Silence while something visibly pulses means the "
+                                                "sector is innocent" )
     // Deliberately a STRING and deliberately not archived. Set it to a texture name
     // prefix and every world surface drawn with a matching texture reports once a
     // second. Empty (the default, and what it returns to next launch) is off.
@@ -735,7 +747,18 @@ namespace cvar
                                                 "world position, and say whether each is a ceiling opening (FLAT) or "
                                                 "a band/slot in a wall (WALL). The opening feeding a room is usually "
                                                 "not one you can see, which is what makes this worth having." )
-    RT_CVAR( rt_sun_require_sky,        false,  "THE SKY-LEAK FIX. A shadow ray that hits nothing is scored as LIT "
+    RT_CVAR( rt_sun_require_sky,        true,   "THE SKY-LEAK FIX, and ON by default -- this is the corrected "
+                                                "behaviour, not an experiment. Turn it OFF to see the stock leak "
+                                                "(tools\\ab-skyleak.cmd noreq).\n"
+                                                "It gates the one DIRECTIONAL light, so it now covers lightning as "
+                                                "well as the moon -- and matters more there, because a strike is ~24x "
+                                                "brighter and a pinhole that never showed under the moon is glaring "
+                                                "under a bolt.\n"
+                                                "THE FAILURE MODE TO WATCH is the opposite one: if a courtyard's sky "
+                                                "geometry is not closed, legitimate light there is now REJECTED and it "
+                                                "goes dark. That is the regression to look for when a map suddenly "
+                                                "loses its outdoor lighting.\n"
+                                                "Mechanism: a shadow ray that hits nothing is scored as LIT "
                                                 "(RTGL1 RtMissShadowCheck.rmiss sets isShadowed = 0). Doom maps have no "
                                                 "geometry above a ceiling and are full of T-junctions at wall/ceiling "
                                                 "seams, so rays leave the level, hit nothing, and come back 'lit' -- the "
@@ -7543,6 +7566,48 @@ static RtTechLamp RT_TechLampKind( AActor* mo )
 // A light feature is a surface much brighter than the rest of ITS map, not one over a
 // fixed number. Take the map's median sector lightlevel and require a margin above it,
 // with the absolute floor still applied so a uniformly dim map does not start glowing.
+// Report every sector whose lightlevel moved since the last frame.
+//
+// Deliberately dumb and total: no filtering by texture, tag or distance, because every
+// filter this session has been an opportunity to point the instrument at the wrong
+// thing and read the silence as an answer. It walks all sectors, which is ~250 on a
+// Retribution map and free next to a single traced ray.
+void RT_WatchLightlevels()
+{
+    static std::vector< int > s_prev;
+    static const void*        s_level = nullptr;
+
+    if( !cvar::rt_lightlevel_watch || !primaryLevel )
+    {
+        if( !cvar::rt_lightlevel_watch )
+        {
+            s_prev.clear();
+            s_level = nullptr;
+        }
+        return;
+    }
+
+    const unsigned n = primaryLevel->sectors.Size();
+    if( s_level != primaryLevel || s_prev.size() != n )
+    {
+        s_prev.assign( n, INT_MIN );
+        s_level = primaryLevel;
+        Printf( "rt_lightlevel_watch: armed on %u sectors\n", n );
+    }
+
+    for( unsigned i = 0; i < n; i++ )
+    {
+        const int now = primaryLevel->sectors[ i ].lightlevel;
+        const int was = s_prev[ i ];
+        s_prev[ i ]   = now;
+        if( was == INT_MIN || was == now )
+        {
+            continue;
+        }
+        Printf( "rt_lightlevel_watch: sector %-4u  %3d -> %3d\n", i, was, now );
+    }
+}
+
 void RT_UpdateSectorEmisThreshold()
 {
     static const void* s_cachedLevel   = nullptr;
@@ -9691,6 +9756,7 @@ void RTFrameBuffer::RT_DrawFrame()
     RT_UploadHandGlowLights();
     RT_UploadFlameLights();
     RT_UpdateSectorEmisThreshold();
+    RT_WatchLightlevels();
     RT_UploadWallStripLights();
     RT_UploadSpinPanelLights();
     RT_UploadCeilingEdgeLamps();
