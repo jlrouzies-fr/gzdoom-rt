@@ -21,6 +21,9 @@
 #include "hw_viewpointbuffer.h"
 #include "i_modelvertexbuffer.h"
 #include "p_lnspec.h"
+// rt_dump_lightthinkers: DLighting and its subclasses, so a running light effect can be
+// named at runtime when the map file does not explain one.
+#include "mapthinkers/a_lights.h"
 #include "image.h"
 #include "texturemanager.h"
 #include "actor.h"
@@ -479,7 +482,8 @@ namespace cvar
 
     RT_CVAR( rt_flame_light_on,         true,   "upload one analytic, FLICKERING light per open flame — the standing torches "
                                                 "(TL*/TS*), the wall torches (A030/A031/A032/GTCH), the loose fires "
-                                                "(BFLM/GFLM/RFLM/YFLM) and the candle (CAND) — instead of the sprite's "
+                                                "(BFLM/GFLM/RFLM/YFLM), the bonfire (FIRE) and the candle (CAND) — "
+                                                "instead of the sprite's "
                                                 "attached light. Two reasons this cannot stay in texture meta. (1) POSITION: "
                                                 "RTGL1 attaches a sprite light at the CENTRE of the billboard quad, so a "
                                                 "100-unit torch lit from its own midriff, ~30 units under the flame; the "
@@ -5731,13 +5735,51 @@ CCMD( rt_sky_here )
 // cvars: _CVar.SetFloat throws "Attempt to change CVAR outside of menu code" for
 // anything without CVAR_MOD, and every RT_CVAR is CVAR_GLOBALCONFIG|CVAR_ARCHIVE.
 //
-// intensity < 0 means "leave the launcher's value alone" -- most entries only
-// want to turn the moon, not rebalance the level's brightness.
+// A NEGATIVE azimuth, altitude or intensity means "leave the launcher's value
+// alone". Most entries only want to turn the moon, not rebalance the level's
+// brightness; the VOIDSKY rows below want neither and only turn the disc off.
+// Restating a value a row does not care about is how a table like this goes
+// stale -- the copy stops tracking the launcher and nobody notices.
+//
+// `disc` is the MOONDISC quad, i.e. whether there is a moon to LOOK at, and it
+// is separate from rt_sun, the light. The two are separable on purpose: the
+// VOIDSKY maps want their windows to keep letting light in while having nothing
+// visible in the sky to have emitted it.
+//
+// `sky` is rt_sky, the multiplier on the DOME's own radiance -- RT samples the
+// rasterised sky cubemap on ray miss, so this is how much light the sky itself
+// pours through an opening, as opposed to rt_sun which is the moon.
+//
+// It is here because the domes are no longer comparable. The launcher's rt_sky
+// 25 was set when every map had the same near-black starfield; now that each map
+// gets the sky its author drew, the mean LINEAR radiance of those domes spans
+// three orders of magnitude (tools/gen_d64_skies.py's families, measured):
+//
+//     MOONSKY starfield   1.0x     <- what 25 was tuned against
+//     SKYMTNA             12x
+//     SKYCLD*/SKYMTNB/C   30-45x
+//     VOIDSKY            186x
+//     FRSKYNRM           953x
+//
+// So a fire map at the global 25 receives roughly a THOUSAND times the sky light
+// a starfield map does. That is the reason the fire maps need no replacement
+// light at all now the moon is off them: the burning sky already is one, and the
+// entry below turns it DOWN, not up. The values are set for parity with the
+// cloud families rather than measured in game -- start there and look.
+//
+// Parity, not preservation: the point is that no two maps sit a thousand times
+// apart, NOT that the new skies deliver what the old starfield did. A burning
+// sky should light a level more than a starfield; it should not light it 953x
+// more.
+//
+// NOTE this writes rt_moon_geo at level load, after the command line is parsed,
+// so on a listed map it overrides a +rt_moon_geo pin -- the same trap
+// RT_CLOUD_PRESETS documents. rt_moon_presets 0 turns the whole table off.
 //
 // To add one: play the map, aim it with `moon <az> [alt]`, then type `moon` and
 // paste the row it prints. Maps with no entry fall back to the launcher's
-// rt_sun_a/b, captured on the first level load (see g_moon_base_* below) so that
-// a preset on one map cannot leak into the next.
+// rt_sun_a/b and rt_moon_geo, captured on the first level load (see
+// g_moon_base_* below) so that a preset on one map cannot leak into the next.
 namespace
 {
 struct MoonPreset
@@ -5746,21 +5788,77 @@ struct MoonPreset
     float       azimuth;
     float       altitude;
     float       intensity; // < 0: keep whatever the launcher pinned
+    bool        disc;      // draw the MOONDISC quad at all
+    float       sky;       // rt_sky, the dome's own radiance. < 0: keep
     const char* note;
 };
 
 constexpr MoonPreset RT_MOON_PRESETS[] = {
-    { "map01", 180.f, 90.f, -1.f,
+    // The three VOIDSKY maps. Their skybox room is a plain box with a flat dark
+    // teal on every surface -- no starfield, no cloud, no horizon, nothing that
+    // implies a sky at all -- so a moon hanging in it is the one object on
+    // screen with no reason to be there. The DISC only: rt_sun stays on, because
+    // these maps still have F_SKY1 openings and taking their light away as well
+    // would flatten rooms that are lit through them.
+    { "map25", -1.f, -1.f, -1.f, false, 6.f,
+      "Disc off, aim inherited: negative azimuth/altitude/intensity mean `keep "
+      "the launcher's`, so this row says only the things it is for. Without that "
+      "convention a row like this would have to restate an aim it does not care "
+      "about, and the restated copy would go stale the moment the launcher's "
+      "changed. sky 6 because VOIDSKY's flat teal is 186x the starfield's mean "
+      "radiance -- at the global 25 the void would glow like a lightbox." },
+    { "map26", -1.f, -1.f, -1.f, false, 6.f, "VOIDSKY, as MAP25." },
+    { "map31", -1.f, -1.f, -1.f, false, 6.f, "VOIDSKY, as MAP25." },
+
+    // The five fire-sky maps (FRSKYNRM on 22/24/28, FRSKYGRN on 23/32).
+    //
+    // The disc goes for the VOIDSKY reason and more so: the sky is a wall of
+    // burning cloud and a cold moon in front of it is the brightest wrong thing
+    // on screen. The moonLIGHT goes with it (intensity 0) because nothing about
+    // a fire sky is directional -- the art is black at the top and bright at the
+    // bottom, so the fire is a RING at the horizon, arriving from every azimuth
+    // at once. Any bearing picked for a directional would be arbitrary and would
+    // rake shadows in a direction nothing on screen justifies.
+    //
+    // Nothing replaces it, because nothing has to: the burning dome is already
+    // the brightest sky in the game by three orders of magnitude, and RT samples
+    // it on ray miss through the map's real F_SKY1 openings with real occlusion.
+    // The usual objection -- the sky is not importance-sampled, so a bright
+    // thing in it lights nothing at 1 spp -- is an argument about SMALL sources.
+    // The moon disc is half a degree, about 1e-5 of the hemisphere. A fire sky
+    // is the whole hemisphere, which is the case where un-importance-sampled
+    // environment light works, because a cosine-weighted diffuse ray hits it
+    // constantly.
+    //
+    // sky 1.2 / 2.7 is parity with the cloud families at the global 25, off the
+    // measured mean radiances (953x and 410x the starfield). Both are starting
+    // points to look at, not settled numbers.
+    { "map22", -1.f, -1.f, 0.f, false, 1.2f,
+      "Fire sky. Moon off entirely -- disc and light -- and the dome does the "
+      "lighting." },
+    { "map24", -1.f, -1.f, 0.f, false, 1.2f, "Fire sky, as MAP22." },
+    { "map28", -1.f, -1.f, 0.f, false, 1.2f, "Fire sky, as MAP22." },
+    { "map23", -1.f, -1.f, 0.f, false, 2.7f,
+      "Green fire sky -- FRSKYGRN is 2.3x dimmer than FRSKYNRM, hence the higher "
+      "multiplier for the same delivered light." },
+    { "map32", -1.f, -1.f, 0.f, false, 2.7f, "Green fire sky, as MAP23." },
+
+    { "map01", 180.f, 90.f, -1.f, true, -1.f,
       "`moon 180 180` -- straight overhead, light pouring vertically. Chosen to "
       "match how the original game reads, and the vertical fall is the point: at "
       "altitude 90 the direction code clamps theta to 0, so the shafts come "
       "straight down through MAP01's roof slots the way they do in vanilla. "
-      "KNOWN AND ACCEPTED: the sky dome spans only 60 degrees, so the DISC cannot "
-      "follow the light this high -- it rides as high as the dome allows and the "
-      "moon is not physically where its own shafts originate. Deliberate: the "
-      "look of the light won over the realism of the disc. Drop the altitude to "
-      "55 if that ever stops being the trade you want." },
-    { "map13", 90.f, 25.f, -1.f,
+      "This entry used to carry a caveat -- that the DISC could not follow the "
+      "light above the sky dome's 60 degrees and the moon would not be where its "
+      "own shafts came from. That was true of the painted moon and is not true "
+      "now: the disc is geometry and draws over the dome's cap." },
+    { "map18", 10.f, 70.f, -1.f, true, -1.f,
+      "`moon 10 70` -- almost due north, high. Settled in play. Nothing to note "
+      "about the altitude: 70 is above the sky dome's 60 degrees, which used to "
+      "be a hard ceiling on where the DISC could go, but the moon is geometry "
+      "now (RT_DrawSkyQuad) and draws over the dome and its cap alike, so it "
+      "sits at its own light's bearing like any other." },
+    { "map13", 90.f, 25.f, -1.f, true, -1.f,
       "Due north. Settled in play. The painted shafts this replaced implied two "
       "different suns -- the west hall's fans want light travelling +x, the north "
       "colonnade's want -y -- and 135 was the geometric compromise between them. "
@@ -5772,10 +5870,12 @@ constexpr MoonPreset RT_MOON_PRESETS[] = {
 // with no entry gets the global default back instead of inheriting whatever the
 // last map with an entry set. Without this the table would be sticky in one
 // direction and the fallback would silently become "the last preset visited".
-bool  g_moon_base_set = false;
-float g_moon_base_a   = 0.f;
-float g_moon_base_b   = 0.f;
-float g_moon_base_i   = 0.f;
+bool  g_moon_base_set  = false;
+float g_moon_base_a    = 0.f;
+float g_moon_base_b    = 0.f;
+float g_moon_base_i    = 0.f;
+bool  g_moon_base_disc = false;
+float g_moon_base_sky  = 0.f;
 
 const MoonPreset* RT_FindMoonPreset( const char* mapname )
 {
@@ -5851,6 +5951,39 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
     { "map14", true, 0x8C7AB4, 0.85f, 0.010f,
       "Purple. Thinner and slower than MAP11 -- this is weather, not a storm, so "
       "the deck should sit still enough to read as a backdrop." },
+    { "map10", true, 0xC28153, 0.85f, 0.010f,
+      "Burnt orange. MAP10's skybox room is a CLOUDBRN overcast over a MOUNTB "
+      "ridge, and the tint is that flat's own hue lifted to the luminance the "
+      "other presets sit at -- the slice art is achromatic, so the tint is the "
+      "cloud colour outright. Wind 0.010 because ACS script 670 scrolls the "
+      "authored ceiling at 3, the same rate MAP14 does; MAP11's storm is 4." },
+    { "map16", true, 0xC28153, 0.85f, 0.010f,
+      "The other CLOUDBRN map, same room and same scroll rate as MAP10, so the "
+      "same orange. Kept as its own row rather than shared, because the table is "
+      "keyed by map and a shared row would hide which maps are actually on." },
+    { "map12", true, 0x795EA4, 0.85f, 0.010f,
+      "Dark purple. Deliberately dimmer than MAP14's 8C7AB4 even though both "
+      "rooms are CLOUDPRP: MAP14 is thin daylight weather, MAP12 and MAP30 are "
+      "the heavy overcast the level is lit under." },
+    { "map30", true, 0x795EA4, 0.85f, 0.010f,
+      "Same dark purple as MAP12 -- same CLOUDPRP room, same MOUNTC ridge, same "
+      "scroll rate." },
+    { "map09", true, 0xE85062, 0.85f, 0.014f,
+      "Red-pink. The CLOUDPNK rooms are a lurid magenta-crimson (the flat's mean "
+      "is 740317); this is that hue pushed off magenta towards red, which is "
+      "what the level's own lighting sits under. Wind 0.014 rather than the 0.010 "
+      "its neighbours get: MAP09's ACS scrolls the authored ceiling at 4, the "
+      "storm's rate, not 3." },
+    { "map15", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
+    { "map18", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
+    { "map19", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
+    { "map20", true, 0xE85062, 0.85f, 0.010f, "CLOUDPNK, as MAP09." },
+    { "map17", true, 0xA67454, 0.85f, 0.010f,
+      "Brown. Same CLOUDBRN flat as MAP10/16 but deliberately duller and dimmer "
+      "than their C28153 -- those two are a lit orange overcast over a ridge, "
+      "these two are a flat brown sky with no ridge at all in the room, and the "
+      "same orange over them reads as a sunset the level does not have." },
+    { "map27", true, 0xA67454, 0.85f, 0.010f, "CLOUDBRN, as MAP17." },
 };
 
 bool  g_cloud_base_set   = false;
@@ -5909,9 +6042,11 @@ void RT_ApplyMoonPreset( const char* mapname )
     if( !g_moon_base_set )
     {
         g_moon_base_set = true;
-        g_moon_base_a   = float{ cvar::rt_sun_a };
-        g_moon_base_b   = float{ cvar::rt_sun_b };
-        g_moon_base_i   = float{ cvar::rt_sun_intensity };
+        g_moon_base_a    = float{ cvar::rt_sun_a };
+        g_moon_base_b    = float{ cvar::rt_sun_b };
+        g_moon_base_i    = float{ cvar::rt_sun_intensity };
+        g_moon_base_disc = bool{ cvar::rt_moon_geo };
+        g_moon_base_sky  = float{ cvar::rt_sky };
     }
 
     if( !bool{ cvar::rt_moon_presets } )
@@ -5921,9 +6056,14 @@ void RT_ApplyMoonPreset( const char* mapname )
 
     const MoonPreset* p = RT_FindMoonPreset( mapname );
 
-    cvar::rt_sun_a         = p ? p->altitude : g_moon_base_a;
-    cvar::rt_sun_b         = p ? p->azimuth : g_moon_base_b;
+    // Negative means "keep the launcher's", on every numeric field. A row that
+    // only wants to turn the disc off says so and leaves the aim alone rather
+    // than restating it -- see the VOIDSKY rows.
+    cvar::rt_sun_a         = ( p && p->altitude >= 0.f ) ? p->altitude : g_moon_base_a;
+    cvar::rt_sun_b         = ( p && p->azimuth >= 0.f ) ? p->azimuth : g_moon_base_b;
     cvar::rt_sun_intensity = ( p && p->intensity >= 0.f ) ? p->intensity : g_moon_base_i;
+    cvar::rt_moon_geo      = p ? p->disc : g_moon_base_disc;
+    cvar::rt_sky           = ( p && p->sky >= 0.f ) ? p->sky : g_moon_base_sky;
 }
 } // namespace
 
@@ -6290,11 +6430,14 @@ namespace classic_toggle
     CCMD( moon )
     {
         auto report = []() {
-            Printf( "moon: azimuth %.1f, altitude %.1f, intensity %.0f, %s\n",
+            Printf( "moon: azimuth %.1f, altitude %.1f, intensity %.0f, %s, disc %s\n",
                     float{ cvar::rt_sun_b },
                     float{ cvar::rt_sun_a },
                     float{ cvar::rt_sun_intensity },
-                    bool{ cvar::rt_sun } ? "ON" : "OFF (set rt_sun 1)" );
+                    bool{ cvar::rt_sun } ? "ON" : "OFF (set rt_sun 1)",
+                    bool{ cvar::rt_moon_geo } ? "ON" : "HIDDEN (rt_moon_geo 0)" );
+            Printf( "  sky: rt_sky %.1f (the DOME's own light, separate from the "
+                    "moon above)\n", float{ cvar::rt_sky } );
             Printf( "  leak: require_sky %s, leak_debug %s\n        %s\n",
                     bool{ cvar::rt_sun_require_sky } ? "ON" : "off",
                     int{ cvar::rt_sun_leak_debug } == 2   ? "2 (COLOUR: red=shaft, green=leak)"
@@ -6326,8 +6469,12 @@ namespace classic_toggle
                 const MoonPreset* have = RT_FindMoonPreset( mn );
                 Printf( "  %s currently has %s. Row for RT_MOON_PRESETS:\n",
                         mn, have ? "a preset" : "NO preset (using the launcher aim)" );
-                Printf( "    { \"%s\", %.0ff, %.0ff, -1.f, \"...\" },\n",
-                        mn, float{ cvar::rt_sun_b }, float{ cvar::rt_sun_a } );
+                Printf( "    { \"%s\", %.0ff, %.0ff, -1.f, %s, %.1ff, \"...\" },\n",
+                        mn, float{ cvar::rt_sun_b }, float{ cvar::rt_sun_a },
+                        bool{ cvar::rt_moon_geo } ? "true" : "false",
+                        float{ cvar::rt_sky } );
+                Printf( "    (any of azimuth/altitude/intensity/sky as -1.f means "
+                        "\"keep the launcher's\")\n" );
             }
 
             Printf( "  usage: moon <azimuth 0..360> [altitude -90..90] [intensity]\n" );
@@ -6337,21 +6484,13 @@ namespace classic_toggle
         cvar::rt_sun_b = float( fmod( atof( argv[ 1 ] ), 360.0 ) );
         if( argv.argc() >= 3 )
         {
-                const float wanted = float( atof( argv[ 2 ] ) );
-            // Warn rather than silently clamp: the sky dome spans only 60 degrees
-            // of altitude, so above that the DISC cannot follow the light -- it
-            // would have to live in the flat sky cap, which carries no texture.
-            // `moon 180 180` is what found this: the light went overhead, the
-            // moon stayed where the texture put it, and it read as a tracking bug.
-            if( std::abs( wanted ) > 60.f )
-            {
-                Printf( "moon: altitude %.0f is outside the sky dome's +/-60 degrees.\n"
-                        "      The LIGHT will aim there, but the DISC cannot -- above 60\n"
-                        "      the sky is a flat cap with no texture on it. Use 55 or less\n"
-                        "      to keep the moon and its shafts in the same place.\n",
-                        wanted );
-            }
-            cvar::rt_sun_a = std::clamp( wanted, -90.f, 90.f );
+            // No altitude ceiling any more. This used to warn above 60 degrees,
+            // because the sky dome spans only that much and a PAINTED moon above
+            // it would have had to live in the flat sky cap, which carries no
+            // texture -- so the light aimed high while the disc stayed put. The
+            // moon is geometry now (RT_DrawSkyQuad) and draws over the dome and
+            // the cap alike, so any altitude is honest. MAP18 ships at 70.
+            cvar::rt_sun_a = std::clamp( float( atof( argv[ 2 ] ) ), -90.f, 90.f );
         }
         if( argv.argc() >= 4 )
         {
@@ -6443,6 +6582,41 @@ namespace classic_toggle
                     "last until the next level load. Paste the row below to keep them.\n" );
         }
         report();
+    }
+
+    // `rt_dump_lightthinkers` -- who is animating a sector's lightlevel.
+    //
+    // rt_lightlevel_watch says WHICH sectors move; this says WHAT is moving them, which
+    // is the question the map data could not answer on MAP13: seven sectors on tag 29
+    // sweep 221..255 forever while the map has no sector special, no linedef Light_*,
+    // and no ACS call on that tag anywhere -- not in its own BEHAVIOR and not in the
+    // twelve LOADACS libraries.
+    //
+    // A running thinker is the ground truth regardless of how it got created, so this
+    // asks the playsim rather than the file. GZDoom builds one DLighting subclass per
+    // animated sector (DGlow, DFlicker, DFireFlicker, DLightFlash, DStrobe, DPhased),
+    // and the class name identifies the effect immediately.
+    CCMD( rt_dump_lightthinkers )
+    {
+        if( !primaryLevel )
+        {
+            Printf( "rt_dump_lightthinkers: no level\n" );
+            return;
+        }
+        auto it = TThinkerIterator< DLighting >( primaryLevel, STAT_LIGHT );
+        int  n  = 0;
+        while( DLighting* l = it.Next() )
+        {
+            sector_t* s = l->GetSector();
+            const int idx = s ? s->Index() : -1;
+            Printf( "  %-16s sector %-4d lightlevel=%d tag=%d\n",
+                    l->GetClass()->TypeName.GetChars(),
+                    idx,
+                    s ? s->lightlevel : -1,
+                    ( s && idx >= 0 ) ? primaryLevel->GetFirstSectorTag( s ) : -1 );
+            n++;
+        }
+        Printf( "rt_dump_lightthinkers: %d light thinker(s) running\n", n );
     }
 
     // Force a strike from the console: `thunder`.
@@ -7593,6 +7767,25 @@ void RT_WatchLightlevels()
         s_prev.assign( n, INT_MIN );
         s_level = primaryLevel;
         Printf( "rt_lightlevel_watch: armed on %u sectors\n", n );
+
+        // Dump the running light thinkers at the same moment, automatically. The CCMD
+        // exists too, but it cannot be put on the launcher command line -- +commands
+        // run before the level is loaded, so it would only ever print "no level" and
+        // the arm would look like it had answered when it had not.
+        {
+            auto it = TThinkerIterator< DLighting >( primaryLevel, STAT_LIGHT );
+            int  k  = 0;
+            while( DLighting* l = it.Next() )
+            {
+                sector_t* s = l->GetSector();
+                Printf( "rt_lightlevel_watch: thinker %-16s sector %-4d tag=%d\n",
+                        l->GetClass()->TypeName.GetChars(),
+                        s ? s->Index() : -1,
+                        s ? primaryLevel->GetFirstSectorTag( s ) : -1 );
+                k++;
+            }
+            Printf( "rt_lightlevel_watch: %d light thinker(s) running at load\n", k );
+        }
     }
 
     for( unsigned i = 0; i < n; i++ )
@@ -9216,6 +9409,11 @@ constexpr unsigned RT_FLAME_YELLOW = 0xFFCC33;
 // torch: it should read as a dim red ember at the edge of a dark room, so it takes a
 // warm red of its own at a fraction of the intensity.
 constexpr unsigned RT_FLAME_CANDLE = 0xFF4A14;
+// 64BigFire's orange, NOT FLAME_YELLOW. GLDEFS BIGFIRE asks for 1.0 0.9 0.0, but this is
+// the one flame whose glow tint was picked off the art rather than the palette
+// (gen_fx_emissives.py forces "ff8020" on the FIRE _e mask), and cast light must follow
+// the mask or the two drift apart — the LPUF regression again.
+constexpr unsigned RT_FLAME_BIGFIRE = 0xFF8020;
 
 constexpr RtFlameKind RT_FLAME_KINDS[] = {
     // standing torches, long (27x100) — GLDEFS TORCHLONG*
@@ -9238,6 +9436,14 @@ constexpr RtFlameKind RT_FLAME_KINDS[] = {
     { "GFLM", RT_FLAME_GREEN, 8.f, 650.f },
     { "RFLM", RT_FLAME_RED, 8.f, 650.f },
     { "YFLM", RT_FLAME_YELLOW, 8.f, 650.f },
+    // 64BigFire (32x50), the bonfire — GLDEFS BIGFIRE, size 32 like the loose fires but
+    // offset 32 up, so it is the one flame here whose GLDEFS offset lands ABOVE the
+    // sprite's own midpoint (~25u). This row was missing until 2026-08-10 on the stated
+    // grounds that FIRE "is not a GLDEFS flame prop"; the WAD's GLDEFS says otherwise, and
+    // at 117 placements across nine maps it is by far the most common fire in the game.
+    // The sprite is shared with 64MotherFire and 64MotherFireTrail, which GLDEFS also
+    // binds to BIGFIRE, so the projectile and its trail are lit by this row too.
+    { "FIRE", RT_FLAME_BIGFIRE, 32.f, 650.f },
     // candle — GLDEFS size 16, the smallest flame in the game
     { "CAND", RT_FLAME_CANDLE, 16.f, 260.f },
 };
