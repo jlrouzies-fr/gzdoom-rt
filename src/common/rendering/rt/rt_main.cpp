@@ -1267,9 +1267,49 @@ namespace cvar
     RT_CVAR( rt_water_style,            true,   "stylized (Doom 64) water instead of physical refract+absorb. "
                                                 "Deep blue opaque body with the flat's own caustics, plus a "
                                                 "Fresnel-weighted reflection. 0 = stock RTGL water." )
+    // Doom 64 has FOUR liquids, not one: water, nukage, sludge and blood are the
+    // same 64-frame animated flat design in four palettes, and all four are the
+    // near-black opaque floor flats the stylized path was written for. They run
+    // the same shader and differ only in these colours, selected per primitive
+    // by a 2-bit liquid id packed into the geometry instance flags.
+    //
+    // Every liquid gets a BODY colour (what it tends to where the flat is black)
+    // and a CREST colour (what the caustic veins tend to at full mask). Crest is
+    // never the body brightened: water's body is deep blue but its crests are
+    // pale cyan, which is what the source art's brightest texels actually are.
+    // Pale, not white — white crests read as foam or plastic.
+    RT_CVAR( rt_water_liquids,          true,   "apply the stylized water surface to nukage / sludge / blood as "
+                                                "well as water (D64N*, D64S*, D64B*). 0 = water only, the other "
+                                                "three go back to being flat near-black floors." )
+    RT_CVAR( rt_water_falls,            true,   "apply it to the WFALL/SFALL/BFALL wall sheets too. Tagging a "
+                                                "WALL as water hands it to RTGL's refract path, which strips "
+                                                "every INSTANCE_MASK_WORLD_* bit from its TLAS instance — the "
+                                                "surface stops blocking shadow rays, so a fall drawn across a "
+                                                "solid line can leak light. 0 = pools only." )
     RT_CVAR( rt_water_tint_r,           1,      "stylized water: body colour Red [0,255]" )
     RT_CVAR( rt_water_tint_g,           1,      "stylized water: body colour Green [0,255]" )
     RT_CVAR( rt_water_tint_b,          15,      "stylized water: body colour Blue [0,255]" )
+    RT_CVAR( rt_water_crest_r,        140,      "stylized water: caustic vein colour Red [0,255]" )
+    RT_CVAR( rt_water_crest_g,        204,      "stylized water: caustic vein colour Green [0,255]" )
+    RT_CVAR( rt_water_crest_b,        255,      "stylized water: caustic vein colour Blue [0,255]" )
+    RT_CVAR( rt_nukage_tint_r,          2,      "stylized nukage (D64N*, SFALL): body colour Red [0,255]" )
+    RT_CVAR( rt_nukage_tint_g,         15,      "stylized nukage: body colour Green [0,255]" )
+    RT_CVAR( rt_nukage_tint_b,          4,      "stylized nukage: body colour Blue [0,255]" )
+    RT_CVAR( rt_nukage_crest_r,       153,      "stylized nukage: caustic vein colour Red [0,255]" )
+    RT_CVAR( rt_nukage_crest_g,       255,      "stylized nukage: caustic vein colour Green [0,255]" )
+    RT_CVAR( rt_nukage_crest_b,       115,      "stylized nukage: caustic vein colour Blue [0,255]" )
+    RT_CVAR( rt_sludge_tint_r,         15,      "stylized sludge (D64S*): body colour Red [0,255]" )
+    RT_CVAR( rt_sludge_tint_g,          9,      "stylized sludge: body colour Green [0,255]" )
+    RT_CVAR( rt_sludge_tint_b,          2,      "stylized sludge: body colour Blue [0,255]" )
+    RT_CVAR( rt_sludge_crest_r,       255,      "stylized sludge: caustic vein colour Red [0,255]" )
+    RT_CVAR( rt_sludge_crest_g,       204,      "stylized sludge: caustic vein colour Green [0,255]" )
+    RT_CVAR( rt_sludge_crest_b,       115,      "stylized sludge: caustic vein colour Blue [0,255]" )
+    RT_CVAR( rt_blood_tint_r,          15,      "stylized blood (D64B*, BFALL): body colour Red [0,255]" )
+    RT_CVAR( rt_blood_tint_g,           2,      "stylized blood: body colour Green [0,255]" )
+    RT_CVAR( rt_blood_tint_b,           2,      "stylized blood: body colour Blue [0,255]" )
+    RT_CVAR( rt_blood_crest_r,        255,      "stylized blood: caustic vein colour Red [0,255]" )
+    RT_CVAR( rt_blood_crest_g,        115,      "stylized blood: caustic vein colour Green [0,255]" )
+    RT_CVAR( rt_blood_crest_b,        102,      "stylized blood: caustic vein colour Blue [0,255]" )
     RT_CVAR( rt_water_caustic,          1.5f,   "stylized water: how hard the wave crests brighten the "
                                                 "texture's caustic veins. 0 = static veins." )
     // Reflection strength is deliberately NOT physical. Real water has F0=0.02,
@@ -3707,38 +3747,81 @@ private:
             // RTGL's own GeomInfoManager says the same thing: "can't use texture
             // / mesh name, as texture can be just 1 frame of animation sequence".
             //
-            // D64WATR1/2 are the 192x192 source patches (warp2 in ANIMDEFS), kept
-            // in case a map places one directly.
-            static const char* const kWaterPrefix[] = { "D64W1_", "D64W2_" };
-            static const char* const kWaterExact[]  = { "D64WATR1", "D64WATR2" };
+            // D64WATR1/2 and friends are the 192x192 source patches (warp2 in
+            // ANIMDEFS), kept in case a map places one directly.
+            //
+            // All FOUR Doom 64 liquids run through here, not just water. They
+            // are the same animated flat design in four palettes, and every one
+            // of them has the same problem the water had: near-black under a
+            // path tracer, opaque floor flat with nothing to refract into. The
+            // liquid id (2 bits) picks the body/crest colour in the shader:
+            //
+            //   0 water   D64W1_/D64W2_, D64WATR1/2, WFALL   dark blue
+            //   1 nukage  D64N1_/D64N2_, D64NUKG1/2, SFALL   green
+            //   2 sludge  D64S1_/D64S2_, D64SLDG1/2          brown / dark yellow
+            //   3 blood   D64B1_/D64B2_, D64BLOD1/2, BFALL   dark red
+            //
+            // WFALL/SFALL/BFALL are the WALL sheets (64-frame sequences too, per
+            // ANIMDEFS: "WATER FALL" / "SLIME FALL" / "BLOOD FALL"). They are
+            // separate because tagging a wall as water hands it to RTGL's
+            // refract path, which rewrites its TLAS instance mask to
+            // INSTANCE_MASK_REFRACT only — it stops blocking shadow rays, so a
+            // fall drawn across a solid line can leak light. rt_water_falls 0
+            // backs just that out without losing the pools.
+            struct LiquidMatch
+            {
+                const char* name;   // prefix, or full name when exact
+                bool        exact;
+                int         id;     // 0 water, 1 nukage, 2 sludge, 3 blood
+                bool        isFall; // gated by rt_water_falls
+            };
+            static const LiquidMatch kLiquids[] = {
+                { "D64W1_", false, 0, false },   { "D64W2_", false, 0, false },
+                { "D64WATR1", true, 0, false },  { "D64WATR2", true, 0, false },
+                { "D64N1_", false, 1, false },   { "D64N2_", false, 1, false },
+                { "D64NUKG1", true, 1, false },  { "D64NUKG2", true, 1, false },
+                { "D64S1_", false, 2, false },   { "D64S2_", false, 2, false },
+                { "D64SLDG1", true, 2, false },  { "D64SLDG2", true, 2, false },
+                { "D64B1_", false, 3, false },   { "D64B2_", false, 3, false },
+                { "D64BLOD1", true, 3, false },  { "D64BLOD2", true, 3, false },
+                { "WFALL", false, 0, true },     { "SFALL", false, 1, true },
+                { "BFALL", false, 3, true },
+            };
+            static const char* const kLiquidName[] = { "water", "nukage", "sludge", "blood" };
 
-            const auto tagged = [ & ]( const char* nm ) {
+            for( const LiquidMatch& m : kLiquids )
+            {
+                const bool hit = m.exact ? ( strcmp( texname, m.name ) == 0 )
+                                         : ( strncmp( texname, m.name, strlen( m.name ) ) == 0 );
+                if( !hit )
+                {
+                    continue;
+                }
+                if( m.id != 0 && !cvar::rt_water_liquids )
+                {
+                    return RgMeshPrimitiveFlags( 0 );
+                }
+                if( m.isFall && !cvar::rt_water_falls )
+                {
+                    return RgMeshPrimitiveFlags( 0 );
+                }
+
                 // One line per distinct frame name per session. Printf is
                 // gzdoom's own, so it is NOT subject to RTGL's message gates.
                 static std::unordered_set< std::string > s_seen;
-                if( s_seen.insert( nm ).second )
+                if( s_seen.insert( texname ).second )
                 {
-                    Printf( "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER "
-                            "(rt_water_style %d)\n",
-                            nm,
-                            int( cvar::rt_water_style ) );
+                    Printf( "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER, "
+                            "liquid %d (%s)\n",
+                            texname,
+                            m.id,
+                            kLiquidName[ m.id ] );
                 }
-                return RG_MESH_PRIMITIVE_WATER;
-            };
 
-            for( const char* w : kWaterPrefix )
-            {
-                if( strncmp( texname, w, strlen( w ) ) == 0 )
-                {
-                    return tagged( texname );
-                }
-            }
-            for( const char* w : kWaterExact )
-            {
-                if( strcmp( texname, w ) == 0 )
-                {
-                    return tagged( texname );
-                }
+                return RgMeshPrimitiveFlags(
+                    RG_MESH_PRIMITIVE_WATER |
+                    ( m.id & 1 ? RG_MESH_PRIMITIVE_LIQUID_BIT0 : 0 ) |
+                    ( m.id & 2 ? RG_MESH_PRIMITIVE_LIQUID_BIT1 : 0 ) );
             }
             return RgMeshPrimitiveFlags( 0 );
         };
@@ -10040,6 +10123,13 @@ void RTFrameBuffer::RT_DrawFrame()
                                   cvar::rt_hdr_saturation },
     };
 
+    // 0..255 cvar triple -> RgFloat3D. The liquid palette is 24 of these.
+    auto l_col255 = []( int r, int g, int b ) {
+        return RgFloat3D{ std::clamp( r / 255.f, 0.f, 1.f ),
+                          std::clamp( g / 255.f, 0.f, 1.f ),
+                          std::clamp( b / 255.f, 0.f, 1.f ) };
+    };
+
     auto reflrefr_params = RgDrawFrameReflectRefractParams{
         .sType                   = RG_STRUCTURE_TYPE_DRAW_FRAME_REFLECT_REFRACT_PARAMS,
         .pNext                   = &tm_params,
@@ -10062,9 +10152,32 @@ void RTFrameBuffer::RT_DrawFrame()
         .stylizedWaterRoughness = cvar::rt_water_rough,
         .stylizedWaterGlow      = cvar::rt_water_glow,
         .stylizedWaterVeinRef   = cvar::rt_water_veinref,
-        .stylizedWaterTint      = { std::clamp( *cvar::rt_water_tint_r / 255.f, 0.f, 1.f ),
-                                    std::clamp( *cvar::rt_water_tint_g / 255.f, 0.f, 1.f ),
-                                    std::clamp( *cvar::rt_water_tint_b / 255.f, 0.f, 1.f ) },
+        // Indexed by the liquid id l_waterflag() packs into the primitive
+        // flags: 0 water, 1 nukage, 2 sludge, 3 blood. Order matters.
+        .stylizedLiquidTint     = { l_col255( cvar::rt_water_tint_r,
+                                              cvar::rt_water_tint_g,
+                                              cvar::rt_water_tint_b ),
+                                    l_col255( cvar::rt_nukage_tint_r,
+                                              cvar::rt_nukage_tint_g,
+                                              cvar::rt_nukage_tint_b ),
+                                    l_col255( cvar::rt_sludge_tint_r,
+                                              cvar::rt_sludge_tint_g,
+                                              cvar::rt_sludge_tint_b ),
+                                    l_col255( cvar::rt_blood_tint_r,
+                                              cvar::rt_blood_tint_g,
+                                              cvar::rt_blood_tint_b ) },
+        .stylizedLiquidCrest    = { l_col255( cvar::rt_water_crest_r,
+                                              cvar::rt_water_crest_g,
+                                              cvar::rt_water_crest_b ),
+                                    l_col255( cvar::rt_nukage_crest_r,
+                                              cvar::rt_nukage_crest_g,
+                                              cvar::rt_nukage_crest_b ),
+                                    l_col255( cvar::rt_sludge_crest_r,
+                                              cvar::rt_sludge_crest_g,
+                                              cvar::rt_sludge_crest_b ),
+                                    l_col255( cvar::rt_blood_crest_r,
+                                              cvar::rt_blood_crest_g,
+                                              cvar::rt_blood_crest_b ) },
         .stylizedWaterDebug     = float( *cvar::rt_water_debug ),
         .stylizedWaterReflMin   = cvar::rt_water_reflmin,
         .waterCausticGain       = cvar::rt_water_caustics,
