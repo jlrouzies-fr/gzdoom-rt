@@ -1043,8 +1043,10 @@ namespace cvar
     RT_CVAR( rt_water_caustics,         1.2f,   "strength of the caustics the water casts onto surrounding "
                                                 "geometry. 0 = off, and no probe ray is traced at all (this is "
                                                 "the perf switch: it costs one ray per pixel)." )
-    RT_CVAR( rt_water_caustic_scale,    0.09f,  "caustic field frequency, UV per world unit. Higher = smaller, "
-                                                "busier filaments." )
+    RT_CVAR( rt_water_caustic_scale,    0.8f,   "caustic field frequency, UV per METRE (RTGL world space is "
+                                                "metres; 1 map unit = 1/32 m). 0.8 tiles the field every "
+                                                "~1.25 m = 40 map units. Higher = smaller, busier "
+                                                "filaments." )
     RT_CVAR( rt_water_caustic_speed,    0.35f,  "caustic field scroll speed" )
     RT_CVAR( rt_water_caustic_dist,     192.f,  "how far below a surface the water may be and still light it, "
                                                 "in map units (192 = 3 player heights). Larger reaches higher up "
@@ -8508,7 +8510,10 @@ void RTFrameBuffer::RT_DrawFrame()
         .waterCausticGain       = cvar::rt_water_caustics,
         .waterCausticScale      = cvar::rt_water_caustic_scale,
         .waterCausticSpeed      = cvar::rt_water_caustic_speed,
-        .waterCausticDist       = cvar::rt_water_caustic_dist,
+        // map units -> metres: RTGL world space is metres. Passing map units
+        // straight through made the probe ray 6144 m long, so a wall anywhere
+        // above any water in the map got lit.
+        .waterCausticDist       = cvar::rt_water_caustic_dist * ONEGAMEUNIT_IN_METERS,
     };
 
     auto sky_params = RgDrawFrameSkyParams{
