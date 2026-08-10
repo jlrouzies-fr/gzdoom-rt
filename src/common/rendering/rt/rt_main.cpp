@@ -404,13 +404,18 @@ namespace cvar
                                                 "torch 40), so scale the whole family here rather than retuning one entry" )
     RT_CVAR( rt_flame_light_radius,     0.09f,  "RT source radius in meters. A flame is a small, soft source; too wide and "
                                                 "the shadows it throws across a corridor lose their edge entirely" )
-    RT_CVAR( rt_flame_light_flicker,    0.28f,  "flicker depth, 0..1, as a fraction of base intensity (0 = steady). Three "
+    RT_CVAR( rt_flame_light_flicker,    0.15f,  "flicker depth, 0..1, as a fraction of base intensity (0 = steady). Three "
                                                 "incommensurate sines per actor, so the pattern never visibly repeats. "
                                                 "GLDEFS asks for a hard two-state switch (size/secondarySize at chance 0.5); "
                                                 "that reads as strobing under a path tracer, where every flicker also moves "
-                                                "the indirect bounce, so the same depth is delivered smoothly instead" )
-    RT_CVAR( rt_flame_light_speed,      0.42f,  "flicker rate in radians per tic of the base sine (0.42 ~= 2.3 Hz). The two "
-                                                "faster harmonics ride on top at 2.37x and 4.11x" )
+                                                "the indirect bounce, so the same depth is delivered smoothly instead. "
+                                                "Was 0.28 — too strong: a torch is the AMBIENT light of the room it stands "
+                                                "in, so depth that would look right on a campfire in isolation swings the "
+                                                "whole room's indirect bounce with it (2026-08-10)" )
+    RT_CVAR( rt_flame_light_speed,      0.25f,  "flicker rate in radians per tic of the base sine (0.25 ~= 1.4 Hz). The two "
+                                                "faster harmonics ride on top at 2.37x and 4.11x, so the fastest component "
+                                                "is what sets the perceived rate — keep this well under 0.4 or the top "
+                                                "harmonic starts to read as a strobe. Was 0.42" )
     RT_CVAR( rt_flame_light_wobble,     2.0f,   "how far the light drifts from its anchor, in MAP UNITS, on each axis. This "
                                                 "is the 'moving' half of a real fire: a flame that only pulses reads as an "
                                                 "electrical fault, one that also wanders reads as combustion. Kept small — "
@@ -646,6 +651,15 @@ namespace cvar
     RT_CVAR( rt_sun_a,                  45.f,   "[-90, 90] sun altitude angle; how high it is from the horizon")
     RT_CVAR( rt_sun_b,                  0.f,    "[0, 360] sun azimuth angle; hotizontal angle, counter-clockwise")
     RT_CVAR_COLOR( rt_sun_color,      0xFFFFFF, "sun color (hex)")
+    RT_CVAR( rt_sun_angdiam,            0.5f,   "apparent diameter of the sun/moon disc in degrees, and the global "
+                                                "size gate for sky leaks. 0.5 is the real moon and makes this a POINT "
+                                                "light: one shadow ray, so a crack delivers as much light as a "
+                                                "doorway. Widening it makes the shadow test proportional instead -- an "
+                                                "opening admits light in proportion to how much of the disc it "
+                                                "reveals, so narrow gaps dim smoothly and, because an opening of size "
+                                                "d seen from L away subtends d/L, distant spill dies while light "
+                                                "beside the opening survives. Softens the wanted shafts by the same "
+                                                "amount: one knob, both effects. Try 6-15 for leaky maps." )
 
     // Doom64-RT: aiming the moon from the console.
     //
@@ -951,14 +965,14 @@ namespace cvar
     RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
     RT_CVAR( rt_water_b,                255,    "water color Blue [0,255]" )
-    RT_CVAR( rt_water_wavestren,        3.f,    "normal map strength for water" )
+    RT_CVAR( rt_water_wavestren,        0.4f,   "normal map strength for water. Also drives the partial-invisibility warp. 3.0 was the old default: it shattered the reflected image into sparkle, which reads as no reflection at all." )
     // These two were hardcoded (0.05 / 1.0) with the comment "for
     // partial_invisibility" -- the invisibility warp uses the same water normal
     // field. At 0.05 the waves crawl: one full cycle of the normal texture takes
     // minutes, so the stylized water's caustics would not shimmer at all. Now
     // exposed, at RTGL's own default speed and a tighter tile scale. They still
     // also drive the partial-invisibility warp, which is only cosmetic there.
-    RT_CVAR( rt_water_wavespeed,        1.f,    "water wave scroll speed (also the partial-invisibility warp). "
+    RT_CVAR( rt_water_wavespeed,        0.2f,   "water wave scroll speed (also the partial-invisibility warp). "
                                                 "0.05 was the old hardcoded value — effectively static." )
     RT_CVAR( rt_water_areascale,        0.35f,  "world area one tile of the water normal texture covers. Larger "
                                                 "= broader, slower swells; smaller = tighter ripples." )
@@ -988,19 +1002,45 @@ namespace cvar
     RT_CVAR( rt_water_tint_b,          61,      "stylized water: body colour Blue [0,255]" )
     RT_CVAR( rt_water_caustic,          1.5f,   "stylized water: how hard the wave crests brighten the "
                                                 "texture's caustic veins. 0 = static veins." )
-    RT_CVAR( rt_water_reflmax,          0.75f,  "stylized water: Fresnel clamp on the reflection. 1 = a true "
-                                                "mirror at grazing angles, lower keeps it a sheen." )
+    // Reflection strength is deliberately NOT physical. Real water has F0=0.02,
+    // so a correct Schlick term is ~2% looking straight down -- the reflection
+    // is there, and it reflects sprites and geometry correctly, but at a
+    // strength you cannot see. The shader keeps the SHAPE of the Schlick curve
+    // and remaps its range onto [reflmin, reflmax].
+    RT_CVAR( rt_water_reflmin,          0.1f,   "stylized water: reflection strength looking straight DOWN at "
+                                                "the surface. Physical water is 0.02 (invisible); this is the "
+                                                "artistic floor that makes it read as a reflective pool. 0 = "
+                                                "physically correct and effectively no reflection from above." )
+    RT_CVAR( rt_water_reflmax,          0.75f,  "stylized water: reflection strength at GRAZING angles. 1 = a "
+                                                "true mirror at the horizon, lower keeps it a sheen." )
     RT_CVAR( rt_water_rough,            0.1f,   "stylized water: roughness of the surface half (specular "
                                                 "highlight width from lights)" )
     RT_CVAR( rt_water_glow,             0.15f,  "stylized water: unlit on-screen sheen on the caustic veins, "
                                                 "so the pattern still reads in near-black rooms. Casts no "
                                                 "light. 0 = fully lighting-dependent." )
-    RT_CVAR( rt_water_veinref,          0.016f, "stylized water: LINEAR luminance that saturates the caustic "
+    RT_CVAR( rt_water_veinref,          0.1f,   "stylized water: LINEAR luminance that saturates the caustic "
                                                 "vein mask. Measured on D64W2_01: median texel 0.0024, p90 "
                                                 "0.0064, p95 0.0113, p99 0.0161, max 0.0327 — the flat is far "
                                                 "darker in linear space than its sRGB thumbnail suggests, so a "
                                                 "value near the p99 is what makes the vein cores read while the "
                                                 "body stays deep. Lower = wider, brighter veins." )
+    // Caustics cast BY the water ONTO the walls and floors around it. A 1-spp
+    // path tracer cannot find these on its own -- a caustic is a specular-to-
+    // diffuse path, and a random diffuse bounce has effectively no chance of
+    // landing on the water and then scattering into a light -- so they are
+    // projected: one probe ray straight down per shading point, and if it lands
+    // on water within rt_water_caustic_dist the point's DIRECT lighting is
+    // modulated by an animated caustic field. Multiplicative, never additive:
+    // caustics are focused light, not a light source, so a dark room stays dark.
+    RT_CVAR( rt_water_caustics,         1.2f,   "strength of the caustics the water casts onto surrounding "
+                                                "geometry. 0 = off, and no probe ray is traced at all (this is "
+                                                "the perf switch: it costs one ray per pixel)." )
+    RT_CVAR( rt_water_caustic_scale,    0.09f,  "caustic field frequency, UV per world unit. Higher = smaller, "
+                                                "busier filaments." )
+    RT_CVAR( rt_water_caustic_speed,    0.35f,  "caustic field scroll speed" )
+    RT_CVAR( rt_water_caustic_dist,     192.f,  "how far below a surface the water may be and still light it, "
+                                                "in map units (192 = 3 player heights). Larger reaches higher up "
+                                                "walls but also lets water light things it should not." )
     // NOT archived: a diagnostic left at 1 in the ini would paint every water
     // surface magenta on every later launch, and this project has lost time to
     // exactly that class of stuck cvar.
@@ -8283,7 +8323,33 @@ void RTFrameBuffer::RT_DrawFrame()
             .color                  = cvarcolor_to_rtcolor( cvar::rt_sun_color ),
             .intensity              = float{ cvar::rt_sun_intensity },
             .direction              = dir,
-            .angularDiameterDegrees = 0.5f,
+            // The size gate for sky leaks, and the reason it is an ANGLE.
+            //
+            // At 0.5 degrees -- the real moon -- this light is effectively a
+            // point, so its shadow ray is a single yes/no test. One unblocked
+            // ray through a hand-width crack delivers exactly as much light as
+            // an open doorway, which is why a pinhole leak reads as a full-
+            // strength shaft and why no per-surface rule could fix it: the wall
+            // holes MAP13 wants lit and the cracks it does not are the same kind
+            // of geometry.
+            //
+            // Widen the disc and the test stops being binary. RTGL1 samples a
+            // point on it per shadow ray (sampleDirectionalLight -> sampleDisk),
+            // so an opening now admits light in proportion to how much of the
+            // disc it actually reveals. A doorway reveals all of it and is
+            // unchanged; a narrow band reveals a sliver and dims smoothly.
+            //
+            // Crucially it also falls off with DISTANCE, which is the behaviour
+            // actually wanted here: an opening of size d seen from L away
+            // subtends d/L, so the same band still lights the surfaces beside it
+            // and stops washing a ceiling 2000 units off. That is a soft
+            // rolloff, not a cutoff -- "too small a hole" is only meaningful
+            // relative to how far away you are standing, so a hard threshold
+            // could not have been right at any single value.
+            //
+            // Costs sharpness on the wanted shafts too: this is one knob for
+            // both, traded with rt_sun_angdiam.
+            .angularDiameterDegrees = std::clamp( float{ cvar::rt_sun_angdiam }, 0.01f, 90.f ),
         };
 
         auto i = RgLightInfo{
@@ -8355,6 +8421,11 @@ void RTFrameBuffer::RT_DrawFrame()
                                     std::clamp( *cvar::rt_water_tint_g / 255.f, 0.f, 1.f ),
                                     std::clamp( *cvar::rt_water_tint_b / 255.f, 0.f, 1.f ) },
         .stylizedWaterDebug     = cvar::rt_water_debug ? 1.0f : 0.0f,
+        .stylizedWaterReflMin   = cvar::rt_water_reflmin,
+        .waterCausticGain       = cvar::rt_water_caustics,
+        .waterCausticScale      = cvar::rt_water_caustic_scale,
+        .waterCausticSpeed      = cvar::rt_water_caustic_speed,
+        .waterCausticDist       = cvar::rt_water_caustic_dist,
     };
 
     auto sky_params = RgDrawFrameSkyParams{
