@@ -66,11 +66,15 @@
 
 //-----------------------------------------------------------------------------
 //
-// Shamelessly lifted from Doomsday (written by Jaakko Keränen)
+// Shamelessly lifted from Doomsday (written by Jaakko Kerï¿½nen)
 // also shamelessly lifted from ZDoomGL! ;)
 //
 //-----------------------------------------------------------------------------
 CVAR(Float, skyoffset, 0.f, 0)	// for testing
+
+#if HAVE_RT
+float RT_MoonSkyPitchOffset();
+#endif
 
 #if HAVE_RT
 CVARD(Float, r_skycap_mult, 1.0f, CVAR_ARCHIVE | CVAR_GLOBALCONFIG, 
@@ -411,6 +415,13 @@ void FSkyVertexBuffer::SetupMatrices(FGameTexture *tex, float x_offset, float y_
 
 	if (xscale == 0) xscale = texw < 1024.f ? floorf(1024.f / float(texw)) : 1.f;
 	auto texskyoffset = tex->GetSkyOffset() + skyoffset;
+#if HAVE_RT
+	// Doom64-RT: pitch the sky so the painted moon stays on its own light.
+	// Derived from rt_sun_a -- see RT_MoonSkyPitchOffset in rt_main.cpp. Added to
+	// the existing offset rather than replacing it, so a map's own sky offset and
+	// the `skyoffset` test cvar both still apply.
+	texskyoffset += RT_MoonSkyPitchOffset();
+#endif
 	if (yscale == 0)
 	{
 		if (texh <= 128 && tiled)
