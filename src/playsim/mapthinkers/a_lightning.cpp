@@ -39,6 +39,23 @@
 
 static FRandom pr_lightning ("Lightning");
 
+#if HAVE_RT
+// Doom64-RT: the storm's one call into the renderer, and one question back.
+//
+// Defined in common/rendering/rt/rt_main.cpp; declared here rather than in a
+// header the same way g_level.cpp declares RT_OnLevelLoad -- these are single
+// call sites into a translation unit the playsim otherwise knows nothing about.
+//
+// RT_LightningWantsSectorFlash gates the sector-lightlevel flash below because
+// under RT that flash is not just a brightness change: rt_sector_emis makes any
+// sector over the map's threshold a surface EMITTER, so raising 106 F_SKY1
+// sectors to 200+ briefly turns MAP11's whole outdoors into a sourceless glow.
+// Default is on (vanilla behaviour, and here the glow does have a cause); see
+// rt_lightning_sectorflash.
+extern void RT_OnLightningFlash();
+extern bool RT_LightningWantsSectorFlash();
+#endif
+
 IMPLEMENT_CLASS(DLightningThinker, false, false)
 
 //----------------------------------------------------------------------------
@@ -145,7 +162,16 @@ void DLightningThinker::LightningFlash ()
 	LightningFlashCount = (pr_lightning()&7)+8;
 	flashLight = 200+(pr_lightning()&31);
 	tempSec = &Level->sectors[0];
-	for (i = Level->sectors.Size(), j = 0; i > 0; ++j, --i, ++tempSec)
+#if HAVE_RT
+	// Drawn from pr_lightning unconditionally above, and that must not change:
+	// skipping the flash must not desync the storm's own random sequence from
+	// what it would be with the flash on, or rt_lightning_sectorflash becomes a
+	// cvar that changes strike TIMING as well as strike appearance.
+	const bool rtSectorFlash = RT_LightningWantsSectorFlash();
+#else
+	const bool rtSectorFlash = true;
+#endif
+	for (i = Level->sectors.Size(), j = 0; rtSectorFlash && i > 0; ++j, --i, ++tempSec)
 	{
 		// allow combination of the lightning sector specials with bit masks
 		int special = tempSec->special;
@@ -177,6 +203,14 @@ void DLightningThinker::LightningFlash ()
 
 	Level->flags |= LEVEL_SWAPSKIES;	// set alternate sky
 	S_Sound (CHAN_AUTO, 0, "world/thunder", 1.0, ATTN_NONE);
+#if HAVE_RT
+	// Doom64-RT: hand the strike to the renderer, which picks a bearing, draws a
+	// bolt on the sky dome there and fires a directional light down the same
+	// line. Placed with the sound rather than with the sector loop above on
+	// purpose: this fires on every strike whether or not
+	// rt_lightning_sectorflash suppressed the lightlevel flash.
+	RT_OnLightningFlash();
+#endif
 	// [ZZ] just in case
 	Level->localEventManager->WorldLightning();
 	// start LIGHTNING scripts

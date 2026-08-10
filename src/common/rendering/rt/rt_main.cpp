@@ -33,6 +33,7 @@
 
 #include <filesystem>
 #include <cmath>
+#include <random>
 #include <span>
 #include <variant>
 #include <ranges>
@@ -771,51 +772,172 @@ namespace cvar
                                                 "beside the opening survives. Softens the wanted shafts by the same "
                                                 "amount: one knob, both effects. Try 6-15 for leaky maps." )
 
-    // Doom64-RT: aiming the moon from the console.
-    //
-    // rt_sun_* moves the LIGHT. The moon you can see is a disc painted into the
-    // sky texture (tools/gen_moon_sky.py), so on its own rt_sun_b would swing the
-    // shafts around while the disc stayed put. These rotate the sky dome to match,
-    // which works because the sky's horizontal offset (LevelLocals::hw_sky1pos,
-    // degrees) is applied as a rotation about the up axis in
-    // FSkyVertexBuffer::SetupMatrices -- the same knob a scrolling sky uses.
-    //
-    // Rotating the whole sky rather than the disc alone is the point: the
-    // starfield is uniform, so nothing else in it reads as having moved, and
-    // under RT the dome is rasterised into the sky cubemap, so the disc lands at
-    // the new bearing in the environment map too, not just on screen.
-    //
-    // Use the `moon` CCMD rather than setting these by hand.
-    RT_CVAR( rt_moon_track,             true,   "rotate the sky so the painted moon disc follows rt_sun_b. Off = the "
-                                                "sky stays where the texture put it and only the light moves, which "
-                                                "is what you want while A/B-ing shaft direction alone." )
-    RT_CVAR( rt_moon_tex_b,             135.f,  "azimuth the moon is PAINTED at in the sky texture. Must match "
-                                                "tools/gen_moon_sky.py --azimuth; it is the reference point the "
-                                                "tracking rotates away from, not a position in itself." )
-    RT_CVAR( rt_moon_tex_a,            25.f,   "ALTITUDE the moon is PAINTED at in the sky texture, degrees. Must "
-                                                "match tools/gen_moon_sky.py --altitude. The vertical twin of "
-                                                "rt_moon_tex_b: the reference the sky's pitch works away from, so that "
-                                                "changing rt_sun_a moves the disc WITH the light instead of leaving "
-                                                "it behind. Without this the two could be aimed apart, which is the "
-                                                "bug where the moon is not where its own shaft comes from." )
-    RT_CVAR( rt_moon_pitch_scale,      3.0f,   "sky-pitch units per degree of altitude. hw_skydome translates the "
-                                                "dome by skyoffset*57 world units on a 10000-radius sphere, so one "
-                                                "unit is roughly a third of a degree and 3 is that inverted. "
-                                                "CALIBRATION: if the disc drifts vertically as rt_sun_a changes, this "
-                                                "is the number to adjust. 0 pins the sky's pitch." )
-    RT_CVAR( rt_moon_yawsign,           1.f,    "+1 or -1: which way the sky turns per degree of rt_sun_b. The sky "
-                                                "dome mirrors in x AND negates u, so this sign cancels out of any "
-                                                "derivation and has to be settled by looking. If moving the moon "
-                                                "sends it the wrong way, flip this. 0 pins the sky." )
-    RT_CVAR( rt_sky_yaw,                0.f,    "extra sky rotation in degrees, added on top of the tracking above. "
-                                                "This is the one-time calibration: with rt_sun_b and the painted "
-                                                "azimuth agreeing, dial this until the disc sits where the shafts "
-                                                "come from, then keep the number." )
+    RT_CVAR( rt_moon_geo,               true,   "draw the moon as GEOMETRY -- a quad on the sky at the rt_sun bearing "
+                                                "(MOONDISC texture, HWSkyPortal::DrawContents) -- instead of painting "
+                                                "it into the sky texture. This is what lets the moon sit anywhere, "
+                                                "including straight overhead: a Doom sky dome only spans 60 degrees of "
+                                                "altitude and puts a flat averaged-colour CAP above that, so a painted "
+                                                "moon could not go up there, got sliced by the cap when pushed near it, "
+                                                "and needed four calibration cvars to match its own shafts. The quad is "
+                                                "placed along the light direction, so it agrees BY CONSTRUCTION and the "
+                                                "rt_moon_tex_*/yawsign/pitch_scale family stops mattering. Off = fall "
+                                                "back to the painted moon (rebuild the sky with --bake-disc)." )
+    RT_CVAR( rt_moon_geo_size,         12.f,   "apparent diameter of the geometry moon, degrees. Independent of "
+                                                "rt_sun_angdiam, which is the LIGHT's angular size (shadow softness); "
+                                                "this is only how big the disc looks." )
     RT_CVAR( rt_moon_presets,           true,   "apply the per-map moon aim table (RT_MOON_PRESETS) at level load. "
                                                 "Off = every map uses the launcher's rt_sun_a/b, which is what you "
                                                 "want while hunting a bearing for a map that has no entry yet." )
 
-    RT_CVAR( rt_reflrefr_depth,         8,      "max depth of reflect/refract") 
+    // ----------------------------------------------------------------------
+    // Clouds. A stack of horizontal discs over the MOONSKY starfield, each one
+    // a different horizontal CUT through one 3D density field. See
+    // RT_DrawCloudDeck (hw_skyportal.cpp), the deck mesh in CreateDome
+    // (hw_skydome.cpp) and tools/gen_clouds.py;
+    // docs/rt-clouds-and-lightning.md has the whole story.
+    //
+    // This is a REPLACEMENT for art MAP11 already has, not an invention. The
+    // map builds a two-layer CLOUDPRP skybox ROOM and scrolls it from ACS
+    // (script 670 OPEN) -- but sector skybox rooms are ignored under RT, so
+    // none of it ever reaches the screen.
+    //
+    // NOT layers on the sky dome, which is what this replaced. A dome layer
+    // rotates about the viewer: the clouds orbit, come round again, and do it
+    // identically wherever you stand. A horizontal deck translates along a wind
+    // vector instead -- linear and unbounded -- and perspective crowds distant
+    // clouds toward the horizon on its own.
+    // ----------------------------------------------------------------------
+    RT_CVAR( rt_clouds,                 true,   "draw the volumetric cloud deck (CLOUDV1..CLOUDV8 from d64r-rt-sky.pk3). "
+                                                "Global, not MAP11-only: the sky is the same night starfield everywhere, "
+                                                "and cloud is what makes the moon read as being BEHIND something. "
+                                                "Off = bare MOONSKY, as before." )
+    RT_CVAR( rt_clouds_presets,         true,   "apply the per-map cloud table (RT_CLOUD_PRESETS) at level load. The "
+                                                "deck is OPT-IN: with this on, a map with no entry gets rt_clouds as "
+                                                "the launcher left it (pinned OFF), and only listed maps get clouds. "
+                                                "Turn this off to force the global settings everywhere, which is what "
+                                                "you want while hunting values for a map that has no entry yet -- then "
+                                                "type `clouds` and paste the row it prints." )
+    RT_CVAR( rt_clouds_shells,          6,      "how many of the 8 baked slices to draw, 1..8, spaced evenly through "
+                                                "the stack. THE cost knob: every shell is a full disc re-submitted to "
+                                                "RTGL1 and rasterised into all six cubemap faces each frame, twice "
+                                                "during a lightning flash. It is also the quality knob -- at 1 the "
+                                                "deck is a single flat sheet with no volume at all." )
+    RT_CVAR( rt_clouds_horizon,         9.f,    "altitude in degrees at which the deck's rim sits -- i.e. how close to "
+                                                "the horizon the clouds reach. Sets the deck's radius and base height "
+                                                "together, on a fixed sphere, so the geometry always stays inside the "
+                                                "sky dome however this is set. Lower = clouds run further out and "
+                                                "compress harder at the horizon." )
+    RT_CVAR( rt_clouds_curve,           0.55f,  "how far the deck bows DOWN at its rim, as a fraction of its height. "
+                                                "0 is a flat plane, which ends in a visible hard edge hanging in the "
+                                                "sky; bowing it brings the far clouds down to meet the horizon." )
+    RT_CVAR( rt_clouds_thick,           0.7f,   "vertical extent of the shell stack, as a fraction of the base height. "
+                                                "This is the parallax: it is how far apart the slices actually are, so "
+                                                "at 0 they collapse into one plane and the volume is gone." )
+    RT_CVAR( rt_clouds_tiles,           6.f,    "how many times a slice tiles across the deck radius. Higher = smaller, "
+                                                "more numerous clouds. Pushing it far up aliases badly at the rim, "
+                                                "where perspective is already compressing the texture to nothing." )
+    RT_CVAR( rt_clouds_alpha,           0.9f,   "per-shell opacity. Multiplies with the slice's own alpha and with the "
+                                                "deck's baked radial fade, and compounds across shells -- so lowering "
+                                                "it thins the whole deck, not just one layer." )
+    RT_CVAR( rt_clouds_dark,            0.45f,  "brightness of the BOTTOM shell relative to the top one. The slice art "
+                                                "already carries baked top-down transmittance; this ramp is on top of "
+                                                "it and is what makes the deck read as lit from above at a glance." )
+    RT_CVAR( rt_clouds_wind,            0.014f, "wind speed, in TILES PER SECOND of texture translation. Linear and "
+                                                "unbounded -- this is the whole reason the clouds are on a deck rather "
+                                                "than on the dome. Negative reverses." )
+    RT_CVAR( rt_clouds_wind_dir,        30.f,   "wind bearing in degrees" )
+    RT_CVAR( rt_clouds_shear,           0.09f,  "how far downwind each shell sits relative to the one below it, in "
+                                                "tiles. Real cloud decks shear with height, and this is the cheapest "
+                                                "thing here that makes the volume unmistakable: without it the shells "
+                                                "line up vertically and the eye reads concentric rings instead of "
+                                                "depth. Too much and the stack separates into visibly distinct sheets." )
+    RT_CVAR_COLOR( rt_clouds_tint,    0xB4C0DC, "cloud COLOUR (hex), and the colour moonlight takes on when it comes "
+                                                "through them. The slice art is deliberately near-achromatic -- it "
+                                                "carries shape and luminance only -- so this cvar owns the hue "
+                                                "outright, and any hue reproduces cleanly. That matters because "
+                                                "SetObjectColor is a multiply: a blue-baked texture cannot be tinted "
+                                                "purple, only muddied. Set per map in RT_CLOUD_PRESETS -- several "
+                                                "levels have a dark purple skybox that the default cool blue fights." )
+    RT_CVAR( rt_clouds_transmit,        0.22f,  "fraction of moonlight a FULLY covered patch of cloud still passes, "
+                                                "coloured by rt_clouds_tint. This is what makes the tint reach the "
+                                                "light and not just the picture: shafts under a purple deck come out "
+                                                "purple. It is also the real floor on cloud occlusion -- at 0 a solid "
+                                                "overcast takes a moon-lit map to black, which is worse than blocking "
+                                                "too little." )
+    RT_CVAR( rt_clouds_occlude,         1.f,    "how much the deck blocks the MOON, 0..1. The clouds are sky geometry, "
+                                                "so they are never in the acceleration structure and cannot cast a "
+                                                "shadow -- without this the moon pours through a solid overcast at full "
+                                                "strength and the deck is wallpaper. Instead RT_DrawCloudDeck walks the "
+                                                "moon's ray up through the shells, samples each slice's alpha where it "
+                                                "crosses, and multiplies the transmittances; the result scales "
+                                                "rt_sun_intensity. So cloud drifting over the moon really does dim the "
+                                                "shafts, and it changes as the wind moves. Floored at 0.12 -- taking a "
+                                                "moon-lit map to zero is a worse failure than blocking too little." )
+    RT_CVAR( rt_clouds_flash,           2.2f,   "how hard a lightning strike lights the deck, as a multiplier on the "
+                                                "strike envelope before it is clamped to a full additive pass. Above 1 "
+                                                "the flash saturates early, which is right for lightning. The pass is "
+                                                "weighted toward the LOWER shells -- the strike is under the deck." )
+
+    // ----------------------------------------------------------------------
+    // Lightning. Driven by the engine's own Hexen storm thinker
+    // (DLightningThinker, a_lightning.cpp), which MAP11 turns on with the
+    // MAPINFO `lightning` keyword. Nothing here fires on a map without it.
+    // ----------------------------------------------------------------------
+    RT_CVAR( rt_lightning,              true,   "RT lightning: on every strike the storm thinker reports, flash the "
+                                                "clouds, draw a bolt on the sky, and fire an analytic DIRECTIONAL "
+                                                "light down the bolt's own bearing.\n"
+                                                "The directional light is the part that matters. RT's sky is a "
+                                                "rasterised cubemap sampled on ray miss and is NOT importance-sampled, "
+                                                "so a bright bolt painted into it is found only by rays that happen to "
+                                                "point at it -- at 1 spp that is far too noisy to light a room, exactly "
+                                                "as it is for the moon (see rt_moon_geo). The bolt is scenery; this "
+                                                "light is the source. Same pairing, same rule: move one, move both." )
+    RT_CVAR( rt_lightning_intensity,  2200.f,   "peak intensity of the lightning directional light. Large next to "
+                                                "rt_sun_intensity (90) on purpose -- it lasts a fifth of a second and "
+                                                "has to overwhelm the moon while it does." )
+    RT_CVAR_COLOR( rt_lightning_color, 0xC8D8FF, "lightning colour (hex). Slightly cooler than the moon's B4C8FF." )
+    RT_CVAR( rt_lightning_decay,        0.18f,  "exponential decay time of ONE stroke, seconds. The visible flash runs "
+                                                "roughly 3x this." )
+    RT_CVAR( rt_lightning_strokes,      3,      "max sub-strokes per strike, 1..6. Real lightning is a burst of return "
+                                                "strokes a few tens of ms apart, and the stutter is most of what makes "
+                                                "a flash read as lightning rather than as someone toggling a light. "
+                                                "Strokes take the MAX of their envelopes, never the sum, so raising "
+                                                "this makes a strike longer and twitchier, never brighter." )
+    RT_CVAR( rt_lightning_angdiam,      6.f,    "angular diameter of the lightning light, degrees -- i.e. HOW SHARP THE "
+                                                "SHADOWS IT THROWS ARE. Read rt_sun_angdiam's note first: a wide disc "
+                                                "makes the shadow test proportional rather than binary, so pinhole sky "
+                                                "leaks admit a sliver instead of a full-strength shaft, at the cost of "
+                                                "softening every real shadow by the same amount.\n"
+                                                "The strike casts genuine ray-traced shadows -- it is an analytic "
+                                                "directional light, not a screen flash -- and this is the ONE knob that "
+                                                "decides whether they read. The first value tried here was 14, chosen "
+                                                "purely for leak safety, and at 14 the penumbra is so wide at room "
+                                                "distances that the shadows turn to mush and the flash looks like a "
+                                                "fullscreen brightness pulse. 6 keeps them clearly directional while "
+                                                "staying 12x wider than the moon, which matters because the strike is "
+                                                "~24x brighter and a leak that is invisible at rt_sun_intensity 90 is "
+                                                "glaring at 2200. Drop toward 1.5 for hard dramatic shadows if the map "
+                                                "does not leak." )
+    RT_CVAR( rt_lightning_alt_min,      25.f,   "lowest altitude a strike is placed at, degrees" )
+    RT_CVAR( rt_lightning_alt_max,      55.f,   "highest altitude a strike is placed at, degrees" )
+    RT_CVAR( rt_lightning_bolt,         true,   "draw the visible bolt quad (BOLT1..BOLT4) at the strike bearing" )
+    RT_CVAR( rt_lightning_bolt_size,    60.f,   "apparent HEIGHT of the bolt on the sky, degrees. Width follows from "
+                                                "the texture's aspect, so the bolt is never stretched." )
+    RT_CVAR( rt_lightning_sectorflash,  true,   "let the stock thinker keep flashing every F_SKY1 sector's lightlevel "
+                                                "(MAP11 has 106 of them). That is the vanilla flash, and under RT it "
+                                                "is ALSO a light: rt_sector_emis turns any sector over the map's "
+                                                "threshold into a surface emitter, so a strike briefly makes the whole "
+                                                "outdoors glow with nothing casting it -- the same sourceless-glow "
+                                                "problem d64r-seqlight-fix.wad exists to remove. Kept on by default "
+                                                "because here there IS a source and it is 0.15s long, but turn it off "
+                                                "to see the strike lit purely by the directional light." )
+    // NOARCH: every other RT_CVAR is CVAR_ARCHIVE, so a diagnostic left on in
+    // one console session comes back on every later launch. Same trap as
+    // rt_sun_leak_debug and rt_water_debug.
+    RT_CVAR_NOARCH( rt_lightning_debug,     0,  "print each strike's bearing, altitude, stroke pattern and bolt "
+                                                "variant, then one line per frame while the flash is live" )
+
+    RT_CVAR( rt_reflrefr_depth,         8,      "max depth of reflect/refract")
     RT_CVAR( rt_refr_glass,             1.52f,  "glass index of refraction") 
     RT_CVAR( rt_refr_water,             1.33f,  "water index of refraction") 
     RT_CVAR( rt_refr_thinwidth,         0.0f,   "approx. width of thin media, e.g. thin glass (in meters)") 
@@ -1118,9 +1240,9 @@ namespace cvar
     RT_CVAR( rt_water_style,            true,   "stylized (Doom 64) water instead of physical refract+absorb. "
                                                 "Deep blue opaque body with the flat's own caustics, plus a "
                                                 "Fresnel-weighted reflection. 0 = stock RTGL water." )
-    RT_CVAR( rt_water_tint_r,           5,      "stylized water: body colour Red [0,255]" )
-    RT_CVAR( rt_water_tint_g,          23,      "stylized water: body colour Green [0,255]" )
-    RT_CVAR( rt_water_tint_b,          61,      "stylized water: body colour Blue [0,255]" )
+    RT_CVAR( rt_water_tint_r,           1,      "stylized water: body colour Red [0,255]" )
+    RT_CVAR( rt_water_tint_g,           1,      "stylized water: body colour Green [0,255]" )
+    RT_CVAR( rt_water_tint_b,          15,      "stylized water: body colour Blue [0,255]" )
     RT_CVAR( rt_water_caustic,          1.5f,   "stylized water: how hard the wave crests brighten the "
                                                 "texture's caustic veins. 0 = static veins." )
     // Reflection strength is deliberately NOT physical. Real water has F0=0.02,
@@ -1308,6 +1430,11 @@ constexpr uint64_t MuzzleFlashLightId = 0xFFFFFFF + 2;
 // small offset here would collide with a sector's light. Own decade, like the lattices.
 // Bit 50, far above SoloLatticeId_Base's (1<<40) sector-derived range.
 constexpr uint64_t GunGlowLightId     = 1ull << 50;
+// NOTE: lightning has NO id of its own, on purpose. RTGL1 accepts exactly one
+// directional light per frame -- LightManager::Add answers a second one with
+// debug::Error("Only one directional light is allowed"), which is fatal here --
+// so the strike takes over SunLightId rather than adding a light. See the
+// directional-light block in RT_DrawFrame.
 constexpr uint64_t SectorLightId_Base = 0xFFFFFFF + 3;
 // Keep clear of sector-light IDs (base + sectorIndex).
 constexpr uint64_t DynLightId_Base    = 0xA0000000ull;
@@ -2115,6 +2242,25 @@ public:
 
         const bool exportseparately = m_name.starts_with( "vx_" );
 
+        // Doom64-RT: the sky is the one place NEAREST filtering is wrong.
+        //
+        // rt_smoothtextures is off by default and pinned off, which is right for
+        // the game -- Doom's art is 64x64 pixel work and wants crisp texels. The
+        // sky is the opposite case: the cloud deck stretches a 1024px slice
+        // across a disc that fills the upper hemisphere, so near the zenith one
+        // texel covers a large angular area and NEAREST turns a soft cloud into
+        // visible square blocks. That is what "the clouds look low quality"
+        // actually was.
+        //
+        // Per-texture, not global: RTGL1's SamplerManager only rebinds the
+        // dynamic filter for handles created with RG_SAMPLER_FILTER_AUTO
+        // (hasDynamicSamplerFilter), so naming a filter explicitly here opts
+        // this texture out of rt_smoothtextures and leaves everything else
+        // exactly as it was.
+        const bool smoothsky = m_name.starts_with( "CLOUDV" ) || //
+                               m_name.starts_with( "BOLT" ) ||   //
+                               m_name == "MOONDISC";
+
         auto details = RgOriginalTextureDetailsEXT{
             .sType  = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_DETAILS_EXT,
             .pNext  = nullptr,
@@ -2129,7 +2275,7 @@ public:
             .pPixels      = texbuffer.mBuffer,
             .size         = { static_cast< uint32_t >( texbuffer.mWidth ),
                               static_cast< uint32_t >( texbuffer.mHeight ) },
-            .filter       = RG_SAMPLER_FILTER_AUTO,
+            .filter       = smoothsky ? RG_SAMPLER_FILTER_LINEAR : RG_SAMPLER_FILTER_AUTO,
             .addressModeU = RG_SAMPLER_ADDRESS_MODE_REPEAT, //  rtclamp_x( clampmode ),
             .addressModeV = RG_SAMPLER_ADDRESS_MODE_REPEAT, //  rtclamp_y( clampmode ),
         };
@@ -2829,14 +2975,39 @@ private:
             m_tempverts.clear();
             m_tempverts.assign( verts.begin(), verts.end() );
 
+            // Doom64-RT: the TRANSLATION column, for sky primitives only.
+            //
+            // The stock code below applies the 2x2 linear part and nothing else,
+            // so any texture-matrix TRANSLATION is silently dropped under RT.
+            // That is not a small omission -- a scroll IS a translation, which
+            // is why the cloud deck's wind moved nothing at all until this was
+            // found. (VSMatrix is GL column-major: translate() writes mMatrix[12]
+            // and [13], i.e. m(0,3) and m(1,3) here.)
+            //
+            // GATED ON SKY, deliberately, and this is the whole reason it is not
+            // just fixed outright. hw_flats.cpp's hw_SetPlaneTextureRotation puts
+            // a flat's panning offset (uoffs/voffs) and its rotation in here, so
+            // every offset flat in the game has been drawn without them for as
+            // long as this code has existed. Turning that on globally would shift
+            // texture alignment across every map at once -- a real fix, but a
+            // separate change with its own blast radius and its own playtest.
+            //
+            // The transposed 2x2 below (m(1,0) where the maths wants m(0,1)) is
+            // left alone for the same reason: it only bites on rotation/shear,
+            // which is again flats, and both sky matrices here are diagonal.
+            const bool fullaffine = rtstate.is< RtPrim::Sky >();
+
             auto applyTexMatrix = [ & ]( float u, float v ) {
                 auto m = [ & ]( int i, int j ) {
                     return mTextureMatrix.get()[ i + j * 4 ];
                 };
 
+                const float tu = fullaffine ? m( 0, 3 ) : 0.f;
+                const float tv = fullaffine ? m( 1, 3 ) : 0.f;
+
                 return std::pair{
-                    m( 0, 0 ) * u + m( 1, 0 ) * v,
-                    m( 0, 1 ) * u + m( 1, 1 ) * v,
+                    m( 0, 0 ) * u + m( 1, 0 ) * v + tu,
+                    m( 0, 1 ) * u + m( 1, 1 ) * v + tv,
                 };
             };
 
@@ -2872,6 +3043,40 @@ private:
                 }
                 m_gunAnchorView = c / float( verts.size() );
                 m_haveGunAnchor = true;
+            }
+
+            // Ground truth for authoring a replacement viewmodel. A psprite model is
+            // NOT at 1px = 1 map unit: this quad's size comes out of GetWeaponRect,
+            // which depends on viewwidth/viewheight, SCREENWIDTH/HEIGHT,
+            // WidescreenRatio, screenblocks and baseScale, and then goes through the
+            // inverse projection here. Deriving that offline is guesswork, so just
+            // print the view-space box the engine actually produced — a generated
+            // model is authored to fill it. Values are metres, in the same space the
+            // replacement's own vertices live in.
+            if( cvar::rt_wpn_debug && texname && verts.size() == 4 )
+            {
+                static std::unordered_set< std::string > s_seenQuad;
+                if( s_seenQuad.insert( texname ).second )
+                {
+                    FVector3 lo{ verts[ 0 ].position[ 0 ],
+                                 verts[ 0 ].position[ 1 ],
+                                 verts[ 0 ].position[ 2 ] };
+                    FVector3 hi = lo;
+                    for( const auto& v : verts )
+                    {
+                        for( int k = 0; k < 3; k++ )
+                        {
+                            lo[ k ] = std::min( lo[ k ], v.position[ k ] );
+                            hi[ k ] = std::max( hi[ k ], v.position[ k ] );
+                        }
+                    }
+                    Printf( "RTWPNQUAD %s min=(%.4f %.4f %.4f) max=(%.4f %.4f %.4f) "
+                            "size=(%.4f %.4f %.4f) m\n",
+                            texname,
+                            lo[ 0 ], lo[ 1 ], lo[ 2 ],
+                            hi[ 0 ], hi[ 1 ], hi[ 2 ],
+                            hi[ 0 ] - lo[ 0 ], hi[ 1 ] - lo[ 1 ], hi[ 2 ] - lo[ 2 ] );
+                }
             }
         }
         else if( RequiresTrueTransform() )
@@ -3567,17 +3772,39 @@ private:
         if( cvar::rt_wpn_debug &&
             ( rtstate.is< RtPrim::FirstPerson >() || rtstate.is< RtPrim::FirstPersonViewer >() ) )
         {
-            // Dedup on texture+flags+quantised alpha so a held trigger does not spam.
+            // Also print what decides whether an rt/replace/*.gltf model can stand in for
+            // this quad. RTGL1's Scene::UploadPrimitive only looks for a replacement when
+            // isExportable is set, pMeshName is non-empty AND RG_MESH_EXPORT_AS_SEPARATE_FILE
+            // is on the mesh; the lookup key is then pMeshName verbatim, which must match a
+            // glTF NODE name character for character ("SHTG" + 'A'+frame). Printing the key
+            // is the whole diagnostic: name matches a node + all three conditions true means
+            // the lookup hits, and no RTGL1 rebuild is needed to tell.
+            const char* meshname = mesh.pMeshName ? mesh.pMeshName : "(null)";
+            const bool  canreplace =
+                mesh.isExportable && mesh.pMeshName && mesh.pMeshName[ 0 ] &&
+                ( mesh.flags & RG_MESH_EXPORT_AS_SEPARATE_FILE );
+
+            // Dedup on mesh name+texture+flags+quantised alpha so a held trigger does not
+            // spam. The mesh name is in the key because one weapon's layers differ in it:
+            // a model/voxel psprite layer gets a null name while its sprite layers do not,
+            // and collapsing those would hide exactly what we are looking for.
             static std::unordered_set< uint64_t > s_seen;
             const uint32_t                        a8 = uint32_t( primColor >> 24 );
             const uint64_t key = ( uint64_t( prim.flags ) << 32 ) ^
                                  ( uint64_t( a8 ) << 24 ) ^
-                                 std::hash< std::string_view >{}( texname ? texname : "" );
+                                 std::hash< std::string_view >{}( texname ? texname : "" ) ^
+                                 ( std::hash< std::string_view >{}( meshname ) * 31 ) ^
+                                 ( uint64_t( canreplace ) << 40 );
             if( s_seen.insert( key ).second )
             {
-                Printf( "RTWPN %s flags=0x%X alphaThresh=%.2f objA=%.3f vertA=%.3f "
+                Printf( "RTWPN %s mesh=\"%s\" exportable=%d sepfile=%d replaceable=%d "
+                        "flags=0x%X alphaThresh=%.2f objA=%.3f vertA=%.3f "
                         "packedA=%u emis=%.3f blendop=%d destalpha=%d\n",
                         texname ? texname : "?",
+                        meshname,
+                        int( mesh.isExportable ),
+                        int( ( mesh.flags & RG_MESH_EXPORT_AS_SEPARATE_FILE ) != 0 ),
+                        int( canreplace ),
                         unsigned( prim.flags ),
                         mAlphaThreshold,
                         mStreamData.uObjectColor.a,
@@ -5500,6 +5727,16 @@ struct MoonPreset
 };
 
 constexpr MoonPreset RT_MOON_PRESETS[] = {
+    { "map01", 180.f, 90.f, -1.f,
+      "`moon 180 180` -- straight overhead, light pouring vertically. Chosen to "
+      "match how the original game reads, and the vertical fall is the point: at "
+      "altitude 90 the direction code clamps theta to 0, so the shafts come "
+      "straight down through MAP01's roof slots the way they do in vanilla. "
+      "KNOWN AND ACCEPTED: the sky dome spans only 60 degrees, so the DISC cannot "
+      "follow the light this high -- it rides as high as the dome allows and the "
+      "moon is not physically where its own shafts originate. Deliberate: the "
+      "look of the light won over the realism of the disc. Drop the altitude to "
+      "55 if that ever stops being the trade you want." },
     { "map13", 90.f, 25.f, -1.f,
       "Due north. Settled in play. The painted shafts this replaced implied two "
       "different suns -- the west hall's fans want light travelling +x, the north "
@@ -5533,6 +5770,117 @@ const MoonPreset* RT_FindMoonPreset( const char* mapname )
     return nullptr;
 }
 
+//-----------------------------------------------------------------------------
+//
+// Per-map cloud aim, the same shape as RT_MOON_PRESETS above and for the same
+// reason: one global setting cannot serve 32 maps that were authored with
+// different skies.
+//
+// OPT-IN. The deck is off unless a map has an entry here, because a cloud layer
+// is not neutral scenery -- it changes what the moon does. MAP01's moon is
+// straight overhead and its light falls vertically through roof slots; a deck
+// over that would fight the one effect the map is built around.
+//
+// `tint` owns the hue outright (the slice art is near-achromatic on purpose --
+// see rt_clouds_tint), so a map with a dark purple skybox gets purple clouds AND
+// purple moonlight through them, rather than the default cool blue fighting the
+// backdrop.
+//
+// Authoring loop: aim it in game, then type `clouds` and paste the row it prints.
+//
+//-----------------------------------------------------------------------------
+// FColorCVarRef exposes no assignment operator -- it is commented out in
+// c_cvars.h -- so colour cvars are written through FBaseCVar::SetGenericRep, the
+// same way the engine sets any other (see d_netinfo.cpp's player colour).
+// Templated only so it does not have to name the ref type, which differs between
+// the defining TU and an EXTERN_CVAR one.
+template< class TColorCVar >
+void RT_SetColorCVar( TColorCVar& c, uint32_t rgb )
+{
+    UCVarValue v;
+    v.Int = int( rgb );
+    c->SetGenericRep( v, CVAR_Int );
+}
+
+struct CloudPreset
+{
+    const char* map;
+    bool        clouds;   // deck on at all
+    uint32_t    tint;     // 0 = keep the global rt_clouds_tint
+    float       alpha;    // < 0 = keep
+    float       wind;     // < 0 = keep
+    const char* note;
+};
+
+constexpr CloudPreset RT_CLOUD_PRESETS[] = {
+    { "map01", false, 0, -1.f, -1.f,
+      "Explicitly OFF, and listed rather than left to the default so the decision "
+      "is recorded. MAP01's moon preset is altitude 90 -- straight overhead, light "
+      "falling vertically through the roof slots, which is the whole look of the "
+      "map (see RT_MOON_PRESETS). A cloud deck sits directly across that path and "
+      "would attenuate exactly the shafts the map is built around." },
+    { "map11", true, 0x9AA6C8, 0.9f, 0.014f,
+      "The storm. This is the map the whole deck exists for: it carries the "
+      "MAPINFO `lightning` keyword, and it is authored WITH clouds (a CLOUDPRP "
+      "skybox room, ACS script 670) that RT never draws. Slightly desaturated "
+      "cool grey rather than the default blue -- the level is lit green-grey and "
+      "a strongly blue sky reads as a separate scene behind it." },
+    { "map14", true, 0x8C7AB4, 0.85f, 0.010f,
+      "Purple. Thinner and slower than MAP11 -- this is weather, not a storm, so "
+      "the deck should sit still enough to read as a backdrop." },
+};
+
+bool  g_cloud_base_set   = false;
+bool  g_cloud_base_on    = false;
+uint32_t g_cloud_base_tint = 0;
+float g_cloud_base_alpha = 0.f;
+float g_cloud_base_wind  = 0.f;
+
+const CloudPreset* RT_FindCloudPreset( const char* mapname )
+{
+    if( !mapname || mapname[ 0 ] == '\0' )
+    {
+        return nullptr;
+    }
+    for( const auto& p : RT_CLOUD_PRESETS )
+    {
+        if( stricmp( mapname, p.map ) == 0 )
+        {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+void RT_ApplyCloudPreset( const char* mapname )
+{
+    // Capture the launcher's values once, before any preset overwrites them, so
+    // a map with no entry gets the global back instead of inheriting whatever
+    // the last map with an entry set. Without this the table would be sticky in
+    // one direction -- the same trap g_moon_base_* exists for.
+    if( !g_cloud_base_set )
+    {
+        g_cloud_base_set   = true;
+        g_cloud_base_on    = bool{ cvar::rt_clouds };
+        g_cloud_base_tint  = *( cvar::rt_clouds_tint );
+        g_cloud_base_alpha = float{ cvar::rt_clouds_alpha };
+        g_cloud_base_wind  = float{ cvar::rt_clouds_wind };
+    }
+
+    if( !bool{ cvar::rt_clouds_presets } )
+    {
+        return;
+    }
+
+    const CloudPreset* p = RT_FindCloudPreset( mapname );
+
+    cvar::rt_clouds       = p ? p->clouds : g_cloud_base_on;
+    cvar::rt_clouds_alpha = ( p && p->alpha >= 0.f ) ? p->alpha : g_cloud_base_alpha;
+    cvar::rt_clouds_wind  = ( p && p->wind >= 0.f ) ? p->wind : g_cloud_base_wind;
+    RT_SetColorCVar( cvar::rt_clouds_tint,
+                     ( p && p->tint != 0 ) ? p->tint : g_cloud_base_tint );
+}
+
 void RT_ApplyMoonPreset( const char* mapname )
 {
     if( !g_moon_base_set )
@@ -5556,29 +5904,226 @@ void RT_ApplyMoonPreset( const char* mapname )
 }
 } // namespace
 
-// Doom64-RT: vertical half of keeping the moon disc on its own light.
+//-----------------------------------------------------------------------------
 //
-// The horizontal half is a dome rotation (R_UpdateSky). Altitude cannot be
-// solved by rotating about the up axis, so it rides hw_skydome's existing
-// vertical dome translate instead -- the same `skyoffset` knob, in the same
-// units, just derived from rt_sun_a rather than typed by hand.
+// Doom64-RT: the storm.
 //
-// This is what stops the disc and the shaft being aimed separately: both are now
-// functions of rt_sun_a / rt_sun_b, and `moon` is the one command that sets them.
-// rt_moon_tex_a / rt_moon_tex_b are where the TEXTURE put the moon and must match
-// tools/gen_moon_sky.py -- they are references, not positions.
-float RT_MoonSkyPitchOffset()
+// WHERE A STRIKE COMES FROM. Not from here, and not from any script in the map.
+// MAP11's MAPINFO carries the Hexen `lightning` keyword, which spawns
+// DLightningThinker (playsim/mapthinkers/a_lightning.cpp). That thinker
+// self-schedules -- 5-20s to the first strike, then 16-31 TICS for a quick
+// double-flash (~20% of the time) or 2-9s / 5-20s otherwise -- and on each
+// strike it raises every F_SKY1 sector's lightlevel to 200+(rand&31), plays
+// `world/thunder` (a $random alias over DSTHNDR1/DSTHNDR2), and runs any
+// SCRIPT_Lightning. MAP11's script 671 LIGHTNING is one of those, and it
+// brightens the two sectors of a skybox room that RT does not render.
+//
+// So the timing, the sound and the sector flash are all stock and all correct.
+// What is missing under RT is everything you would actually SEE: the map's
+// clouds live in that ignored skybox room, and a flat lightlevel bump casts no
+// shadows and comes from no direction. RT_OnLightningFlash is the thinker's one
+// call into the renderer, and it turns each strike into three things that agree
+// with each other by construction:
+//
+//   1. a bearing and altitude, picked once per strike;
+//   2. a bolt drawn on the sky dome at that bearing (RT_DrawSkyQuad,
+//      hw_skyportal.cpp) -- scenery;
+//   3. an analytic directional light down the same bearing -- the source.
+//
+// (2) and (3) are the moon's arrangement repeated, and for the same reason: the
+// RT sky is a rasterised cubemap sampled on ray miss, not importance-sampled,
+// so painting something bright into it does not light anything at 1 spp. See
+// rt_moon_geo.
+//
+// STROKE STRUCTURE. A strike is 1-3 sub-strokes at 0-140ms, each an instant
+// attack and an exponential decay. They combine with MAX, not sum: summing
+// makes a three-stroke strike three times as bright as a one-stroke strike,
+// which turns rt_lightning_intensity into a knob whose meaning depends on
+// rt_lightning_strokes. With max, strokes change the RHYTHM only.
+//
+// WALL CLOCK, not tics. The whole envelope is ~0.5s and it is a pure visual, so
+// it is driven by RT_GetCurrentTime rather than by playsim time. That also
+// means it decays away correctly while the game is paused instead of freezing
+// mid-flash on the menu.
+//
+//-----------------------------------------------------------------------------
+namespace
 {
-    if( !bool{ cvar::rt_moon_track } )
+struct LightningStroke
+{
+    float at;  // seconds after the strike
+    float amp; // 0..1 peak
+};
+
+struct LightningState
+{
+    bool            active   = false;
+    double          t0       = 0.0;
+    float           azimuth  = 0.f;
+    float           altitude = 35.f;
+    int             variant  = 0; // 0..3 -> BOLT1..BOLT4
+    int             nstrokes = 0;
+    LightningStroke strokes[ 6 ] = {};
+};
+
+LightningState g_lightning;
+
+// How much of the moon gets through the cloud deck -- PER CHANNEL, so cloud
+// colour reaches the light and not just the picture. Written once per frame by
+// RT_DrawCloudDeck (hw_skyportal.cpp), which owns the deck geometry and so is
+// the only place that can answer it without a second copy of that maths. Reset
+// to white whenever the deck is off or absent, so a stale value cannot darken
+// or tint a map with no clouds in it.
+float g_cloudSunTransmittance[ 3 ] = { 1.f, 1.f, 1.f };
+
+std::mt19937& RT_LightningRng()
+{
+    static std::mt19937 rng{ 0xB01Fu };
+    return rng;
+}
+
+float RT_LightningRand( float lo, float hi )
+{
+    return std::uniform_real_distribution< float >{ lo, hi }( RT_LightningRng() );
+}
+} // namespace
+
+void RT_SetCloudSunTransmittance( float r, float g, float b )
+{
+    // A hard floor well under rt_clouds_transmit, which is the knob that is
+    // actually meant to bound this. Purely a guard against a cvar combination
+    // that would black out a map lit only by the moon.
+    g_cloudSunTransmittance[ 0 ] = std::clamp( r, 0.02f, 1.f );
+    g_cloudSunTransmittance[ 1 ] = std::clamp( g, 0.02f, 1.f );
+    g_cloudSunTransmittance[ 2 ] = std::clamp( b, 0.02f, 1.f );
+}
+
+// 0..1 flash strength right now. Cheap and side-effect-light, so both the
+// renderer (hw_skyportal.cpp) and the light upload can just call it rather than
+// sharing a per-frame cached value; they are microseconds apart.
+float RT_LightningFlashLevel()
+{
+    if( !g_lightning.active || !bool{ cvar::rt_lightning } )
     {
         return 0.f;
     }
-    return ( float{ cvar::rt_sun_a } - float{ cvar::rt_moon_tex_a } ) *
-           float{ cvar::rt_moon_pitch_scale };
+
+    const float tau = std::max( 0.02f, float{ cvar::rt_lightning_decay } );
+    const float t   = float( RT_GetCurrentTime() - g_lightning.t0 );
+
+    if( t < 0.f )
+    {
+        return 0.f;
+    }
+    // Four time constants past the last stroke is down to ~2% -- below anything
+    // the tonemapper can show, and the point where holding a light on stops
+    // being worth an upload.
+    if( t > g_lightning.strokes[ g_lightning.nstrokes - 1 ].at + 4.f * tau )
+    {
+        g_lightning.active = false;
+        return 0.f;
+    }
+
+    float e = 0.f;
+    for( int i = 0; i < g_lightning.nstrokes; i++ )
+    {
+        const float dt = t - g_lightning.strokes[ i ].at;
+        if( dt >= 0.f )
+        {
+            e = std::max( e, g_lightning.strokes[ i ].amp * std::exp( -dt / tau ) );
+        }
+    }
+    return std::clamp( e, 0.f, 1.f );
+}
+
+// Where the current strike is, for whoever wants to draw or light along it.
+// Returns false when nothing is happening.
+bool RT_LightningAim( float* azimuth, float* altitude, int* variant )
+{
+    if( !g_lightning.active || !bool{ cvar::rt_lightning } )
+    {
+        return false;
+    }
+    if( azimuth )  *azimuth  = g_lightning.azimuth;
+    if( altitude ) *altitude = g_lightning.altitude;
+    if( variant )  *variant  = g_lightning.variant;
+    return true;
+}
+
+// Does the stock thinker still get to flash sector lightlevels? See
+// rt_lightning_sectorflash for why that is a question worth asking under RT.
+bool RT_LightningWantsSectorFlash()
+{
+    return bool{ cvar::rt_lightning_sectorflash };
+}
+
+void RT_OnLightningFlash()
+{
+    if( !bool{ cvar::rt_lightning } )
+    {
+        return;
+    }
+
+    g_lightning.active   = true;
+    g_lightning.t0       = RT_GetCurrentTime();
+    g_lightning.azimuth  = RT_LightningRand( 0.f, 360.f );
+    g_lightning.variant  = int( RT_LightningRand( 0.f, 3.999f ) );
+
+    // Guard the order rather than trusting the pair: these are two independent
+    // archived cvars and nothing stops a console session from setting min above
+    // max. rt_lightlevel_min/max spent a session inverted (200/1) and silently
+    // defeated four A/B arms; not repeating that here.
+    const float alo = std::min( float{ cvar::rt_lightning_alt_min },
+                                float{ cvar::rt_lightning_alt_max } );
+    const float ahi = std::max( float{ cvar::rt_lightning_alt_min },
+                                float{ cvar::rt_lightning_alt_max } );
+    g_lightning.altitude = std::clamp( RT_LightningRand( alo, ahi ), -89.f, 89.f );
+
+    const int maxstrokes = std::clamp( int{ cvar::rt_lightning_strokes }, 1, 6 );
+    const int n          = 1 + int( RT_LightningRand( 0.f, float( maxstrokes ) - 0.001f ) );
+    g_lightning.nstrokes = n;
+
+    float at = 0.f;
+    for( int i = 0; i < n; i++ )
+    {
+        g_lightning.strokes[ i ].at = at;
+        // First stroke is always full; later ones are weaker, which is both
+        // what real return strokes do and what keeps the burst from reading as
+        // three separate strikes.
+        g_lightning.strokes[ i ].amp = ( i == 0 ) ? 1.f : RT_LightningRand( 0.35f, 0.8f );
+        at += RT_LightningRand( 0.04f, 0.14f );
+    }
+
+    // DLSS-RR: a strike is the largest transient light in the game by an order
+    // of magnitude. Flush temporal history or the flash smears for several
+    // frames after it is over.
+    g_rt_lightcut     = true;
+    g_rt_lightcut_why = "lightning";
+
+    if( int{ cvar::rt_lightning_debug } )
+    {
+        Printf( "rt_lightning: STRIKE az %.0f alt %.0f BOLT%d, %d stroke(s) at",
+                g_lightning.azimuth, g_lightning.altitude,
+                g_lightning.variant + 1, n );
+        for( int i = 0; i < n; i++ )
+        {
+            Printf( " %.0fms(%.2f)", g_lightning.strokes[ i ].at * 1000.f,
+                    g_lightning.strokes[ i ].amp );
+        }
+        Printf( "\n" );
+    }
 }
 
 void RT_OnLevelLoad( const char* mapname )
 {
+    // A strike in flight when the level changes would keep flashing into the
+    // new map, which has no storm at all unless its own MAPINFO says so.
+    g_lightning.active = false;
+    // No stale cover from the previous map's sky dimming this one's moon before
+    // the first frame's RT_DrawCloudDeck gets to answer.
+    RT_SetCloudSunTransmittance( 1.f, 1.f, 1.f );
+
+    RT_ApplyCloudPreset( mapname );
     RT_ApplyMoonPreset( mapname );
     g_resetposteffects = true;
     g_resetfluid       = true;
@@ -5709,11 +6254,12 @@ namespace classic_toggle
 
     // Aim the moon from the console: `moon <azimuth> [altitude] [intensity]`.
     //
-    // The moon is two things that have to agree -- an analytic directional light
-    // (rt_sun_*) that casts the shafts, and a disc painted into the sky texture
-    // that you can actually see. Setting rt_sun_b alone swings the shafts away
-    // from the disc. This moves both: the angles here, and the sky rotation that
-    // carries the disc, via rt_moon_track in R_UpdateSky.
+    // The moon is two things -- an analytic directional light (rt_sun_*) that
+    // casts the shafts, and a disc you can see. The disc is GEOMETRY drawn along
+    // that same direction (RT_DrawMoonQuad, hw_skyportal.cpp), so the angles here
+    // move both at once and they cannot drift apart. There is nothing to
+    // calibrate: an earlier version painted the moon into the sky texture and
+    // needed four cvars plus a sky rotation to keep the two in step.
     //
     // Bare `moon` prints the current aim rather than changing it, because the
     // first thing you want after walking into a room is to know where it thinks
@@ -5741,23 +6287,6 @@ namespace classic_toggle
                         : ( bool{ cvar::rt_sun_require_sky }
                                 ? "leaks suppressed - light must reach sky to count"
                                 : "stock - a ray that hits nothing counts as lit" ) );
-            Printf( "  disc: painted at az %.1f / alt %.1f, drift from light %+.1f yaw / %+.1f pitch %s\n",
-                    float{ cvar::rt_moon_tex_b },
-                    float{ cvar::rt_moon_tex_a },
-                    bool{ cvar::rt_moon_track }
-                        ? 0.f
-                        : float{ cvar::rt_sun_b } - float{ cvar::rt_moon_tex_b },
-                    bool{ cvar::rt_moon_track }
-                        ? 0.f
-                        : float{ cvar::rt_sun_a } - float{ cvar::rt_moon_tex_a },
-                    bool{ cvar::rt_moon_track }
-                        ? "(tracking ON - the sky follows, they cannot drift apart)"
-                        : "(tracking OFF - disc and light are aimed SEPARATELY)" );
-            Printf( "  sky: painted at %.1f, tracking %s, yawsign %+.0f, extra yaw %.1f\n",
-                    float{ cvar::rt_moon_tex_b },
-                    bool{ cvar::rt_moon_track } ? "ON" : "OFF (disc will not follow)",
-                    float{ cvar::rt_moon_yawsign },
-                    float{ cvar::rt_sky_yaw } );
         };
 
         if( argv.argc() < 2 )
@@ -5778,41 +6307,28 @@ namespace classic_toggle
                         mn, float{ cvar::rt_sun_b }, float{ cvar::rt_sun_a } );
             }
 
-            Printf( "  usage: moon <azimuth 0..360> [altitude -90..90] [intensity]\n"
-                    "         moon flip     - disc moves the wrong way? reverse it\n"
-                    "         moon nudge <deg> - shift the disc alone, to calibrate\n" );
-            return;
-        }
-
-        // The sign of the sky rotation cancels out of any derivation off the dome
-        // vertices (it mirrors in x AND negates u), so it is settled by looking at
-        // it, not by reasoning. One word, then look again.
-        if( stricmp( argv[ 1 ], "flip" ) == 0 )
-        {
-            cvar::rt_moon_yawsign = -float{ cvar::rt_moon_yawsign };
-            Printf( "moon: yawsign now %+.0f\n", float{ cvar::rt_moon_yawsign } );
-            return;
-        }
-
-        // Calibration: with the light where you want it, walk the disc until the
-        // two line up, then keep the number in the launcher as +rt_sky_yaw.
-        if( stricmp( argv[ 1 ], "nudge" ) == 0 )
-        {
-            if( argv.argc() < 3 )
-            {
-                Printf( "moon nudge: needs degrees, e.g. `moon nudge 15`\n" );
-                return;
-            }
-            cvar::rt_sky_yaw = float{ cvar::rt_sky_yaw } + float( atof( argv[ 2 ] ) );
-            Printf( "moon: sky yaw %.1f (pin it with +rt_sky_yaw %.1f)\n",
-                    float{ cvar::rt_sky_yaw }, float{ cvar::rt_sky_yaw } );
+            Printf( "  usage: moon <azimuth 0..360> [altitude -90..90] [intensity]\n" );
             return;
         }
 
         cvar::rt_sun_b = float( fmod( atof( argv[ 1 ] ), 360.0 ) );
         if( argv.argc() >= 3 )
         {
-            cvar::rt_sun_a = std::clamp( float( atof( argv[ 2 ] ) ), -90.f, 90.f );
+                const float wanted = float( atof( argv[ 2 ] ) );
+            // Warn rather than silently clamp: the sky dome spans only 60 degrees
+            // of altitude, so above that the DISC cannot follow the light -- it
+            // would have to live in the flat sky cap, which carries no texture.
+            // `moon 180 180` is what found this: the light went overhead, the
+            // moon stayed where the texture put it, and it read as a tracking bug.
+            if( std::abs( wanted ) > 60.f )
+            {
+                Printf( "moon: altitude %.0f is outside the sky dome's +/-60 degrees.\n"
+                        "      The LIGHT will aim there, but the DISC cannot -- above 60\n"
+                        "      the sky is a flat cap with no texture on it. Use 55 or less\n"
+                        "      to keep the moon and its shafts in the same place.\n",
+                        wanted );
+            }
+            cvar::rt_sun_a = std::clamp( wanted, -90.f, 90.f );
         }
         if( argv.argc() >= 4 )
         {
@@ -5826,6 +6342,105 @@ namespace classic_toggle
             Printf( "moon: rt_sun was off, turned on\n" );
         }
         report();
+    }
+
+    // Tune the deck from the console: `clouds [on|off] [tint hex] [alpha] [wind]`.
+    //
+    // Bare `clouds` prints the current state AND the RT_CLOUD_PRESETS row to
+    // paste, which is the same authoring loop `moon` uses: settle it in game,
+    // then commit it as a reviewable constant rather than as runtime state
+    // nobody can grep for.
+    CCMD( clouds )
+    {
+        auto report = []() {
+            const char* mn = RT_GetMapName();
+            Printf( "clouds: %s  tint %06X  alpha %.2f  wind %.3f  shells %d\n",
+                    bool{ cvar::rt_clouds } ? "ON" : "OFF",
+                    uint32_t( *( cvar::rt_clouds_tint ) ) & 0xFFFFFF,
+                    float{ cvar::rt_clouds_alpha },
+                    float{ cvar::rt_clouds_wind },
+                    int{ cvar::rt_clouds_shells } );
+            Printf( "  occlude %.2f, transmit %.2f -> moonlight through solid cloud is "
+                    "%.0f%% and takes the tint\n",
+                    float{ cvar::rt_clouds_occlude },
+                    float{ cvar::rt_clouds_transmit },
+                    float{ cvar::rt_clouds_transmit } * 100.f );
+
+            if( mn && mn[ 0 ] )
+            {
+                const CloudPreset* have = RT_FindCloudPreset( mn );
+                Printf( "  %s currently has %s%s. Row for RT_CLOUD_PRESETS:\n",
+                        mn,
+                        have ? "a preset" : "NO preset (deck follows the global rt_clouds)",
+                        bool{ cvar::rt_clouds_presets } ? "" : " -- but rt_clouds_presets is OFF" );
+                Printf( "    { \"%s\", %s, 0x%06X, %.2ff, %.3ff, \"...\" },\n",
+                        mn,
+                        bool{ cvar::rt_clouds } ? "true" : "false",
+                        uint32_t( *( cvar::rt_clouds_tint ) ) & 0xFFFFFF,
+                        float{ cvar::rt_clouds_alpha },
+                        float{ cvar::rt_clouds_wind } );
+            }
+        };
+
+        if( argv.argc() < 2 )
+        {
+            report();
+            Printf( "  usage: clouds <on|off> [tint hex] [alpha 0..1] [wind]\n" );
+            return;
+        }
+
+        if( stricmp( argv[ 1 ], "on" ) == 0 )       cvar::rt_clouds = true;
+        else if( stricmp( argv[ 1 ], "off" ) == 0 ) cvar::rt_clouds = false;
+        else
+        {
+            Printf( "clouds: first argument must be on or off\n" );
+            return;
+        }
+
+        if( argv.argc() >= 3 )
+        {
+            RT_SetColorCVar( cvar::rt_clouds_tint,
+                             uint32_t( strtoul( argv[ 2 ], nullptr, 16 ) ) );
+        }
+        if( argv.argc() >= 4 )
+        {
+            cvar::rt_clouds_alpha = std::clamp( float( atof( argv[ 3 ] ) ), 0.f, 1.f );
+        }
+        if( argv.argc() >= 5 )
+        {
+            cvar::rt_clouds_wind = float( atof( argv[ 4 ] ) );
+        }
+
+        // Tuning a map that the table will immediately overwrite on the next
+        // load looks like the command did nothing, so say so rather than making
+        // it a second thing to remember.
+        if( bool{ cvar::rt_clouds_presets } && RT_FindCloudPreset( RT_GetMapName() ) )
+        {
+            Printf( "clouds: NOTE this map has a RT_CLOUD_PRESETS entry -- these values "
+                    "last until the next level load. Paste the row below to keep them.\n" );
+        }
+        report();
+    }
+
+    // Force a strike from the console: `thunder`.
+    //
+    // Worth having because the real trigger is deliberately unpredictable -- the
+    // storm thinker waits 5-20 seconds for its first strike and then 2-20 for
+    // each of the rest, so tuning rt_lightning_* by relaunching and waiting is
+    // most of an evening. This drives the same RT_OnLightningFlash the thinker
+    // calls, so it exercises the exact path, and it works on any map: the strike
+    // is renderer-side, so a map with no `lightning` in its MAPINFO can still be
+    // used to look at one. It does NOT play the thunder sound -- that is
+    // S_Sound in the thinker, not here.
+    CCMD( thunder )
+    {
+        if( !bool{ cvar::rt_lightning } )
+        {
+            Printf( "thunder: rt_lightning is 0, nothing will happen\n" );
+            return;
+        }
+        RT_OnLightningFlash();
+        Printf( "thunder: forced a strike (no sound -- that is the storm thinker's)\n" );
     }
 
     CCMD( rt_dump_dynlights )
@@ -8930,10 +9545,76 @@ void RTFrameBuffer::RT_DrawFrame()
 
     RT_DrawTitle();
 
-    if( bool{ cvar::rt_sun } && float{ cvar::rt_sun_intensity } > 0 )
+    // THE directional light -- singular, and that is a hard constraint, not a
+    // simplification. RTGL1's LightManager::Add answers a second directional
+    // light with debug::Error("Only one directional light is allowed"), and
+    // debug::Error exits the game. Uploading lightning as its own light took
+    // MAP11 down on the first strike.
+    //
+    // So the moon and the storm SHARE this slot, and the brighter one wins.
+    // That is not a compromise: a strike peaks at rt_lightning_intensity 2200
+    // against the moon's 90, and the handover happens exactly where the two are
+    // equal, so there is no pop at either end -- the moon's shafts are replaced
+    // only while something 20x brighter is standing in for them, and come back
+    // as the flash decays past them. Both ends of the strike cross that point
+    // continuously.
     {
-        float altitude = to_rad( float{ cvar::rt_sun_a } );
-        float azimuth  = to_rad( float{ cvar::rt_sun_b } );
+        // The moon, dimmed by whatever cloud is currently in front of it. The
+        // deck is sky geometry -- rasterised into the cubemap, never in the
+        // acceleration structure -- so it cannot cast a shadow on its own and
+        // the moon would otherwise pour through an overcast sky at full
+        // strength. RT_DrawCloudDeck walks the moon's own ray up through the
+        // shells and reports what gets through; see the comment there.
+        // Per channel, so the deck's COLOUR reaches the light: moonlight under a
+        // purple overcast arrives purple. The intensity carries the luminance of
+        // that transmittance and the colour carries its hue, because
+        // RgLightDirectionalEXT keeps the two separate -- splitting it any other
+        // way would make a saturated tint quietly dim the light as well.
+        const float tR = g_cloudSunTransmittance[ 0 ];
+        const float tG = g_cloudSunTransmittance[ 1 ];
+        const float tB = g_cloudSunTransmittance[ 2 ];
+        const float tLum = std::max( 0.02f, 0.2126f * tR + 0.7152f * tG + 0.0722f * tB );
+
+        const float sunI = ( bool{ cvar::rt_sun } && float{ cvar::rt_sun_intensity } > 0.f )
+                             ? float{ cvar::rt_sun_intensity } * tLum
+                             : 0.f;
+
+        float ltngI   = 0.f;
+        float ltngAzi = 0.f, ltngAlt = 0.f;
+        if( const float flash = RT_LightningFlashLevel(); flash > 0.002f )
+        {
+            RT_LightningAim( &ltngAzi, &ltngAlt, nullptr );
+            ltngI = std::max( 0.f, float{ cvar::rt_lightning_intensity } ) * flash;
+        }
+
+        const bool useLightning = ltngI > sunI;
+
+        if( useLightning || sunI > 0.f )
+        {
+        const float intensity = useLightning ? ltngI : sunI;
+
+        // The moon's own colour, multiplied by the cloud transmittance's HUE
+        // (its luminance already went into sunI above, so it is divided back out
+        // here -- otherwise the dimming would be applied twice). Lightning is
+        // not filtered: the strike is inside or under the deck, not behind it.
+        const auto color = [ & ] {
+            if( useLightning )
+            {
+                return cvarcolor_to_rtcolor( cvar::rt_lightning_color );
+            }
+            const uint32_t sc = *( cvar::rt_sun_color );
+            return rt.rgUtilPackColorFloat4D(
+                std::clamp( ( RPART( sc ) / 255.f ) * ( tR / tLum ), 0.f, 1.f ),
+                std::clamp( ( GPART( sc ) / 255.f ) * ( tG / tLum ), 0.f, 1.f ),
+                std::clamp( ( BPART( sc ) / 255.f ) * ( tB / tLum ), 0.f, 1.f ),
+                1.f );
+        }();
+        const float angdiam   = useLightning
+                                  ? std::clamp( float{ cvar::rt_lightning_angdiam }, 0.01f, 90.f )
+                                  : std::clamp( float{ cvar::rt_sun_angdiam }, 0.01f, 90.f );
+
+        float altitude = to_rad( useLightning ? ltngAlt : float{ cvar::rt_sun_a } );
+        float azimuth  = to_rad( useLightning ? ltngAzi : float{ cvar::rt_sun_b } );
 
         float theta = std::clamp( pi() / 2 - altitude, 0.f, pi() );
         float phi   = std::fmod( azimuth, pi() * 2 );
@@ -8945,11 +9626,17 @@ void RTFrameBuffer::RT_DrawFrame()
             -cos( theta ),
         };
 
+        if( useLightning && int{ cvar::rt_lightning_debug } )
+        {
+            Printf( "rt_lightning: directional -> lightning %.0f (moon %.0f), az %.0f alt %.0f\n",
+                    ltngI, sunI, ltngAzi, ltngAlt );
+        }
+
         auto s = RgLightDirectionalEXT{
             .sType                  = RG_STRUCTURE_TYPE_LIGHT_DIRECTIONAL_EXT,
             .pNext                  = nullptr,
-            .color                  = cvarcolor_to_rtcolor( cvar::rt_sun_color ),
-            .intensity              = float{ cvar::rt_sun_intensity },
+            .color                  = color,
+            .intensity              = intensity,
             .direction              = dir,
             // The size gate for sky leaks, and the reason it is an ANGLE.
             //
@@ -8976,10 +9663,15 @@ void RTFrameBuffer::RT_DrawFrame()
             // could not have been right at any single value.
             //
             // Costs sharpness on the wanted shafts too: this is one knob for
-            // both, traded with rt_sun_angdiam.
-            .angularDiameterDegrees = std::clamp( float{ cvar::rt_sun_angdiam }, 0.01f, 90.f ),
+            // both, traded with rt_sun_angdiam. During a strike this is
+            // rt_lightning_angdiam instead -- deliberately much wider; see there.
+            .angularDiameterDegrees = angdiam,
         };
 
+        // ONE id for both, so there is only ever one directional light alive.
+        // Reusing SunLightId also means the swap is a parameter change on a
+        // light RTGL1 already knows, rather than a light appearing and another
+        // disappearing in the same frame.
         auto i = RgLightInfo{
             .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
             .pNext        = &s,
@@ -8989,6 +9681,7 @@ void RTFrameBuffer::RT_DrawFrame()
 
         RgResult r = rt.rgUploadLight( &i );
         RG_CHECK( r );
+        }
     }
 
     RT_UploadExportableSectorLights();

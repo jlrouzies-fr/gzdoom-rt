@@ -72,6 +72,22 @@ public:
 	// indices for sky cubemap faces
 	int mFaceStart[7];
 	int mSideStart;
+#if HAVE_RT
+	// Doom64-RT: index of the moon quad appended in CreateDome. It lives in this
+	// buffer, not the per-frame one, because that one is unmapped when portals
+	// draw -- see the comment at the end of CreateDome.
+	int mMoonStart = 0;
+	// Doom64-RT: the cloud deck -- one horizontal disc, appended here for the
+	// same reason the moon quad is (see CreateDome). Drawn once per shell with a
+	// different model matrix, texture and object colour each time.
+	int mCloudStart = 0;
+	int mCloudCount = 0;
+public:
+	int MoonIndex() const { return mMoonStart; }
+	int CloudIndex() const { return mCloudStart; }
+	int CloudCount() const { return mCloudCount; }
+private:
+#endif
 
 	void SkyVertexDoom(int r, int c, bool yflip);
 	void SkyVertexBuild(int r, int c, bool yflip);

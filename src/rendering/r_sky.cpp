@@ -42,16 +42,6 @@
 #include "palentry.h"
 #include "bitmap.h"
 
-#if HAVE_RT
-namespace cvar
-{
-EXTERN_CVAR( Bool,  rt_moon_track )
-EXTERN_CVAR( Float, rt_moon_tex_b )
-EXTERN_CVAR( Float, rt_moon_yawsign )
-EXTERN_CVAR( Float, rt_sky_yaw )
-EXTERN_CVAR( Float, rt_sun_b )
-}
-#endif
 
 //
 // sky mapping
@@ -155,39 +145,6 @@ void R_UpdateSky (uint64_t mstime)
 		Level->hw_sky1pos = (float)(fmod((double(mstime) * Level->skyspeed1), 1024.) * (90. / 256.));
 		Level->hw_sky2pos = (float)(fmod((double(mstime) * Level->skyspeed2), 1024.) * (90. / 256.));
 
-#if HAVE_RT
-		// Doom64-RT: keep the painted moon pointing at the light.
-		//
-		// hw_sky*pos is the sky's horizontal offset in DEGREES -- SetupMatrices
-		// feeds it straight into `modelMatrix.rotate(-180 + x_offset, 0,1,0)`.
-		// So adding to it here turns the whole dome, which is how the moon disc
-		// painted into the sky texture follows rt_sun_b instead of staying put
-		// while the shafts swing away from it.
-		//
-		// Applied here rather than at the draw site because this is the single
-		// place the value is produced each frame, so the scrolling sky (skyspeed)
-		// and the moon compose instead of one overwriting the other -- a sky with
-		// both set drifts, carrying its moon with it.
-		//
-		// Under RT the dome is rasterised into the sky cubemap, so this moves the
-		// disc in the environment map too, not merely on screen.
-		{
-			float yaw = float{ cvar::rt_sky_yaw };
-			if( cvar::rt_moon_track )
-			{
-				yaw += ( float{ cvar::rt_sun_b } - float{ cvar::rt_moon_tex_b } ) *
-				       float{ cvar::rt_moon_yawsign };
-			}
-			// fmod, not a raw add: hw_sky*pos is documented as clamped to a
-			// single rotation, and an unbounded value here would accumulate
-			// against the scroll term above.
-			if( yaw != 0.f )
-			{
-				Level->hw_sky1pos = (float)fmod( Level->hw_sky1pos + yaw, 360. );
-				Level->hw_sky2pos = (float)fmod( Level->hw_sky2pos + yaw, 360. );
-			}
-		}
-#endif
 	}
 }
 
