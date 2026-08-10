@@ -316,6 +316,32 @@ namespace cvar
                                                 "every bulb) because these are a handful of genuine fixtures per map, not a "
                                                 "dense invented grid — raise it if a large SFLATDE/SFLATCH room turns out to "
                                                 "want fewer, stronger lights instead" )
+    RT_CVAR( rt_eye_panels,             true,   "light C23, the gothic wall panel whose art carries three pairs of lit demon "
+                                                "eyes (albedo 112,0,0) that the original game never wired a light to. Same "
+                                                "family of problem as rt_solo_lamps — the fixture is real in the art, only the "
+                                                "light is missing — but it rides the WALL walk rather than a ceiling lattice.\n"
+                                                "\n"
+                                                "It is here in the engine and not as a textures.json lightIntensity, which was "
+                                                "tried first and does nothing at all: RTGL1 puts an attached light at the exact "
+                                                "centre of the primitive's quad with no normal offset (VulkanDevice.cpp), which "
+                                                "on a wall face is COPLANAR with the wall and therefore buried in solid "
+                                                "geometry. That failure is invisible — it looks exactly like the light never "
+                                                "being uploaded — and is the same one recorded inside RT_UploadWallStripLights. "
+                                                "The strip walk nudges its emitters 2 units off the wall first, so C23 is lit "
+                                                "there instead (2026-08-09)" )
+    RT_CVAR_COLOR( rt_eye_panel_color,  0xFFB43C, "colour of the C23 eye-panel lights (hex), used RAW like the faux/solo "
+                                                "colours rather than hue-normalised. Amber, not the eyes' own red: the albedo "
+                                                "under the emissive mask is (112,0,0), and the shader multiplies the mask by "
+                                                "baseColor, so what actually reads on screen is warm amber. A red light here "
+                                                "would double the red the surface already supplies" )
+    RT_CVAR( rt_eye_panel_intensity,    80.f,   "RT intensity per eye-panel light. Between rt_solo_lamp_intensity (45) and "
+                                                "rt_wall_strip_intensity (180): six small eyes are more than one ceiling bulb "
+                                                "and much less than a bulb array. The panel repeats on 24 sidedefs of MAP09 "
+                                                "alone, so this stacks — raising it washes the whole courtyard" )
+    RT_CVAR( rt_eye_panel_max,          192,    "hard cap on eye-panel lights per frame, budgeted separately from the strip, "
+                                                "faux and solo caps for the reason those three are split from each other: a "
+                                                "texture that tiles across a courtyard must not be able to starve the real "
+                                                "fixtures of light slots" )
     RT_CVAR( rt_light_mark_intensity,   25.f,   "intensity of every debug marker sphere. A marker is a real uploaded light, so N "
                                                 "markers flood the scene N times over: 320 cyan marks at 400 turned a whole MAP02 "
                                                 "room cyan and hid the fixtures being inspected. Section 10 recorded this for 67 "
@@ -5447,6 +5473,30 @@ static FVector3 RT_SoloLampHue()
                      float( c & 0xFF ) / 255.0f };
 }
 
+// C23: the gothic wall panel. Same reasoning as the solo pair above — the fixture is
+// real in the art and only the light is missing — but the fixture is three pairs of lit
+// demon eyes rather than a bulb, and the texture is a WALL, so it rides the strip walk.
+//
+// Only C23. Its sibling C22 shares the emissive-tint rule in gen_world_emissives.py and
+// looks like an obvious candidate to fold in, but sharing a tint is not evidence of
+// sharing a fixture, and no C22 panel has been looked at. Adding it on the strength of
+// the name would be the SPACEAR mistake recorded in RT_IsWallStripLampTexture — a rule
+// that is right by association rather than by what is in the art.
+static bool RT_IsEyePanelWall( const char* name )
+{
+    return cvar::rt_eye_panels && name && *name && strcmp( name, "C23" ) == 0;
+}
+
+// Raw, like the faux and solo hues — see RT_FauxLampHue for why these three do not go
+// through RT_SectorHue.
+static FVector3 RT_EyePanelHue()
+{
+    const uint32_t c = uint32_t( cvar::rt_eye_panel_color );
+    return FVector3{ float( ( c >> 16 ) & 0xFF ) / 255.0f,
+                     float( ( c >> 8 ) & 0xFF ) / 255.0f,
+                     float( c & 0xFF ) / 255.0f };
+}
+
 void RT_UploadCeilingInsetLamps()
 {
     // Surface _e provides fixture albedo. These analytic lights blink + cast under
@@ -5822,7 +5872,12 @@ void RT_UploadWallStripLights()
     const bool  fauxOn   = bool{ cvar::rt_faux_lamps } &&
                           float{ cvar::rt_faux_lamp_intensity } > 0.01f &&
                           int{ cvar::rt_faux_lamp_max } > 0;
-    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn )
+    // Third independent family on this walk, same rule as faux: its own switch, so
+    // zeroing the real strips or the faux panels must not silently take it with them.
+    const bool  eyeOn    = bool{ cvar::rt_eye_panels } &&
+                          float{ cvar::rt_eye_panel_intensity } > 0.01f &&
+                          int{ cvar::rt_eye_panel_max } > 0;
+    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn && !eyeOn )
     {
         return;
     }
@@ -5841,10 +5896,15 @@ void RT_UploadWallStripLights()
     const int fauxMax      = std::max( 0, int{ cvar::rt_faux_lamp_max } );
     int       fauxWalls    = 0;
     int       fauxUploaded = 0;
-    // The walk stops only when BOTH budgets are spent -- gating the loops on the real
+    const int eyeMax       = eyeOn ? std::max( 0, int{ cvar::rt_eye_panel_max } ) : 0;
+    int       eyeWalls     = 0;
+    int       eyeUploaded  = 0;
+    // The walk stops only when ALL budgets are spent -- gating the loops on the real
     // count alone would let a run of real strips end the walk before any faux panel was
     // even looked at.
-    auto budgetLeft = [ & ] { return uploaded < maxLights || fauxUploaded < fauxMax; };
+    auto budgetLeft = [ & ] {
+        return uploaded < maxLights || fauxUploaded < fauxMax || eyeUploaded < eyeMax;
+    };
 
     // Placement of the lights actually near the camera, not one arbitrary sample:
     // "the fixture matched" and "the light is where the bulbs are" are different claims,
@@ -5889,7 +5949,8 @@ void RT_UploadWallStripLights()
                 }
                 const char* wtname = gtex->GetName().GetChars();
                 const bool  isFaux = RT_IsFauxLampWall( wtname );
-                if( !isFaux && !RT_IsWallStripLampTexture( wtname ) )
+                const bool  isEye  = !isFaux && RT_IsEyePanelWall( wtname );
+                if( !isFaux && !isEye && !RT_IsWallStripLampTexture( wtname ) )
                 {
                     continue;
                 }
@@ -5897,6 +5958,10 @@ void RT_UploadWallStripLights()
                 if( isFaux )
                 {
                     fauxWalls++;
+                }
+                if( isEye )
+                {
+                    eyeWalls++;
                 }
 
                 // Checked after the texture match so the tally can tell "no strips in
@@ -5907,7 +5972,13 @@ void RT_UploadWallStripLights()
                 // double-light it; but a faux panel's only job is to lift a room that is
                 // too dark, so applying the gate would reject precisely the sectors the
                 // feature was asked for and leave it looking like it does nothing.
-                if( !isFaux && float( thisSec->lightlevel ) < minLight )
+                //
+                // Eye panels are exempt for a different reason than faux panels: the
+                // minlight gate asks "is this room already bright enough not to need
+                // help", and the eyes are not help — they are a fixture that is lit in
+                // the art whether or not the room around it is. A lit fixture in a bright
+                // room is still lit.
+                if( !isFaux && !isEye && float( thisSec->lightlevel ) < minLight )
                 {
                     rejLight++;
                     continue;
@@ -6011,15 +6082,18 @@ void RT_UploadWallStripLights()
                     // Per-class budget, checked here rather than in the loop guard: the
                     // guard only knows whether SOME budget remains, not whether this
                     // particular light's budget does.
-                    if( isFaux ? ( fauxUploaded >= fauxMax ) : ( uploaded >= maxLights ) )
+                    if( isFaux  ? ( fauxUploaded >= fauxMax )
+                        : isEye ? ( eyeUploaded >= eyeMax )
+                                : ( uploaded >= maxLights ) )
                     {
                         continue;
                     }
 
                     const FVector3 hue =
-                        isFaux ? RT_FauxLampHue()
-                               : RT_SectorHue( thisSec->Colormap.LightColor,
-                                               float{ cvar::rt_sector_tint_lights } );
+                        isFaux  ? RT_FauxLampHue()
+                        : isEye ? RT_EyePanelHue()
+                                : RT_SectorHue( thisSec->Colormap.LightColor,
+                                                float{ cvar::rt_sector_tint_lights } );
 
                     auto toM = [ & ]( double x, double y, double z ) -> RgFloat3D {
                         return { float( x + nx * ofs ) * ONEGAMEUNIT_IN_METERS,
@@ -6038,10 +6112,11 @@ void RT_UploadWallStripLights()
                         .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                         .pNext     = nullptr,
                         .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
-                        .intensity = isFaux
-                                         ? std::max( 0.f,
-                                                     float{ cvar::rt_faux_lamp_intensity } )
-                                         : peak,
+                        .intensity =
+                            isFaux ? std::max( 0.f, float{ cvar::rt_faux_lamp_intensity } )
+                            : isEye
+                                ? std::max( 0.f, float{ cvar::rt_eye_panel_intensity } )
+                                : peak,
                         .position  = toM( mx, my, zMid ),
                         .radius = std::max( 0.01f, float{ cvar::rt_wall_strip_radius } ),
                     };
@@ -6098,6 +6173,10 @@ void RT_UploadWallStripLights()
                     {
                         fauxUploaded++;
                     }
+                    else if( isEye )
+                    {
+                        eyeUploaded++;
+                    }
                     else
                     {
                         uploaded++;
@@ -6114,7 +6193,8 @@ void RT_UploadWallStripLights()
         {
             Printf( "rt_wall_strip: uploaded=%d (cap %d) | matchedTex=%d rejected: "
                     "lightlevel=%d band=%d shortline=%d | I=%.0f radius=%.2f | "
-                    "faux %d sidedef(s), uploaded=%d (cap %d) I=%.0f\n",
+                    "faux %d sidedef(s), uploaded=%d (cap %d) I=%.0f | "
+                    "eye %d sidedef(s), uploaded=%d (cap %d) I=%.0f\n",
                     uploaded,
                     maxLights,
                     matchedTex,
@@ -6126,7 +6206,11 @@ void RT_UploadWallStripLights()
                     fauxWalls,
                     fauxUploaded,
                     fauxMax,
-                    float{ cvar::rt_faux_lamp_intensity } );
+                    float{ cvar::rt_faux_lamp_intensity },
+                    eyeWalls,
+                    eyeUploaded,
+                    eyeMax,
+                    float{ cvar::rt_eye_panel_intensity } );
             Printf( "  viewer z=%.0f — strip lights nearest the camera:\n", vpos.Z );
 
             std::sort( placed.begin(), placed.end(), []( const Placed& a, const Placed& b ) {
