@@ -37,6 +37,13 @@
 
 CVAR(Bool,gl_noskyboxes, false, 0)
 
+#if HAVE_RT
+namespace cvar
+{
+EXTERN_CVAR( Bool, rt_sky_nowalls )
+}
+#endif
+
 //===========================================================================
 //
 // 
@@ -263,6 +270,26 @@ void HWWall::SkyTop(HWWallDispatcher *di, seg_t * seg,sector_t * fs,sector_t * b
 	if (fs->GetTexture(sector_t::ceiling)==skyflatnum)
 	{
 		if (bs->special == GLSector_NoSkyDraw || (bs->MoreFlags & SECMF_NOSKYWALLS) != 0 || (seg->linedef->flags & ML_NOSKYWALLS) != 0) return;
+#if HAVE_RT
+		// Doom64-RT: treat every two-sided line as if it carried ML_NOSKYWALLS.
+		//
+		// The band this would draw is handed to RTGL1 as SKY_VISIBILITY geometry and
+		// lands in the BLAS with INSTANCE_CUSTOM_INDEX_FLAG_SKY, so it is not a
+		// backdrop -- every ray that hits it returns sky radiance. In a 1997 map whose
+		// solid geometry does not seal perfectly against it, that is where sky light
+		// gets into rooms that look closed.
+		//
+		// This is the engine's OWN suppression, applied wholesale rather than per line,
+		// which is the useful thing about it: a map author would have to flag every
+		// offending line by hand and we cannot tell which they are from the map data
+		// (see tools/scan_sky_apertures.py -- neither sky-hack steps nor missing upper
+		// textures explain the observed leaks).
+		//
+		// One-sided lines (SkyNormal) are deliberately NOT covered: those are the
+		// curtain that encloses an outdoor area, and dropping them would open real
+		// courtyards to the void instead of sealing anything.
+		if( cvar::rt_sky_nowalls ) return;
+#endif
 		if (bs->GetTexture(sector_t::ceiling)==skyflatnum)
 		{
 			// if the back sector is closed the sky must be drawn!
@@ -357,6 +384,26 @@ void HWWall::SkyBottom(HWWallDispatcher *di, seg_t * seg,sector_t * fs,sector_t 
 	if (fs->GetTexture(sector_t::floor)==skyflatnum)
 	{
 		if (bs->special == GLSector_NoSkyDraw || (bs->MoreFlags & SECMF_NOSKYWALLS) != 0 || (seg->linedef->flags & ML_NOSKYWALLS) != 0) return;
+#if HAVE_RT
+		// Doom64-RT: treat every two-sided line as if it carried ML_NOSKYWALLS.
+		//
+		// The band this would draw is handed to RTGL1 as SKY_VISIBILITY geometry and
+		// lands in the BLAS with INSTANCE_CUSTOM_INDEX_FLAG_SKY, so it is not a
+		// backdrop -- every ray that hits it returns sky radiance. In a 1997 map whose
+		// solid geometry does not seal perfectly against it, that is where sky light
+		// gets into rooms that look closed.
+		//
+		// This is the engine's OWN suppression, applied wholesale rather than per line,
+		// which is the useful thing about it: a map author would have to flag every
+		// offending line by hand and we cannot tell which they are from the map data
+		// (see tools/scan_sky_apertures.py -- neither sky-hack steps nor missing upper
+		// textures explain the observed leaks).
+		//
+		// One-sided lines (SkyNormal) are deliberately NOT covered: those are the
+		// curtain that encloses an outdoor area, and dropping them would open real
+		// courtyards to the void instead of sealing anything.
+		if( cvar::rt_sky_nowalls ) return;
+#endif
 		auto tex = TexMan.GetGameTexture(seg->sidedef->GetTexture(side_t::bottom), true);
 		
 		// For lower skies the normal logic only applies to walls with no lower texture.

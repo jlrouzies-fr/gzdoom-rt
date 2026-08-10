@@ -604,6 +604,15 @@ namespace cvar
     RT_CVAR( rt_sky_saturation,         1.f,    "sky saturation")
     RT_CVAR( rt_sky_stretch,            1.2f,   "how much to stretch the sky sphere along the vertical axis")
     RT_CVAR( rt_sky_always,             true,   "always submit sky geometry (even if it's not visible in primary view)")
+    RT_CVAR( rt_sky_nowalls,            false,  "suppress the sky WALL band on two-sided lines -- the same thing "
+                                                "ML_NOSKYWALLS does per line, applied to every line at once. Sky "
+                                                "ceilings and one-sided sky curtains are untouched, so you still see "
+                                                "the sky by looking up and outdoor areas stay enclosed; what goes "
+                                                "away is the sideways band at wall tops. That band is real "
+                                                "SKY_VISIBILITY geometry under RT -- rays hitting it get sky radiance "
+                                                "-- so it is where sky light gets into rooms that look sealed. Blunt: "
+                                                "it removes good bands with the bad. Use it to find out WHETHER a "
+                                                "leak is wall-class before spending time on a targeted fix." )
 
     RT_CVAR( rt_decals,                 true,   "draw decals. NOTE: impacts CPU performance, as gzdoom requires a doom-wall to be fullyparsed to submit its decals :(")
 
@@ -3134,27 +3143,49 @@ private:
             {
                 return RgMeshPrimitiveFlags( 0 );
             }
-            // Full match, never a prefix: D64W1_01 and D64W2_01 differ in one
-            // character, and D64WATR1/2 are the source patches they composite.
-            static const char* const kWaterTex[] = {
-                "D64W2_01", "D64W1_01", "D64WATR1", "D64WATR2",
+            // PREFIX match, and that is the whole point. D64W2_01 is not a
+            // texture, it is frame 1 of a 64-frame ANIMDEFS sequence
+            // (D64W2_01..D64W2_64, 2 tics each); the map's sector names frame 1
+            // but GZDoom swaps in a different frame every 2 tics, so the name
+            // that actually reaches RTGL is almost never "D64W2_01".
+            //
+            // An exact match therefore tagged the water for 2 tics out of ~128 —
+            // the water became water for one frame per ~3.7s cycle and reverted,
+            // which is exactly the "regular bright flash" this was reported as.
+            // RTGL's own GeomInfoManager says the same thing: "can't use texture
+            // / mesh name, as texture can be just 1 frame of animation sequence".
+            //
+            // D64WATR1/2 are the 192x192 source patches (warp2 in ANIMDEFS), kept
+            // in case a map places one directly.
+            static const char* const kWaterPrefix[] = { "D64W1_", "D64W2_" };
+            static const char* const kWaterExact[]  = { "D64WATR1", "D64WATR2" };
+
+            const auto tagged = [ & ]( const char* nm ) {
+                // One line per distinct frame name per session. Printf is
+                // gzdoom's own, so it is NOT subject to RTGL's message gates.
+                static std::unordered_set< std::string > s_seen;
+                if( s_seen.insert( nm ).second )
+                {
+                    Printf( "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER "
+                            "(rt_water_style %d)\n",
+                            nm,
+                            int( cvar::rt_water_style ) );
+                }
+                return RG_MESH_PRIMITIVE_WATER;
             };
-            for( const char* w : kWaterTex )
+
+            for( const char* w : kWaterPrefix )
+            {
+                if( strncmp( texname, w, strlen( w ) ) == 0 )
+                {
+                    return tagged( texname );
+                }
+            }
+            for( const char* w : kWaterExact )
             {
                 if( strcmp( texname, w ) == 0 )
                 {
-                    // One line per distinct water texture per session. Printf is
-                    // gzdoom's own, so it is NOT subject to RTGL's message gates
-                    // -- this is the confirmation the JSON route could never give.
-                    static std::unordered_set< std::string > s_seen;
-                    if( s_seen.insert( texname ).second )
-                    {
-                        Printf( "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER "
-                                "(rt_water_style %d)\n",
-                                texname,
-                                int( cvar::rt_water_style ) );
-                    }
-                    return RG_MESH_PRIMITIVE_WATER;
+                    return tagged( texname );
                 }
             }
             return RgMeshPrimitiveFlags( 0 );
