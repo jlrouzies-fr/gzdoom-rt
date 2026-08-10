@@ -386,6 +386,42 @@ namespace cvar
     // That is the "A/B cvars must not persist" failure this project has already paid for.
     RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at Baron-family fist lights" )
 
+    RT_CVAR( rt_flame_light_on,         true,   "upload one analytic, FLICKERING light per open flame — the standing torches "
+                                                "(TL*/TS*), the wall torches (A030/A031/A032/GTCH), the loose fires "
+                                                "(BFLM/GFLM/RFLM/YFLM) and the candle (CAND) — instead of the sprite's "
+                                                "attached light. Two reasons this cannot stay in texture meta. (1) POSITION: "
+                                                "RTGL1 attaches a sprite light at the CENTRE of the billboard quad, so a "
+                                                "100-unit torch lit from its own midriff, ~30 units under the flame; the "
+                                                "mod's GLDEFS lifts these 16..80 units and texture meta has no offset field. "
+                                                "(2) FLICKER: texture meta is static per frame, and the sprite animations all "
+                                                "start at map load, so any per-frame intensity ramp would pulse every torch "
+                                                "in the level in lockstep. Table colours/offsets come from the mod's own "
+                                                "GLDEFS (flickerlight TORCHLONG*/TORCHSHORT*/CANDLE/...); the matching "
+                                                "sprites carry emissiveMult only, no lightIntensity, so this switch is the "
+                                                "sole light source for every flame in the game (2026-08-10)" )
+    RT_CVAR( rt_flame_light_scale,      1.0f,   "global multiplier on the per-flame table intensity. The table is already "
+                                                "balanced against GLDEFS' relative sizes (candle 16, wall torch 28, standing "
+                                                "torch 40), so scale the whole family here rather than retuning one entry" )
+    RT_CVAR( rt_flame_light_radius,     0.09f,  "RT source radius in meters. A flame is a small, soft source; too wide and "
+                                                "the shadows it throws across a corridor lose their edge entirely" )
+    RT_CVAR( rt_flame_light_flicker,    0.28f,  "flicker depth, 0..1, as a fraction of base intensity (0 = steady). Three "
+                                                "incommensurate sines per actor, so the pattern never visibly repeats. "
+                                                "GLDEFS asks for a hard two-state switch (size/secondarySize at chance 0.5); "
+                                                "that reads as strobing under a path tracer, where every flicker also moves "
+                                                "the indirect bounce, so the same depth is delivered smoothly instead" )
+    RT_CVAR( rt_flame_light_speed,      0.42f,  "flicker rate in radians per tic of the base sine (0.42 ~= 2.3 Hz). The two "
+                                                "faster harmonics ride on top at 2.37x and 4.11x" )
+    RT_CVAR( rt_flame_light_wobble,     2.0f,   "how far the light drifts from its anchor, in MAP UNITS, on each axis. This "
+                                                "is the 'moving' half of a real fire: a flame that only pulses reads as an "
+                                                "electrical fault, one that also wanders reads as combustion. Kept small — "
+                                                "past ~4 units the light visibly detaches from the sprite it belongs to" )
+    RT_CVAR( rt_flame_light_maxdist,    3072.f, "cull flame lights beyond this many map units from the viewpoint. Larger "
+                                                "than the fist cull: torches are static room lighting, and popping one in "
+                                                "at range is far more visible than a monster's hand glow appearing" )
+    RT_CVAR( rt_flame_light_max,        64,     "budget: max flame lights uploaded per frame, nearest first" )
+    // NOARCH, for the same reason as rt_hand_light_debug: the markers are bright.
+    RT_CVAR_NOARCH( rt_flame_light_debug, false, "periodic console dump + cyan marker spheres at flame lights" )
+
     RT_CVAR( rt_sector_emis,            0.35f,  "make bright world surfaces emit light themselves, scaled by sector lightlevel "
                                                 "(0 = off). Doom 64 draws its light features as flat-shaded bright surfaces with "
                                                 "no light actor anywhere — the red MAP02 corridor panels are lit purely by "
@@ -590,9 +626,11 @@ namespace cvar
     RT_CVAR( rt_flsh_die_secs,          4.f,    "seconds of irregular blackouts at the end of the on-phase" )
     RT_CVAR( rt_flsh_off_secs,          5.f,    "seconds of full recharge (light off)" )
     RT_CVAR( rt_flsh_jitter,            0.15f,  "0..1 randomness scale on on/off durations" )
+    RT_CVAR( rt_flsh_idle_recharge,     0.25f,  "recharge rate while the flashlight is switched off, as a fraction of the post-burnout rate (0 = never)" )
     // HUD readouts (written each frame by RT_AddFlashlight; ZScript pk3 displays them)
     RT_CVAR( rt_flsh_charge,            0.f,    "0..1 battery charge readout for HUD" )
     RT_CVAR( rt_flsh_battstate,         0,      "0=off 1=on 2=dying 3=recharge (HUD readout)" )
+    RT_CVAR( rt_flsh_flicker,           0,      "counter, ++ on each beam fade-out (sound cue readout)" )
 
     RT_CVAR( rt_sun,                    false,  "enable sun for debugging")
     RT_CVAR( rt_sun_intensity,          1000.f, "sun intensity")
@@ -631,6 +669,9 @@ namespace cvar
     RT_CVAR_COLOR( rt_mzlflsh_color_bfg,      0xA0FFA0, "muzzle flash color for the BFG (hex)" )
     RT_CVAR_COLOR( rt_mzlflsh_color_unmaker,  0xFF1111, "muzzle flash color for the unmaker / laser (hex)" )
     RT_CVAR_COLOR( rt_mzlflsh_color_chaingun, 0x9677FF, "muzzle flash color for the chaingun (hex)" )
+    RT_CVAR( rt_mzlflsh_luma_compensate, true,  "scale muzzle flash intensity by the tint's relative luminance, so a "
+                                                "saturated colour is not dimmer than the warm default at the same "
+                                                "rt_mzlflsh_intensity" )
 
     // Passive glow from a weapon that has a lit element in its art (the plasma rifle's
     // electric core). This CANNOT be done with a lightIntensity on the sprite's own
@@ -641,11 +682,26 @@ namespace cvar
     // to outScreenEmission, a screen-space additive overlay that lights nothing.
     // So the light lives here, at the viewer, like the flashlight and the muzzle flash.
     RT_CVAR( rt_gunglow,                true,   "enable the ready weapon's passive core glow as a real light source" )
-    RT_CVAR( rt_gunglow_intensity,      150.f,  "weapon core glow intensity" )
+    RT_CVAR( rt_gunglow_intensity,      90.f,   "weapon core glow intensity. Lower than it looks like it should be: the "
+                                                "light is anchored centimetres off the sprite, so inverse-square makes it "
+                                                "land far harder on the gun than on the room" )
     RT_CVAR_COLOR( rt_gunglow_color,  0x3355FF, "weapon core glow color (hex); plasma rifle blue" )
-    RT_CVAR( rt_gunglow_radius,         0.05f,  "weapon core glow light sphere radius (in meters)" )
-    RT_CVAR( rt_gunglow_f,              0.7f,   "weapon core glow offset - forward (in meters)" )
-    RT_CVAR( rt_gunglow_u,             -0.35f,  "weapon core glow offset - up (in meters); negative = below eye, at the gun" )
+    RT_CVAR( rt_gunglow_radius,         0.07f,  "weapon core glow light sphere radius (in meters). A wider source softens "
+                                                "the falloff across the chassis instead of hot-spotting one panel" )
+    RT_CVAR( rt_gunglow_f,              0.0f,   "weapon core glow trim - forward (in meters), on top of the gun anchor" )
+    RT_CVAR( rt_gunglow_u,              0.0f,   "weapon core glow trim - up (in meters), on top of the gun anchor" )
+    RT_CVAR( rt_gunglow_pullback,       0.5f,   "[0,0.95] how far from the gun's quad toward the eye to place the core "
+                                                "light. This is the knob for the SPRITE's exposure specifically: the room "
+                                                "is metres away so moving the light a few cm barely changes it, but the "
+                                                "gun is right there and takes the inverse square. Raise it if the chassis "
+                                                "blows out, lower it if the gun goes flat" )
+    RT_CVAR( rt_gunglow_bob,            0.012f, "how much the core glow follows the weapon's bob, in meters per psprite "
+                                                "unit. 0 pins the light to the view instead, which reads as a lamp on the "
+                                                "camera rather than a light on the gun" )
+    RT_CVAR( rt_gunglow_flicker,        0.22f,  "[0,1] depth of the core glow's flicker. Electricity is not a steady lamp; "
+                                                "two detuned sines beat against each other so it never loops audibly. "
+                                                "0 = steady" )
+    RT_CVAR( rt_gunglow_fire_boost,     2.2f,   "core glow multiplier while the weapon is firing (extralight up)" )
 
     RT_CVAR( rt_wpn_solid_bright,       true,   "draw FULLBRIGHT view-weapon frames as alpha-tested cutouts instead of "
                                                 "translucent UI overlays. 0 restores the old behaviour, where a BRIGHT "
@@ -855,6 +911,41 @@ namespace cvar
     RT_CVAR( rt_water_b,                255,    "water color Blue [0,255]" )
     RT_CVAR( rt_water_wavestren,        3.f,    "normal map strength for water" )
 
+    // Doom64-RT stylized water.
+    //
+    // RTGL's stock water is physical: refract into the media, absorb with
+    // Beer-Lambert, mirror-reflect the rest. That reads far too real next to
+    // Doom 64's art, and for these maps it is also plain wrong — D64W2_01 /
+    // D64W1_01 are opaque FLOOR flats, there is no sector under them to
+    // refract into, so the refraction half of the split has nothing to show.
+    //
+    // Stylized mode drops refraction and spends the checkerboard split on
+    // "keep the lit water surface" vs "mirror reflection", resolved by
+    // CmCheckerboard into  F*reflection + (1-F)*surface. The surface itself is
+    // rebuilt from the flat: deep blue body + the texture's own caustic veins,
+    // shimmering with the animated wave normal. Implemented in
+    // deps/RTGL Shaders/RaygenPrimary.inl (getStylizedWaterAlbedo).
+    //
+    // Only applies to surfaces RTGL already considers water, i.e. textures
+    // tagged "isWater" in rt/data/textures.json (tools/set_water_meta.py).
+    RT_CVAR( rt_water_style,            true,   "stylized (Doom 64) water instead of physical refract+absorb. "
+                                                "Deep blue opaque body with the flat's own caustics, plus a "
+                                                "Fresnel-weighted reflection. 0 = stock RTGL water." )
+    RT_CVAR( rt_water_tint_r,           5,      "stylized water: body colour Red [0,255]" )
+    RT_CVAR( rt_water_tint_g,          23,      "stylized water: body colour Green [0,255]" )
+    RT_CVAR( rt_water_tint_b,          61,      "stylized water: body colour Blue [0,255]" )
+    RT_CVAR( rt_water_caustic,          1.5f,   "stylized water: how hard the wave crests brighten the "
+                                                "texture's caustic veins. 0 = static veins." )
+    RT_CVAR( rt_water_reflmax,          0.75f,  "stylized water: Fresnel clamp on the reflection. 1 = a true "
+                                                "mirror at grazing angles, lower keeps it a sheen." )
+    RT_CVAR( rt_water_rough,            0.1f,   "stylized water: roughness of the surface half (specular "
+                                                "highlight width from lights)" )
+    RT_CVAR( rt_water_glow,             0.15f,  "stylized water: unlit on-screen sheen on the caustic veins, "
+                                                "so the pattern still reads in near-black rooms. Casts no "
+                                                "light. 0 = fully lighting-dependent." )
+    RT_CVAR( rt_water_veinref,          0.03f,  "stylized water: luminance of the flat's brightest texel, used "
+                                                "to normalize the vein mask. Lower = wider, brighter veins." )
+
     RT_CVAR( rt_bloom,                  true,   "enable bloom" )
     RT_CVAR( rt_bloom_scale,            1.f,    "multiplier for a calculated bloom" )
     RT_CVAR( rt_bloom_ev,               6.f,    "EV offset for bloom calculation input" )
@@ -1009,6 +1100,12 @@ constexpr uint64_t SoloLatticeId_Base = 1ull << 40;
 // itself. Bit 42 clears the whole reachable solo range with room to spare. Two lights per
 // actor, so the low bit of the id is the hand index.
 constexpr uint64_t HandLightId_Base      = 1ull << 42;
+// Torch / fire / candle lights. Bit 43, one clear bit above the fist range: hand IDs are
+// HandLightId_Base + (ptr & 0xFFFFFFFF) << 1 + hand, which spans 33 bits above 1<<42 and
+// so climbs into 1<<43 territory on its own... it does NOT, because 1<<42 + 2^33 < 1<<43,
+// but the margin is only there by arithmetic. Flame IDs use the same ptr-derived low bits
+// with NO shift, so they occupy 1<<43 + 32 bits and cannot reach 1<<44.
+constexpr uint64_t FlameLightId_Base     = 1ull << 43;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -2447,6 +2544,21 @@ private:
         if( rtstate.is< RtPrim::FirstPerson >() )
         {
             std::tie( transform, verts ) = MakeFirstPersonQuadInWorldSpace( verts );
+
+            // Anchor for rt_gunglow. Only the plasma frames — this is the weapon whose
+            // art has a lit core; anchoring on any weapon would move the light onto guns
+            // that are not supposed to emit.
+            if( texname && verts.size() == 4 &&
+                ( strncmp( texname, "PLSG", 4 ) == 0 || strncmp( texname, "PLSF", 4 ) == 0 ) )
+            {
+                FVector3 c{ 0, 0, 0 };
+                for( const auto& v : verts )
+                {
+                    c += FVector3{ v.position[ 0 ], v.position[ 1 ], v.position[ 2 ] };
+                }
+                m_gunAnchorView = c / float( verts.size() );
+                m_haveGunAnchor = true;
+            }
         }
         else if( RequiresTrueTransform() )
         {
@@ -3117,14 +3229,22 @@ public:
 
         static bool     s_wasOn       = false;
         static int      s_state       = BattOff;
-        static int      s_phaseStart  = 0;
-        static int      s_phaseLen    = 0;
-        static int      s_onLen       = 0;
-        static int      s_dieLen      = 0;
+        // Persistent charge (0..1). Survives switching the flashlight off, so a
+        // toggle no longer refills the cell; it keeps trickling back up instead.
+        static float    s_charge      = 1.f;
+        static int      s_lastTime    = -1;
+        static int      s_onLen       = 0; // tics of a full drain (rolled per cycle)
+        static int      s_dieLen      = 0; // tics of dying flicker at the end of it
+        static int      s_offLen      = 0; // tics of a full post-burnout recharge
+        static int      s_dyingStart  = -1;
+        static bool     s_inFade      = false;
         static int      s_maptoken    = -1;
         static int      s_nextBlinkAt = -1;
         static int      s_blinkStart  = -1;
         static int      s_blinkDur    = 0;
+        // Bumped every time the beam starts a fade-out (mid-cycle blink, dying
+        // gutter, burnout). The flashlight pk3 watches this and plays a sound.
+        static int      s_flickerSeq  = 0;
         // DLSS-RR light-cut edge detector (see below); reset on level change
         // alongside the other statics so a fresh map doesn't read a stale edge.
         static bool     s_rrPrevWant  = false;
@@ -3162,29 +3282,19 @@ public:
             s_blinkDur      = 0;
         };
 
-        auto beginOnPhase = [ & ]() {
+        // Durations of one battery cycle, jittered. Rolled when the cell reaches
+        // a full charge, not when the player flicks the switch.
+        auto rollCycle = [ & ]() {
             const float onSecs  = rollSecs( float{ cvar::rt_flsh_on_secs }, float{ cvar::rt_flsh_jitter }, 11 );
             const float dieSecs = std::clamp(
                 rollSecs( float{ cvar::rt_flsh_die_secs }, float{ cvar::rt_flsh_jitter }, 29 ),
                 0.5f,
                 onSecs * 0.8f );
-            s_onLen      = std::max( 1, int( onSecs * TICRATE ) );
-            s_dieLen     = std::max( 1, int( dieSecs * TICRATE ) );
-            s_phaseLen   = s_onLen;
-            s_phaseStart = maptime;
-            s_state      = BattOn;
-            // First mid-cycle blink a few seconds in (not immediately).
-            scheduleNextBlink( 3, 9, 71 );
-        };
-
-        auto beginRecharge = [ & ]() {
             const float offSecs =
                 rollSecs( float{ cvar::rt_flsh_off_secs }, float{ cvar::rt_flsh_jitter }, 47 );
-            s_phaseLen    = std::max( 1, int( offSecs * TICRATE ) );
-            s_phaseStart  = maptime;
-            s_state       = BattRecharge;
-            s_nextBlinkAt = -1;
-            s_blinkStart  = -1;
+            s_onLen  = std::max( 1, int( onSecs * TICRATE ) );
+            s_dieLen = std::max( 1, int( dieSecs * TICRATE ) );
+            s_offLen = std::max( 1, int( offSecs * TICRATE ) );
         };
 
         if( maptoken != s_maptoken )
@@ -3192,114 +3302,194 @@ public:
             s_maptoken    = maptoken;
             s_wasOn       = false;
             s_state       = BattOff;
-            s_phaseLen    = 0;
+            s_charge      = 1.f;
+            s_lastTime    = maptime;
+            s_onLen       = 0;
+            s_dyingStart  = -1;
+            s_inFade      = false;
             s_nextBlinkAt = -1;
             s_blinkStart  = -1;
             s_rrPrevWant  = false;
             s_rrPrevScale = 0.f;
         }
+        if( s_onLen <= 0 )
+        {
+            rollCycle();
+        }
+
+        // Game time elapsed since the last frame, clamped so a pause, a load or
+        // a menu doesn't dump a whole cycle into one step.
+        int dt = 0;
+        if( s_lastTime >= 0 && maptime > s_lastTime )
+        {
+            dt = std::min( maptime - s_lastTime, TICRATE );
+        }
+        s_lastTime = maptime;
 
         float battScale = 1.f;
         float charge    = 0.f;
         int   battState = BattOff;
 
-        if( !wantLight || !cvar::rt_flsh_battery )
+        if( !cvar::rt_flsh_battery )
         {
             s_wasOn       = wantLight;
-            s_state       = BattOff;
+            s_state       = wantLight ? BattOn : BattOff;
+            s_charge      = 1.f;
             s_nextBlinkAt = -1;
             s_blinkStart  = -1;
             battScale     = wantLight ? 1.f : 0.f;
             charge        = wantLight ? 1.f : 0.f;
-            battState     = wantLight ? BattOn : BattOff;
+            battState     = s_state;
         }
         else
         {
-            if( !s_wasOn )
-            {
-                beginOnPhase();
-            }
-            s_wasOn = true;
+            const float drainPerTic  = 1.f / float( std::max( 1, s_onLen ) );
+            const float chargePerTic = 1.f / float( std::max( 1, s_offLen ) );
+            const float idleMult =
+                std::clamp( float{ cvar::rt_flsh_idle_recharge }, 0.f, 4.f );
 
-            // Advance phases until we land in a stable frame state.
-            for( int guard = 0; guard < 4; ++guard )
+            if( s_state == BattRecharge )
             {
-                const int elapsed = maptime - s_phaseStart;
-                if( s_state == BattOn || s_state == BattDying )
+                // Burned out: the cell recharges at full rate and the beam stays
+                // dead until it is topped up, whatever the switch says.
+                s_charge += chargePerTic * float( dt );
+                if( s_charge >= 1.f )
                 {
-                    if( elapsed >= s_phaseLen )
+                    s_charge     = 1.f;
+                    s_dyingStart = -1;
+                    s_inFade     = false;
+                    rollCycle();
+                    if( wantLight )
                     {
-                        beginRecharge();
-                        continue;
-                    }
-                    const int remaining = s_phaseLen - elapsed;
-                    charge              = float( remaining ) / float( std::max( 1, s_onLen ) );
-                    if( remaining <= s_dieLen )
-                    {
-                        s_state   = BattDying;
-                        battState = BattDying;
-                        // Intermittent slow fade-outs (~every 2.2s, ~0.9s soft valley).
-                        constexpr int kDiePeriod = 77; // ~2.2s
-                        constexpr int kDieFade   = 32; // ~0.9s
-                        const int     local      = ( maptime - s_phaseStart ) % kDiePeriod;
-                        if( local < kDieFade )
-                        {
-                            battScale = fadeValley( float( local ) / float( kDieFade - 1 ) );
-                        }
-                        else
-                        {
-                            battScale = 1.f;
-                        }
+                        s_state = BattOn;
+                        scheduleNextBlink( 3, 9, 71 );
                     }
                     else
                     {
-                        s_state   = BattOn;
-                        battState = BattOn;
-                        battScale = 1.f;
+                        s_state = BattOff;
+                    }
+                }
+                else
+                {
+                    battState = BattRecharge;
+                    battScale = 0.f;
+                }
+            }
 
-                        // Rare single mid-cycle blinks (slow one-shot fade).
-                        if( s_blinkStart >= 0 )
+            if( s_state != BattRecharge )
+            {
+                if( wantLight )
+                {
+                    if( !s_wasOn )
+                    {
+                        // Switched back on: resume from the remembered charge.
+                        s_state = BattOn;
+                        scheduleNextBlink( 3, 9, 71 );
+                    }
+
+                    s_charge -= drainPerTic * float( dt );
+
+                    if( s_charge <= 0.f )
+                    {
+                        s_charge      = 0.f;
+                        s_state       = BattRecharge;
+                        s_dyingStart  = -1;
+                        s_inFade      = false;
+                        s_nextBlinkAt = -1;
+                        s_blinkStart  = -1;
+                        s_flickerSeq++; // last gutter before it dies
+                        battState     = BattRecharge;
+                        battScale     = 0.f;
+                    }
+                    else
+                    {
+                        const float dieFrac =
+                            float( s_dieLen ) / float( std::max( 1, s_onLen ) );
+
+                        if( s_charge <= dieFrac )
                         {
-                            const int bt = maptime - s_blinkStart;
-                            if( bt >= s_blinkDur )
+                            if( s_state != BattDying )
                             {
-                                scheduleNextBlink( 4, 12, maptime + 3 );
+                                s_state       = BattDying;
+                                s_dyingStart  = maptime;
+                                s_inFade      = false;
+                                s_nextBlinkAt = -1;
+                                s_blinkStart  = -1;
+                            }
+                            battState = BattDying;
+                            // Intermittent slow fade-outs (~every 2.2s, ~0.9s soft valley).
+                            constexpr int kDiePeriod = 77; // ~2.2s
+                            constexpr int kDieFade   = 32; // ~0.9s
+                            const int     local      = ( maptime - s_dyingStart ) % kDiePeriod;
+                            const bool    inFade     = local < kDieFade;
+                            if( inFade )
+                            {
+                                if( !s_inFade )
+                                {
+                                    s_flickerSeq++;
+                                }
+                                battScale = fadeValley( float( local ) / float( kDieFade - 1 ) );
                             }
                             else
                             {
-                                battScale = fadeValley( float( bt ) / float( std::max( 1, s_blinkDur - 1 ) ) );
+                                battScale = 1.f;
+                            }
+                            s_inFade = inFade;
+                        }
+                        else
+                        {
+                            s_state   = BattOn;
+                            battState = BattOn;
+                            battScale = 1.f;
+                            s_inFade  = false;
+
+                            // Rare single mid-cycle blinks (slow one-shot fade).
+                            if( s_blinkStart >= 0 )
+                            {
+                                const int bt = maptime - s_blinkStart;
+                                if( bt >= s_blinkDur )
+                                {
+                                    scheduleNextBlink( 4, 12, maptime + 3 );
+                                }
+                                else
+                                {
+                                    battScale = fadeValley( float( bt ) / float( std::max( 1, s_blinkDur - 1 ) ) );
+                                }
+                            }
+                            else if( s_nextBlinkAt >= 0 && maptime >= s_nextBlinkAt )
+                            {
+                                // ~0.35–0.55s single fade-out.
+                                const float u = rollUnit( maptime + 5 );
+                                s_blinkDur    = 12 + int( u * 8.f ); // 12–20 tics
+                                s_blinkStart  = maptime;
+                                s_flickerSeq++;
+                                battScale     = fadeValley( 0.f );
                             }
                         }
-                        else if( s_nextBlinkAt >= 0 && maptime >= s_nextBlinkAt )
-                        {
-                            // ~0.35–0.55s single fade-out.
-                            const float u = rollUnit( maptime + 5 );
-                            s_blinkDur    = 12 + int( u * 8.f ); // 12–20 tics
-                            s_blinkStart  = maptime;
-                            battScale     = fadeValley( 0.f );
-                        }
                     }
-                    break;
                 }
-                if( s_state == BattRecharge )
+                else
                 {
-                    if( elapsed >= s_phaseLen )
-                    {
-                        beginOnPhase();
-                        continue;
-                    }
-                    battState = BattRecharge;
-                    battScale = 0.f;
-                    charge    = float( elapsed ) / float( std::max( 1, s_phaseLen ) );
-                    break;
+                    // Switched off with charge left: trickle back up, slower than
+                    // the forced recharge that follows a burnout.
+                    s_charge      = std::min( 1.f, s_charge + chargePerTic * idleMult * float( dt ) );
+                    s_state       = BattOff;
+                    s_dyingStart  = -1;
+                    s_inFade      = false;
+                    s_nextBlinkAt = -1;
+                    s_blinkStart  = -1;
+                    battState     = BattOff;
+                    battScale     = 0.f;
                 }
-                // Unexpected — restart.
-                beginOnPhase();
             }
+
+            s_wasOn = wantLight;
+            charge  = s_charge;
         }
 
         cvar::rt_flsh_charge    = std::clamp( charge, 0.f, 1.f );
         cvar::rt_flsh_battstate = battState;
+        cvar::rt_flsh_flicker   = s_flickerSeq;
 
         // DLSS-RR: flag an abrupt cut (rt_flsh toggle, or recharge<->on) for a
         // history flush. fadeValley() dying-flicker and mid-cycle blinks ramp
@@ -3380,8 +3570,31 @@ public:
     // REPLACES the IWAD classes with 64-prefixed ones (64Chaingun, 64BFG9000, ...) and
     // both names must hit. 64Nailgun inherits ChaingunBackup but is not named "Chaingun",
     // so it keeps the default — deliberate, its flash art is warm.
-    RgColor4DPacked32 MuzzleFlashColorFor( AActor* viewactor ) const
+    // Relative luminance of a colour cvar, Rec.709.
+    static float cvarcolor_luma( const FColorCVarRef& c )
     {
+        const uint32_t ba = *( c );
+        return 0.2126f * float( RPART( ba ) ) + 0.7152f * float( GPART( ba ) ) +
+               0.0722f * float( BPART( ba ) );
+    }
+
+    struct MuzzleTint
+    {
+        RgColor4DPacked32 color;
+        // rt_mzlflsh_intensity is a multiplier on the COLOUR, so a saturated hue carries
+        // less light than the warm default at the same number: measured against
+        // ff8c52 (luma 160), plasma 3355ff is 0.56x, unmaker ff1111 only 0.42x. Left
+        // uncompensated, retinting the flash silently dimmed it — "the muzzle flash is
+        // barely visible anymore". This scales intensity back so changing the hue does
+        // not change how bright the flash reads. Clamped so an extreme colour cannot
+        // blow the exposure.
+        float intensityScale;
+    };
+
+    MuzzleTint MuzzleFlashTintFor( AActor* viewactor ) const
+    {
+        const FColorCVarRef* pick = &cvar::rt_mzlflsh_color;
+
         if( cvar::rt_mzlflsh_perweapon && viewactor && viewactor->player &&
             viewactor->player->ReadyWeapon )
         {
@@ -3389,23 +3602,33 @@ public:
             {
                 if( strstr( c, "PlasmaRifle" ) )
                 {
-                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_plasma );
+                    pick = &cvar::rt_mzlflsh_color_plasma;
                 }
-                if( strstr( c, "BFG" ) )
+                else if( strstr( c, "BFG" ) )
                 {
-                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_bfg );
+                    pick = &cvar::rt_mzlflsh_color_bfg;
                 }
-                if( strstr( c, "Unmaker" ) )
+                else if( strstr( c, "Unmaker" ) )
                 {
-                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_unmaker );
+                    pick = &cvar::rt_mzlflsh_color_unmaker;
                 }
-                if( strstr( c, "Chaingun" ) )
+                else if( strstr( c, "Chaingun" ) )
                 {
-                    return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color_chaingun );
+                    pick = &cvar::rt_mzlflsh_color_chaingun;
                 }
             }
         }
-        return cvarcolor_to_rtcolor( cvar::rt_mzlflsh_color );
+
+        float scale = 1.f;
+        if( cvar::rt_mzlflsh_luma_compensate )
+        {
+            const float lum = cvarcolor_luma( *pick );
+            if( lum > 1.f )
+            {
+                scale = std::clamp( cvarcolor_luma( cvar::rt_mzlflsh_color ) / lum, 0.5f, 3.f );
+            }
+        }
+        return { cvarcolor_to_rtcolor( *pick ), scale };
     }
 
     void RT_AddMuzzleFlash( AActor*          viewactor,
@@ -3422,6 +3645,7 @@ public:
         // Latched with the position, for the same reason: the fade outlives the shot, and
         // a weapon switch mid-fade would otherwise recolour a flash already in the air.
         static RgColor4DPacked32 s_color = 0;
+        static float             s_intensityScale = 1.f;
 
         const bool wantFlash =
             extralight > 0 && cvar::rt_mzlflsh && viewactor && viewactor->Sector;
@@ -3503,7 +3727,9 @@ public:
 
             s_lastPos = pos;
             s_havePos = true;
-            s_color   = MuzzleFlashColorFor( viewactor );
+            const MuzzleTint tint = MuzzleFlashTintFor( viewactor );
+            s_color                = tint.color;
+            s_intensityScale       = tint.intensityScale;
         }
         else
         {
@@ -3514,7 +3740,7 @@ public:
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = s_color,
-            .intensity = cvar::rt_mzlflsh_intensity * s_fade,
+            .intensity = cvar::rt_mzlflsh_intensity * s_fade * s_intensityScale,
             .position  = { pos.X, pos.Y, pos.Z },
             .radius    = cvar::rt_mzlflsh_radius,
         };
@@ -3561,15 +3787,76 @@ public:
             return;
         }
 
-        auto pos = gzvec3( basePosition );
-        pos += gzvec3( up ) * float( cvar::rt_gunglow_u );
-        pos += gzvec3( forward ) * float( cvar::rt_gunglow_f );
+        FVector3 pos;
+
+        if( m_haveGunAnchor )
+        {
+            // The gun's own quad, pulled a fraction of the way back toward the eye so the
+            // light sits just IN FRONT of the sprite's visible face rather than inside or
+            // behind it. Behind it lights nothing you can see — the quad faces the camera.
+            //
+            // m_gunAnchorView is view space with the eye at the origin, so "toward the
+            // eye" is simply a scale down the same vector. Then camera-to-world, the same
+            // matrix the quad itself was uploaded with, so the light cannot drift off the
+            // gun no matter where you look.
+            const float pull = 1.f - std::clamp( float( cvar::rt_gunglow_pullback ), 0.f, 0.95f );
+            const FVector3 v = m_gunAnchorView * pull;
+
+            const RgFloat4D w =
+                ApplyMat44ToVec4( m_mainCameraView_Inverse, RgFloat4D{ v.X, v.Y, v.Z, 1.0f } );
+            const RgFloat3D world = FromHomogeneous( w );
+            pos                   = gzvec3( world );
+
+            // Fine trim, in view axes, on top of the anchor.
+            pos += gzvec3( up ) * float( cvar::rt_gunglow_u );
+            pos += gzvec3( forward ) * float( cvar::rt_gunglow_f );
+        }
+        else
+        {
+            // No plasma quad uploaded yet this session — fall back to the view-relative
+            // placement, and follow the psprite's bob by hand.
+            pos = gzvec3( basePosition );
+            pos += gzvec3( up ) * float( cvar::rt_gunglow_u );
+            pos += gzvec3( forward ) * float( cvar::rt_gunglow_f );
+
+            if( const DPSprite* psp = camera->player->FindPSprite( PSP_WEAPON ) )
+            {
+                const float bob = float( cvar::rt_gunglow_bob );
+                if( bob > 0.f )
+                {
+                    const auto right = gzvec3( forward ) ^ gzvec3( up );
+                    pos += right * ( float( psp->x ) * bob );
+                    pos -= gzvec3( up ) * ( float( psp->y - WEAPONTOP ) * bob );
+                }
+            }
+        }
+
+        // Electricity, not a bulb: two detuned sines so the beat never settles into a
+        // visible loop. Deliberately smooth rather than per-frame random — the denoiser
+        // resolves a moving light far better than a stuttering one, and white-noise
+        // flicker on a 1-spp path tracer just reads as sparkle.
+        float intensity = float( cvar::rt_gunglow_intensity );
+        {
+            const float depth = std::clamp( float( cvar::rt_gunglow_flicker ), 0.f, 1.f );
+            if( depth > 0.f )
+            {
+                const float t = float( level.totaltime ) / float( TICRATE );
+                const float n = 0.6f * std::sin( t * 37.0f ) + 0.4f * std::sin( t * 23.3f );
+                intensity *= 1.f + depth * n;
+            }
+            // Kick on discharge. extralight is what the Flash state's A_Light1 raises,
+            // so this tracks the actual shot rather than guessing from the frame.
+            if( camera->player->extralight > 0 )
+            {
+                intensity *= std::max( 0.f, float( cvar::rt_gunglow_fire_boost ) );
+            }
+        }
 
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = cvarcolor_to_rtcolor( cvar::rt_gunglow_color ),
-            .intensity = cvar::rt_gunglow_intensity,
+            .intensity = std::max( 0.f, intensity ),
             .position  = { pos.X, pos.Y, pos.Z },
             .radius    = cvar::rt_gunglow_radius,
         };
@@ -3594,6 +3881,15 @@ private:
     float m_mainCameraProjection_Inverse[ 16 ]{};
 
     uint32_t m_weaponDrawCallIndex{ 0 }; // to z-sort weapon sprites
+
+    // Where the plasma rifle's quad actually is, in VIEW space metres (origin = eye),
+    // captured as it is uploaded. RT_AddWeaponGlow anchors the core light to this
+    // instead of a guessed offset from the camera: the quad sits centimetres from the
+    // eye, so the old 0.7m-forward placement put the light PAST the gun and lit its back
+    // face, which is why it lit the room but never the sprite. Anchoring also gives the
+    // weapon bob for free — it is the real geometry, not an approximation of it.
+    FVector3 m_gunAnchorView{ 0, 0, 0 };
+    bool     m_haveGunAnchor{ false };
 
     std::vector< RgPrimitiveVertex > m_tempverts{};
 
@@ -7236,6 +7532,268 @@ void RT_UploadHandGlowLights()
     }
 }
 
+// Every open flame in the game, keyed by sprite name.
+//
+// `up` and the relative brightness are the mod's OWN authored intent, lifted from its
+// GLDEFS `flickerlight` blocks (offset 0 N 0 / size N), so nothing here is invented:
+//
+//   CANDLE          size 16  offset 0 16 0     REDFIRE etc.     size 32  offset 0  8 0
+//   *TORCH (wall)   size 28  offset 0 24 0     TORCHSHORT*      size 40  offset 0 64 0
+//                                              TORCHLONG*       size 40  offset 0 80 0
+//
+// Colours do NOT come from GLDEFS, which asks for fully-primary hues (0.0 1.0 0.0 green,
+// 1.0 0.1 0.1 red). Those are the shared flame palette instead — the same four hexes the
+// _e.png mask generators tint with (tools/gen_torch_emissives.py, gen_fx_emissives.py).
+// Keeping cast light and on-screen glow on one palette is the whole point: they drifted
+// apart once already (the LPUF regression), and a literal here would let it happen again.
+struct RtFlameKind
+{
+    char     sprite[ 5 ];
+    unsigned rgb;
+    float    up;        // map units above the actor origin, from GLDEFS `offset 0 N 0`
+    float    intensity; // RT intensity, scaled by GLDEFS `size` relative to the others
+};
+
+constexpr unsigned RT_FLAME_BLUE   = 0x4488FF;
+constexpr unsigned RT_FLAME_GREEN  = 0x44FF66;
+constexpr unsigned RT_FLAME_RED    = 0xFF4020;
+constexpr unsigned RT_FLAME_YELLOW = 0xFFCC33;
+// The candle is deliberately NOT FLAME_YELLOW. A candle is a single wick, not a pitch
+// torch: it should read as a dim red ember at the edge of a dark room, so it takes a
+// warm red of its own at a fraction of the intensity.
+constexpr unsigned RT_FLAME_CANDLE = 0xFF4A14;
+
+constexpr RtFlameKind RT_FLAME_KINDS[] = {
+    // standing torches, long (27x100) — GLDEFS TORCHLONG*
+    { "TLBL", RT_FLAME_BLUE, 80.f, 900.f },
+    { "TLGR", RT_FLAME_GREEN, 80.f, 900.f },
+    { "TLRD", RT_FLAME_RED, 80.f, 900.f },
+    { "TLYL", RT_FLAME_YELLOW, 80.f, 900.f },
+    // standing torches, short (18x85) — GLDEFS TORCHSHORT*, same size, lower offset
+    { "TSBL", RT_FLAME_BLUE, 64.f, 900.f },
+    { "TSGR", RT_FLAME_GREEN, 64.f, 900.f },
+    { "TSRD", RT_FLAME_RED, 64.f, 900.f },
+    { "TSYL", RT_FLAME_YELLOW, 64.f, 900.f },
+    // wall sconces — GLDEFS size 28, so below the standing torches
+    { "A030", RT_FLAME_YELLOW, 24.f, 700.f },
+    { "A031", RT_FLAME_BLUE, 24.f, 700.f },
+    { "A032", RT_FLAME_RED, 24.f, 700.f },
+    { "GTCH", RT_FLAME_GREEN, 24.f, 700.f },
+    // loose fires burning on the floor — GLDEFS size 32, offset only 8 up
+    { "BFLM", RT_FLAME_BLUE, 8.f, 650.f },
+    { "GFLM", RT_FLAME_GREEN, 8.f, 650.f },
+    { "RFLM", RT_FLAME_RED, 8.f, 650.f },
+    { "YFLM", RT_FLAME_YELLOW, 8.f, 650.f },
+    // candle — GLDEFS size 16, the smallest flame in the game
+    { "CAND", RT_FLAME_CANDLE, 16.f, 260.f },
+};
+
+static const RtFlameKind* RT_FlameKindOf( AActor* mo )
+{
+    if( !mo || mo->sprite < 0 || mo->sprite >= int( sprites.Size() ) )
+    {
+        return nullptr;
+    }
+    const char* sn = sprites[ mo->sprite ].name;
+    if( !sn )
+    {
+        return nullptr;
+    }
+    // Full 4-character match, never a prefix. TL/TS families differ only in characters
+    // 3-4, and A030/A031/A032 only in the last, so a prefix match would hand three wall
+    // torches the same colour.
+    for( const RtFlameKind& k : RT_FLAME_KINDS )
+    {
+        if( strnicmp( sn, k.sprite, 4 ) == 0 )
+        {
+            return &k;
+        }
+    }
+    return nullptr;
+}
+
+void RT_UploadFlameLights()
+{
+    // Fire is the one light source in this game that must not hold still. See the
+    // rt_flame_light_on cvar text for why neither half of that (the flicker, and the
+    // offset up onto the flame) can be expressed in RTGL1 texture meta.
+    if( !cvar::rt_flame_light_on || !primaryLevel )
+    {
+        return;
+    }
+
+    const float scale = std::max( 0.f, float{ cvar::rt_flame_light_scale } );
+    if( scale <= 0.001f )
+    {
+        return;
+    }
+    const float  srcRadius = std::max( 0.01f, float{ cvar::rt_flame_light_radius } );
+    const float  flicker   = std::clamp( float{ cvar::rt_flame_light_flicker }, 0.f, 1.f );
+    const float  speed     = std::max( 0.f, float{ cvar::rt_flame_light_speed } );
+    const float  wobble    = std::max( 0.f, float{ cvar::rt_flame_light_wobble } );
+    const double maxDist   = std::max( 64.0, double( float{ cvar::rt_flame_light_maxdist } ) );
+    const double maxDist2  = maxDist * maxDist;
+    const int    budget    = std::max( 0, int{ cvar::rt_flame_light_max } );
+    if( budget == 0 )
+    {
+        return;
+    }
+
+    // maptime, not wall clock: a paused or console-open game must freeze the fire with
+    // everything else. 35 Hz stepping is not a limitation — GLDEFS' own flickerlight
+    // re-rolls once per tic, so this is already the smoother of the two.
+    const float t = float( primaryLevel->maptime ) * speed;
+
+    const DVector3 vpos = r_viewpoint.Pos;
+
+    struct FlameCand
+    {
+        double             d2;
+        float              px, py, pz;
+        float              intensity;
+        uint64_t           id;
+        const RtFlameKind* kind;
+    };
+    std::vector< FlameCand > cand;
+
+    auto    it = primaryLevel->GetThinkerIterator< AActor >();
+    AActor* mo = nullptr;
+    while( ( mo = it.Next() ) != nullptr )
+    {
+        const RtFlameKind* kind = RT_FlameKindOf( mo );
+        if( !kind )
+        {
+            continue;
+        }
+        if( ( mo->renderflags & RF_INVISIBLE ) || mo->Alpha <= 0.01 )
+        {
+            continue;
+        }
+
+        // Per-actor phase. Without it every torch in the level flickers in unison, which
+        // is exactly the failure that rules out doing this from the sprite animation:
+        // the props all spawn at map load, so their frame counters are already in lockstep.
+        const uint64_t h = uint64_t( reinterpret_cast< uintptr_t >( mo ) ) >> 4;
+        const float phase = float( h & 0xFFFF ) * ( 6.2831853f / 65536.0f );
+
+        // Three incommensurate harmonics: the sum has no short period, so a torch the
+        // player stands next to for a minute never visibly loops. Normalised by the sum
+        // of the weights so `flicker` stays a true fraction of base intensity.
+        const float f = ( 0.55f * std::sin( t + phase ) +          //
+                          0.30f * std::sin( t * 2.37f + phase * 1.7f ) +
+                          0.15f * std::sin( t * 4.11f + phase * 2.9f ) );
+
+        const float intensity =
+            std::max( 0.f, kind->intensity * scale * ( 1.0f + flicker * f ) );
+        if( intensity <= 0.01f )
+        {
+            continue;
+        }
+
+        // The same three-harmonic trick on position, at different frequencies so the
+        // drift does not simply track the brightness. Lateral only gets the full wobble;
+        // vertical gets half, because a flame licks upward far more than it slides.
+        const float wx = wobble * std::sin( t * 0.83f + phase * 2.1f );
+        const float wy = wobble * std::sin( t * 1.19f + phase * 3.3f );
+        const float wz = wobble * 0.5f * std::sin( t * 1.61f + phase * 1.3f );
+
+        const double lx = double( mo->X() ) + wx;
+        const double ly = double( mo->Y() ) + wy;
+        const double lz = double( mo->Z() ) + double( kind->up ) + wz;
+
+        const double dx = lx - vpos.X, dy = ly - vpos.Y, dz = lz - vpos.Z;
+        const double d2 = dx * dx + dy * dy + dz * dz;
+        if( d2 > maxDist2 )
+        {
+            continue;
+        }
+
+        cand.push_back( FlameCand{
+            d2,
+            float( lx ) * ONEGAMEUNIT_IN_METERS,
+            float( ly ) * ONEGAMEUNIT_IN_METERS,
+            float( lz ) * ONEGAMEUNIT_IN_METERS,
+            intensity,
+            // Stable across frames: derived from actor identity alone, never from the
+            // tick. An id that moved would make RTGL1 see the whole set die and respawn
+            // every frame, throwing away its temporal reservoirs.
+            FlameLightId_Base + ( uint64_t( reinterpret_cast< uintptr_t >( mo ) ) & 0xFFFFFFFFull ),
+            kind,
+        } );
+    }
+
+    const size_t wanted = cand.size();
+    if( wanted > size_t( budget ) )
+    {
+        std::partial_sort( cand.begin(),
+                           cand.begin() + budget,
+                           cand.end(),
+                           []( const FlameCand& a, const FlameCand& b ) { return a.d2 < b.d2; } );
+        cand.resize( size_t( budget ) );
+    }
+
+    for( const FlameCand& c : cand )
+    {
+        const float kR = ( ( c.kind->rgb >> 16 ) & 0xFF ) / 255.0f;
+        const float kG = ( ( c.kind->rgb >> 8 ) & 0xFF ) / 255.0f;
+        const float kB = ( c.kind->rgb & 0xFF ) / 255.0f;
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = rt.rgUtilPackColorFloat4D( kR, kG, kB, 1.0f ),
+            .intensity = c.intensity,
+            .position  = { c.px, c.py, c.pz },
+            .radius    = srcRadius,
+        };
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = c.id,
+            .isExportable = false,
+        };
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        if( cvar::rt_flame_light_debug )
+        {
+            auto markSph = RgLightSphericalEXT{
+                .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                .pNext     = nullptr,
+                .color     = rt.rgUtilPackColorByte4D( 0, 255, 255, 255 ),
+                .intensity = 350.f,
+                .position  = { c.px, c.py, c.pz },
+                .radius    = 0.05f,
+            };
+            auto markInfo = RgLightInfo{
+                .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                .pNext        = &markSph,
+                .uniqueID     = c.id + ( 1ull << 41 ),
+                .isExportable = false,
+            };
+            r = rt.rgUploadLight( &markInfo );
+            RG_CHECK( r );
+        }
+    }
+
+    if( cvar::rt_flame_light_debug )
+    {
+        static int s_tick;
+        if( ( ++s_tick % 60 ) == 0 )
+        {
+            Printf( "rt_flame_light: uploaded=%zu of %zu wanted (cap %d, within %.0fu) "
+                    "scale=%.2f flicker=%.2f wobble=%.1f\n",
+                    cand.size(),
+                    wanted,
+                    budget,
+                    maxDist,
+                    scale,
+                    flicker,
+                    wobble );
+        }
+    }
+}
+
 } // anonymous namespace
 
 //
@@ -7434,6 +7992,7 @@ void RTFrameBuffer::RT_DrawFrame()
     RT_UploadCeilingInsetLamps();
     RT_UploadHangingTechLamps();
     RT_UploadHandGlowLights();
+    RT_UploadFlameLights();
     RT_UpdateSectorEmisThreshold();
     RT_UploadWallStripLights();
     RT_UploadCeilingEdgeLamps();
@@ -7475,6 +8034,16 @@ void RTFrameBuffer::RT_DrawFrame()
         .waterWaveTextureDerivativesMultiplier = 1.0f,
         .waterTextureAreaScale                 = 1.0f,
         .portalNormalTwirl                     = false,
+        // Doom64-RT stylized water — see rt_water_style.
+        .stylizedWaterStrength  = cvar::rt_water_style ? 1.0f : 0.0f,
+        .stylizedWaterCaustic   = cvar::rt_water_caustic,
+        .stylizedWaterReflMax   = cvar::rt_water_reflmax,
+        .stylizedWaterRoughness = cvar::rt_water_rough,
+        .stylizedWaterGlow      = cvar::rt_water_glow,
+        .stylizedWaterVeinRef   = cvar::rt_water_veinref,
+        .stylizedWaterTint      = { std::clamp( *cvar::rt_water_tint_r / 255.f, 0.f, 1.f ),
+                                    std::clamp( *cvar::rt_water_tint_g / 255.f, 0.f, 1.f ),
+                                    std::clamp( *cvar::rt_water_tint_b / 255.f, 0.f, 1.f ) },
     };
 
     auto sky_params = RgDrawFrameSkyParams{
