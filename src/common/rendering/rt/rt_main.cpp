@@ -910,6 +910,16 @@ namespace cvar
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
     RT_CVAR( rt_water_b,                255,    "water color Blue [0,255]" )
     RT_CVAR( rt_water_wavestren,        3.f,    "normal map strength for water" )
+    // These two were hardcoded (0.05 / 1.0) with the comment "for
+    // partial_invisibility" -- the invisibility warp uses the same water normal
+    // field. At 0.05 the waves crawl: one full cycle of the normal texture takes
+    // minutes, so the stylized water's caustics would not shimmer at all. Now
+    // exposed, at RTGL's own default speed and a tighter tile scale. They still
+    // also drive the partial-invisibility warp, which is only cosmetic there.
+    RT_CVAR( rt_water_wavespeed,        1.f,    "water wave scroll speed (also the partial-invisibility warp). "
+                                                "0.05 was the old hardcoded value — effectively static." )
+    RT_CVAR( rt_water_areascale,        0.35f,  "world area one tile of the water normal texture covers. Larger "
+                                                "= broader, slower swells; smaller = tighter ripples." )
 
     // Doom64-RT stylized water.
     //
@@ -945,6 +955,14 @@ namespace cvar
                                                 "light. 0 = fully lighting-dependent." )
     RT_CVAR( rt_water_veinref,          0.03f,  "stylized water: luminance of the flat's brightest texel, used "
                                                 "to normalize the vein mask. Lower = wider, brighter veins." )
+    // NOT archived: a diagnostic left at 1 in the ini would paint every water
+    // surface magenta on every later launch, and this project has lost time to
+    // exactly that class of stuck cvar.
+    RT_CVAR_NOARCH( rt_water_debug,     false,  "diagnostic: paint water surfaces MAGENTA where the stylized "
+                                                "branch runs, GREEN where RTGL flagged the surface as water but "
+                                                "the stylized gate rejected it. No colour at all means the "
+                                                "primitive never got RG_MESH_PRIMITIVE_WATER — i.e. the JSON "
+                                                "meta never reached it (run tools/set_water_meta.py --apply)." )
 
     RT_CVAR( rt_bloom,                  true,   "enable bloom" )
     RT_CVAR( rt_bloom_scale,            1.f,    "multiplier for a calculated bloom" )
@@ -8026,13 +8044,13 @@ void RTFrameBuffer::RT_DrawFrame()
         .typeOfMediaAroundCamera = RG_MEDIA_TYPE_VACUUM,
         .indexOfRefractionGlass  = cvar::rt_refr_glass,
         .indexOfRefractionWater  = cvar::rt_refr_water,
-        .waterWaveSpeed          = 0.05f,                    // for partial_invisibility
-        .waterWaveNormalStrength = cvar::rt_water_wavestren, // for partial_invisibility
+        .waterWaveSpeed          = cvar::rt_water_wavespeed,
+        .waterWaveNormalStrength = cvar::rt_water_wavestren,
         .waterColor              = { std::clamp( *cvar::rt_water_r / 255.f, 0.f, 1.f ),
                                      std::clamp( *cvar::rt_water_g / 255.f, 0.f, 1.f ),
                                      std::clamp( *cvar::rt_water_b / 255.f, 0.f, 1.f ) },
         .waterWaveTextureDerivativesMultiplier = 1.0f,
-        .waterTextureAreaScale                 = 1.0f,
+        .waterTextureAreaScale                 = cvar::rt_water_areascale,
         .portalNormalTwirl                     = false,
         // Doom64-RT stylized water — see rt_water_style.
         .stylizedWaterStrength  = cvar::rt_water_style ? 1.0f : 0.0f,
@@ -8044,6 +8062,7 @@ void RTFrameBuffer::RT_DrawFrame()
         .stylizedWaterTint      = { std::clamp( *cvar::rt_water_tint_r / 255.f, 0.f, 1.f ),
                                     std::clamp( *cvar::rt_water_tint_g / 255.f, 0.f, 1.f ),
                                     std::clamp( *cvar::rt_water_tint_b / 255.f, 0.f, 1.f ) },
+        .stylizedWaterDebug     = cvar::rt_water_debug ? 1.0f : 0.0f,
     };
 
     auto sky_params = RgDrawFrameSkyParams{
