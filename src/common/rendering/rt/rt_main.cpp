@@ -667,6 +667,9 @@ namespace cvar
                                                 "This is the one-time calibration: with rt_sun_b and the painted "
                                                 "azimuth agreeing, dial this until the disc sits where the shafts "
                                                 "come from, then keep the number." )
+    RT_CVAR( rt_moon_presets,           true,   "apply the per-map moon aim table (RT_MOON_PRESETS) at level load. "
+                                                "Off = every map uses the launcher's rt_sun_a/b, which is what you "
+                                                "want while hunting a bearing for a map that has no entry yet." )
 
     RT_CVAR( rt_reflrefr_depth,         8,      "max depth of reflect/refract") 
     RT_CVAR( rt_refr_glass,             1.52f,  "glass index of refraction") 
@@ -3113,10 +3116,54 @@ private:
             }
         }
 
+        // Doom64-RT: tag the water flats engine-side rather than through the JSON
+        // meta. RTGL only runs its water path on primitives carrying
+        // RG_MESH_PRIMITIVE_WATER, and the JSON route (isWater in
+        // rt/data/textures.json) proved impossible to verify from here: RTGL's
+        // own messages are gated behind BOTH -rtdebug and its private
+        // g_printSeverity, so a meta that silently failed to apply looks exactly
+        // like a meta that applied and did nothing.
+        //
+        // Tagging here is also more durable. rt/data/textures.json lives under
+        // build/ (gitignored) and is rewritten wholesale by the PBR tooling, so
+        // the tag had to be re-applied by hand after every regen. A texture-name
+        // match in the engine is under launcher control like rt_faux_lamps and
+        // rt_solo_lamps already are, and survives everything.
+        auto l_waterflag = [ & ]() -> RgMeshPrimitiveFlags {
+            if( !cvar::rt_water_style || isUI || !texname )
+            {
+                return RgMeshPrimitiveFlags( 0 );
+            }
+            // Full match, never a prefix: D64W1_01 and D64W2_01 differ in one
+            // character, and D64WATR1/2 are the source patches they composite.
+            static const char* const kWaterTex[] = {
+                "D64W2_01", "D64W1_01", "D64WATR1", "D64WATR2",
+            };
+            for( const char* w : kWaterTex )
+            {
+                if( strcmp( texname, w ) == 0 )
+                {
+                    // One line per distinct water texture per session. Printf is
+                    // gzdoom's own, so it is NOT subject to RTGL's message gates
+                    // -- this is the confirmation the JSON route could never give.
+                    static std::unordered_set< std::string > s_seen;
+                    if( s_seen.insert( texname ).second )
+                    {
+                        Printf( "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER "
+                                "(rt_water_style %d)\n",
+                                texname,
+                                int( cvar::rt_water_style ) );
+                    }
+                    return RG_MESH_PRIMITIVE_WATER;
+                }
+            }
+            return RgMeshPrimitiveFlags( 0 );
+        };
+
         auto prim = RgMeshPrimitiveInfo{
             .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
             .pNext = isUI ? &ui : nullptr,
-            .flags = makePrimFlags( isUI ) | RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
+            .flags = makePrimFlags( isUI ) | l_waterflag() | RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
                      ( rtstate.is< RtPrim::ExportInvertNormals >()
                            ? RG_MESH_PRIMITIVE_EXPORT_INVERT_NORMALS
                            : 0 ),
@@ -5020,8 +5067,94 @@ static void RT_DrawTitle();
 static void RT_ClearTitles();
 static void RT_InjectTitleIntoDoomMap( const char* mapname );
 
+// Per-map moon aim.
+//
+// One moon, many maps, and each map's windows face wherever its author pointed
+// them -- so a single global bearing lights one level well and rakes across the
+// next one at a useless angle. This is that table.
+//
+// It is engine-side and not in the sky pk3 because ZScript cannot set these
+// cvars: _CVar.SetFloat throws "Attempt to change CVAR outside of menu code" for
+// anything without CVAR_MOD, and every RT_CVAR is CVAR_GLOBALCONFIG|CVAR_ARCHIVE.
+//
+// intensity < 0 means "leave the launcher's value alone" -- most entries only
+// want to turn the moon, not rebalance the level's brightness.
+//
+// To add one: play the map, aim it with `moon <az> [alt]`, then type `moon` and
+// paste the row it prints. Maps with no entry fall back to the launcher's
+// rt_sun_a/b, captured on the first level load (see g_moon_base_* below) so that
+// a preset on one map cannot leak into the next.
+namespace
+{
+struct MoonPreset
+{
+    const char* map;
+    float       azimuth;
+    float       altitude;
+    float       intensity; // < 0: keep whatever the launcher pinned
+    const char* note;
+};
+
+constexpr MoonPreset RT_MOON_PRESETS[] = {
+    { "map13", 90.f, 25.f, -1.f,
+      "Due north. Settled in play. The painted shafts this replaced implied two "
+      "different suns -- the west hall's fans want light travelling +x, the north "
+      "colonnade's want -y -- and 135 was the geometric compromise between them. "
+      "90 reads better than the compromise did: it rakes hard through the north "
+      "colonnade and still catches the west windows obliquely." },
+};
+
+// The launcher's aim, captured once before any preset overwrites it, so a map
+// with no entry gets the global default back instead of inheriting whatever the
+// last map with an entry set. Without this the table would be sticky in one
+// direction and the fallback would silently become "the last preset visited".
+bool  g_moon_base_set = false;
+float g_moon_base_a   = 0.f;
+float g_moon_base_b   = 0.f;
+float g_moon_base_i   = 0.f;
+
+const MoonPreset* RT_FindMoonPreset( const char* mapname )
+{
+    if( !mapname || mapname[ 0 ] == '\0' )
+    {
+        return nullptr;
+    }
+    for( const auto& p : RT_MOON_PRESETS )
+    {
+        if( stricmp( mapname, p.map ) == 0 )
+        {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+void RT_ApplyMoonPreset( const char* mapname )
+{
+    if( !g_moon_base_set )
+    {
+        g_moon_base_set = true;
+        g_moon_base_a   = float{ cvar::rt_sun_a };
+        g_moon_base_b   = float{ cvar::rt_sun_b };
+        g_moon_base_i   = float{ cvar::rt_sun_intensity };
+    }
+
+    if( !bool{ cvar::rt_moon_presets } )
+    {
+        return;
+    }
+
+    const MoonPreset* p = RT_FindMoonPreset( mapname );
+
+    cvar::rt_sun_a         = p ? p->altitude : g_moon_base_a;
+    cvar::rt_sun_b         = p ? p->azimuth : g_moon_base_b;
+    cvar::rt_sun_intensity = ( p && p->intensity >= 0.f ) ? p->intensity : g_moon_base_i;
+}
+} // namespace
+
 void RT_OnLevelLoad( const char* mapname )
 {
+    RT_ApplyMoonPreset( mapname );
     g_resetposteffects = true;
     g_resetfluid       = true;
     g_rt_lightcut      = true; // DLSS-RR: new scene, flush temporal history unconditionally
@@ -5178,6 +5311,21 @@ namespace classic_toggle
         if( argv.argc() < 2 )
         {
             report();
+
+            // The authoring loop: aim it here, then paste this row into
+            // RT_MOON_PRESETS. Printing the row rather than writing a file keeps
+            // the table a reviewable constant instead of runtime state nobody
+            // can grep for.
+            const char* mn = RT_GetMapName();
+            if( mn && mn[ 0 ] )
+            {
+                const MoonPreset* have = RT_FindMoonPreset( mn );
+                Printf( "  %s currently has %s. Row for RT_MOON_PRESETS:\n",
+                        mn, have ? "a preset" : "NO preset (using the launcher aim)" );
+                Printf( "    { \"%s\", %.0ff, %.0ff, -1.f, \"...\" },\n",
+                        mn, float{ cvar::rt_sun_b }, float{ cvar::rt_sun_a } );
+            }
+
             Printf( "  usage: moon <azimuth 0..360> [altitude -90..90] [intensity]\n"
                     "         moon flip     - disc moves the wrong way? reverse it\n"
                     "         moon nudge <deg> - shift the disc alone, to calibrate\n" );
