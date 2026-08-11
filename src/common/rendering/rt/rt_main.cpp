@@ -543,10 +543,15 @@ namespace cvar
                                                 "on a grid. Without this the lava lights nothing at all: the "
                                                 "lightIntensity in textures.json only ever worked for sprites, so a lava "
                                                 "room renders as a black box with a glowing net on the floor." )
-    RT_CVAR( rt_lava_light_intensity,   0.9f,   "intensity of ONE grid light, before the spacing correction. The "
+    RT_CVAR( rt_lava_light_intensity,   180.f,  "intensity of ONE grid light, before the spacing correction. The "
                                                 "correction keeps total output constant when rt_lava_light_spacing "
                                                 "changes, so this is the knob for how bright the lava room is and "
-                                                "spacing is the knob for how even it looks." )
+                                                "spacing is the knob for how even it looks. HUNDREDS, not units: "
+                                                "RgLightSphericalEXT.intensity is luminous flux in lumen and the rest "
+                                                "of this file works in the same scale (flames 900, wall strip segment "
+                                                "180, faux panel 500). The first version of this shipped at 0.9 and "
+                                                "was reported as the lava casting no light at all -- which it was, "
+                                                "200x under everything else in the map." )
     RT_CVAR( rt_lava_light_spacing,     96.f,   "grid spacing in MAP UNITS. Smaller is smoother and more expensive; the "
                                                 "per-light intensity is scaled by (spacing/96)^2 so changing this does "
                                                 "not change the room's brightness, only the evenness of it." )
