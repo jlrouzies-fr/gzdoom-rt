@@ -539,6 +539,36 @@ namespace cvar
     // ids. The difference is that a flame is a point and a lava lake is an AREA, so
     // these are scattered on a grid over the sector's own subsectors rather than
     // placed one per actor.
+    // The lava SURFACE, as opposed to the lights it casts. Both halves exist
+    // because neither can do the other's job: the lights cannot make the lava
+    // itself look hot, and the emissive cannot light the room.
+    //
+    // rt_lava_emis is the answer to "why can the lava not bloom". Primary
+    // emission is the raw _e sample, _e is 8-bit so it caps at 1.0, screen
+    // emission is that times rt_emis_maxscrcolor (pinned at 3), and
+    // rt_bloom_threshold is 16 -- so a lava flat tops out at a fifth of the
+    // threshold and no painting can fix it. This multiplies lava surfaces ONLY,
+    // which is why the geometry has to carry a LAVA flag: raising
+    // rt_emis_maxscrcolor instead would rebalance every emissive in the game.
+    RT_CVAR( rt_lava_emis,              6.0f,   "screen-emission multiplier for lava surfaces, on top of "
+                                                "rt_emis_maxscrcolor. This is what lets the cracks cross "
+                                                "rt_bloom_threshold; below about 6 they cannot bloom at all. 1 = "
+                                                "the old, un-boostable behaviour." )
+    RT_CVAR( rt_lava_flow,              0.45f,  "how far the drifting heat field swings the emission, 0..1. 0 = a "
+                                                "still surface. The flat itself cannot supply this: its 5-frame "
+                                                "animation had to be averaged away because the frames light "
+                                                "different cracks, which read as blinking rather than flowing." )
+    RT_CVAR( rt_lava_flow_speed,        0.03f,  "drift speed of the heat field. Slow on purpose -- this is molten "
+                                                "rock crusting over, not a texture scroll." )
+    RT_CVAR( rt_lava_flow_scale,        0.12f,  "heat field frequency, UV per METRE. Lower = larger hot and cold "
+                                                "regions; around 0.12 a patch is roughly the size of a few crust "
+                                                "plates." )
+    RT_CVAR( rt_lava_flow_pixel,        0.25f,  "world size in METRES of one cell the field is QUANTIZED to before "
+                                                "sampling. 0.25 m is about the flat's own texel; a smooth gradient "
+                                                "sliding over 64x64 pixel art reads as a modern shader bolted onto "
+                                                "the wrong texture. 0 = smooth." )
+    RT_CVAR( rt_lava_pulse,             0.10f,  "depth of a slow whole-surface breath under the drift, 0..1" )
+    RT_CVAR( rt_lava_pulse_speed,       0.35f,  "rate of that breath, radians per second" )
     RT_CVAR( rt_lava_light_on,          true,   "upload analytic lights over the lava flats (HLAVA*, D64LAVA*), scattered "
                                                 "on a grid. Without this the lava lights nothing at all: the "
                                                 "lightIntensity in textures.json only ever worked for sprites, so a lava "
@@ -1387,6 +1417,17 @@ namespace cvar
                                                 "it at all. Keep it LOW -- this is the term that makes fog look painted "
                                                 "on rather than lit, and 0 is a legitimate setting now that the fog has "
                                                 "real lights in it." )
+    RT_CVAR( rt_fog_light_near,         2.f,    "fog only: fade in-scattering out within this many METRES OF A LIGHT. A "
+                                                "light standing in the medium lights the froxels around it by inverse "
+                                                "square, so a light at ~0 m -- the FLASHLIGHT, a muzzle flash, anything "
+                                                "carried -- floods the cells directly in front of the camera and the "
+                                                "screen whites out. That is exactly what a headlight in fog does, and it "
+                                                "is unplayable: the flashlight becomes a switch that blinds you. Keyed "
+                                                "off the LIGHT's distance rather than the camera's on purpose, so what "
+                                                "is removed is glare from a light you are HOLDING, while the beam's "
+                                                "shaft further down the corridor -- the whole point of lit fog -- "
+                                                "survives. Directional lights (moon, lightning) are unaffected: their "
+                                                "sampled position is far away. 0 = physical, and blinding." )
     RT_CVAR( rt_fog_lightmult,          1.f,    "multiplier on light scattered by the fog (rt_volume_lintensity while a "
                                                 "fog map is loaded)." )
     RT_CVAR( rt_fog_illum,              true,   "light the fog from ALL lights, not just one. The stock froxel pass "
@@ -1658,6 +1699,18 @@ void RG_CHECK( RgResult r )
     }
 
 constexpr auto ORIGINAL_DOOM_RESOLUTION_HEIGHT = 200;
+// Is this flat one of the lava textures? PREFIX match, and for the usual reason:
+// HLAVA1 is frame 1 of a 5-frame ANIMDEFS ping-pong, so the name on the sector is
+// almost never the name the renderer is holding. D64LAVA1/2 are the warp2 patches.
+static bool RT_IsLavaFlat( const char* nm )
+{
+    if( !nm || !*nm )
+    {
+        return false;
+    }
+    return strncmp( nm, "HLAVA", 5 ) == 0 || strncmp( nm, "D64LAVA", 7 ) == 0;
+}
+
 constexpr auto ONEGAMEUNIT_IN_METERS           = 1.0f / 32.0f; // https://doomwiki.org/wiki/Map_unit
 
 constexpr auto RG_PACKED_COLOR_WHITE = RgColor4DPacked32{ 0xFFFFFFFF };
@@ -4049,10 +4102,30 @@ private:
             return RgMeshPrimitiveFlags( 0 );
         };
 
+        // Doom64-RT: mark lava so the shader can boost and animate its emission.
+        // Same prefix match as the lights, for the same reason -- HLAVA1 is one
+        // frame of a 5-frame ping-pong and the name reaching RTGL is rarely the
+        // one on the sector.
+        auto l_lavaflag = [ & ]() -> RgMeshPrimitiveFlags {
+            if( isUI || !texname || !RT_IsLavaFlat( texname ) )
+            {
+                return RgMeshPrimitiveFlags( 0 );
+            }
+            static std::unordered_set< std::string > s_seenLava;
+            if( s_seenLava.insert( texname ).second )
+            {
+                Printf( "RT lava: tagging \"%s\" as RG_MESH_PRIMITIVE_LAVA "
+                        "(rt_lava_emis %.1f)\n",
+                        texname,
+                        float{ cvar::rt_lava_emis } );
+            }
+            return RG_MESH_PRIMITIVE_LAVA;
+        };
+
         auto prim = RgMeshPrimitiveInfo{
             .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
             .pNext = isUI ? &ui : nullptr,
-            .flags = makePrimFlags( isUI ) | l_waterflag() | l_nocausticsflag() |
+            .flags = makePrimFlags( isUI ) | l_waterflag() | l_nocausticsflag() | l_lavaflag() |
                      RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
                      ( rtstate.is< RtPrim::ExportInvertNormals >()
                            ? RG_MESH_PRIMITIVE_EXPORT_INVERT_NORMALS
@@ -5979,17 +6052,6 @@ static void RT_DrawTitle();
 static void RT_ClearTitles();
 static void RT_InjectTitleIntoDoomMap( const char* mapname );
 
-// Is this flat one of the lava textures? PREFIX match, and for the usual reason:
-// HLAVA1 is frame 1 of a 5-frame ANIMDEFS ping-pong, so the name on the sector is
-// almost never the name the renderer is holding. D64LAVA1/2 are the warp2 patches.
-static bool RT_IsLavaFlat( const char* nm )
-{
-    if( !nm || !*nm )
-    {
-        return false;
-    }
-    return strncmp( nm, "HLAVA", 5 ) == 0 || strncmp( nm, "D64LAVA", 7 ) == 0;
-}
 
 // Walk to the lava, without walking to the lava.
 //
@@ -7399,9 +7461,14 @@ namespace classic_toggle
                     Printf( "  RAMP: none -- uniform medium. `fog far <density>` thickens "
                             "the distance without touching the air around you.\n" );
                 }
-                Printf( "  ambient %.3f, lightmult %.2f, lit by %s\n",
+                Printf( "  ambient %.3f, lightmult %.2f, light near-fade %.1fm%s\n",
                         f.ambient,
                         float{ cvar::rt_fog_lightmult },
+                        float{ cvar::rt_fog_light_near },
+                        float{ cvar::rt_fog_light_near } > 0.01f
+                            ? ""
+                            : " (OFF -- a lit flashlight will white out the screen)" );
+                Printf( "  lit by %s\n",
                         f.illum ? "ALL LIGHTS (per-froxel direct estimate)"
                                 : "ONE light -- whatever TryGetVolumetricLight picked, "
                                   "i.e. the sun, i.e. nothing if the moon is off" );
@@ -11736,6 +11803,13 @@ void RTFrameBuffer::RT_DrawFrame()
                                     l_col255( cvar::rt_blood_crest_r,
                                               cvar::rt_blood_crest_g,
                                               cvar::rt_blood_crest_b ) },
+        .lavaEmisBoost          = std::max( 0.f, float{ cvar::rt_lava_emis } ),
+        .lavaFlowStrength       = std::clamp( float{ cvar::rt_lava_flow }, 0.f, 1.f ),
+        .lavaFlowSpeed          = cvar::rt_lava_flow_speed,
+        .lavaFlowScale          = cvar::rt_lava_flow_scale,
+        .lavaFlowPixel          = cvar::rt_lava_flow_pixel,
+        .lavaPulse              = std::clamp( float{ cvar::rt_lava_pulse }, 0.f, 1.f ),
+        .lavaPulseSpeed         = cvar::rt_lava_pulse_speed,
         .stylizedWaterDebug     = float( *cvar::rt_water_debug ),
         .stylizedWaterReflMin   = cvar::rt_water_reflmin,
         .waterCausticGain       = cvar::rt_water_caustics,
@@ -11814,6 +11888,7 @@ void RTFrameBuffer::RT_DrawFrame()
                                           : RgFloat3D{ 1.f, 1.f, 1.f },
         .farScattering           = fog.on ? fog.density_far : float{ cvar::rt_volume_scatter },
         .densityCurve            = fog.on ? fog.curve : 1.f,
+        .lightNearFade = fog.on ? std::max( 0.f, float{ cvar::rt_fog_light_near } ) : 0.f,
     };
 
     auto texture_params = RgDrawFrameTexturesParams{
@@ -13261,7 +13336,38 @@ static void RT_InjectTitleIntoDoomMap( const char* mapname )
         return;
     }
 
+    // rt_isdoom2 only says "the IWAD is doom2.wad", and Doom 64: Retribution
+    // *requires* doom2.wad -- so without a second test the DOOM II RT chapter
+    // cards fire on Doom 64's maps, at Doom II's act boundaries. That is exactly
+    // what used to happen: "EPISODE III / HELL" landed on MAP21 "Pitfalls",
+    // which is 94% stone and one of the least hellish maps in the back half.
+    //
+    // DBIGFONT is Retribution's own FON2 lump (it overrides BIGFONT); stock
+    // Doom II has no such lump, so this cleanly separates the two games.
+    const bool isdoom64tc = fileSystem.CheckNumForName( "DBIGFONT" ) >= 0;
+
     const char* titlename = nullptr;
+    if( isdoom64tc )
+    {
+        // Doom 64's own act boundaries. Deduced from texture families across the
+        // 25 campaign maps: MAP01-08 are 99-100% SPACE/SFLAT tech with zero
+        // stone and zero hell; MAP09-19 are stone-dominant; hell takes over at
+        // MAP20 and stays. MAP08 -> INTER03 is also the campaign's only authored
+        // story intermission, which corroborates the first seam independently.
+        if( stricmp( mapname, "map01" ) == 0 )
+        {
+            titlename = "title/act1"; // INCURSION
+        }
+        else if( stricmp( mapname, "map09" ) == 0 )
+        {
+            titlename = "title/act2"; // CITADEL
+        }
+        else if( stricmp( mapname, "map20" ) == 0 )
+        {
+            titlename = "title/act3"; // HELL
+        }
+    }
+    else
     {
         if( stricmp( mapname, "map12" ) == 0 )
         {
