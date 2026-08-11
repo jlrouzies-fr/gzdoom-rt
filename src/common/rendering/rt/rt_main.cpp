@@ -1327,18 +1327,13 @@ namespace cvar
     RT_CVAR( rt_water_liquids,          true,   "apply the stylized water surface to nukage / sludge / blood as "
                                                 "well as water (D64N*, D64S*, D64B*). 0 = water only, the other "
                                                 "three go back to being flat near-black floors." )
-    RT_CVAR( rt_water_falls,            true,   "apply it to the WFALL/SFALL/BFALL wall sheets too. Tagging a "
-                                                "WALL as water hands it to RTGL's refract path, which strips "
-                                                "every INSTANCE_MASK_WORLD_* bit from its TLAS instance — the "
-                                                "surface stops blocking shadow rays, so a fall drawn across a "
-                                                "solid line can leak light. 0 = pools only." )
     RT_CVAR( rt_water_tint_r,           1,      "stylized water: body colour Red [0,255]" )
     RT_CVAR( rt_water_tint_g,           1,      "stylized water: body colour Green [0,255]" )
     RT_CVAR( rt_water_tint_b,          15,      "stylized water: body colour Blue [0,255]" )
     RT_CVAR( rt_water_crest_r,        140,      "stylized water: caustic vein colour Red [0,255]" )
     RT_CVAR( rt_water_crest_g,        204,      "stylized water: caustic vein colour Green [0,255]" )
     RT_CVAR( rt_water_crest_b,        255,      "stylized water: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_nukage_tint_r,          2,      "stylized nukage (D64N*, SFALL): body colour Red [0,255]" )
+    RT_CVAR( rt_nukage_tint_r,          2,      "stylized nukage (D64N*): body colour Red [0,255]" )
     RT_CVAR( rt_nukage_tint_g,         15,      "stylized nukage: body colour Green [0,255]" )
     RT_CVAR( rt_nukage_tint_b,          4,      "stylized nukage: body colour Blue [0,255]" )
     RT_CVAR( rt_nukage_crest_r,       153,      "stylized nukage: caustic vein colour Red [0,255]" )
@@ -1350,7 +1345,7 @@ namespace cvar
     RT_CVAR( rt_sludge_crest_r,       255,      "stylized sludge: caustic vein colour Red [0,255]" )
     RT_CVAR( rt_sludge_crest_g,       204,      "stylized sludge: caustic vein colour Green [0,255]" )
     RT_CVAR( rt_sludge_crest_b,       115,      "stylized sludge: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_blood_tint_r,          15,      "stylized blood (D64B*, BFALL): body colour Red [0,255]" )
+    RT_CVAR( rt_blood_tint_r,          15,      "stylized blood (D64B*): body colour Red [0,255]" )
     RT_CVAR( rt_blood_tint_g,           2,      "stylized blood: body colour Green [0,255]" )
     RT_CVAR( rt_blood_tint_b,           2,      "stylized blood: body colour Blue [0,255]" )
     RT_CVAR( rt_blood_crest_r,        255,      "stylized blood: caustic vein colour Red [0,255]" )
@@ -3807,36 +3802,46 @@ private:
             // path tracer, opaque floor flat with nothing to refract into. The
             // liquid id (2 bits) picks the body/crest colour in the shader:
             //
-            //   0 water   D64W1_/D64W2_, D64WATR1/2, WFALL   dark blue
-            //   1 nukage  D64N1_/D64N2_, D64NUKG1/2, SFALL   green
-            //   2 sludge  D64S1_/D64S2_, D64SLDG1/2          brown / dark yellow
-            //   3 blood   D64B1_/D64B2_, D64BLOD1/2, BFALL   dark red
+            //   0 water   D64W1_/D64W2_, D64WATR1/2   dark blue
+            //   1 nukage  D64N1_/D64N2_, D64NUKG1/2   green
+            //   2 sludge  D64S1_/D64S2_, D64SLDG1/2   brown / dark yellow
+            //   3 blood   D64B1_/D64B2_, D64BLOD1/2   dark red
             //
-            // WFALL/SFALL/BFALL are the WALL sheets (64-frame sequences too, per
-            // ANIMDEFS: "WATER FALL" / "SLIME FALL" / "BLOOD FALL"). They are
-            // separate because tagging a wall as water hands it to RTGL's
-            // refract path, which rewrites its TLAS instance mask to
-            // INSTANCE_MASK_REFRACT only — it stops blocking shadow rays, so a
-            // fall drawn across a solid line can leak light. rt_water_falls 0
-            // backs just that out without losing the pools.
+            // FLOOR FLATS ONLY. WFALL/SFALL/BFALL — the WALL sheets, and 64-frame
+            // sequences just like the rest ("WATER FALL" / "SLIME FALL" /
+            // "BLOOD FALL" in ANIMDEFS) — were tagged too for one revision and
+            // are deliberately not any more.
+            //
+            // The reason is structural, not a tuning failure. RG_MESH_PRIMITIVE_WATER
+            // makes the primitive refractive, and ASManager rewrites a refractive
+            // instance's TLAS mask to INSTANCE_MASK_REFRACT *only*, dropping every
+            // INSTANCE_MASK_WORLD_* bit. On a floor that is survivable: a pool does
+            // not shadow much. On a wall it is not — the fall stops blocking shadow
+            // rays, so light pours through the solid line it is painted on, and the
+            // stylized surface reflects it back. Reported from MAP10 as the falls
+            // leaking light and reflections, which is exactly what the mask says
+            // should happen.
+            //
+            // Fixing it properly means keeping the world bits on a refractive
+            // instance, i.e. an ASManager change with consequences for glass and
+            // stock water. Not worth it for 45 placements across three maps.
+            // Their frame-01-only material overlays stay quarantined either way —
+            // that is a separate defect (see tools/set_water_meta.py).
             struct LiquidMatch
             {
-                const char* name;   // prefix, or full name when exact
+                const char* name;  // prefix, or full name when exact
                 bool        exact;
-                int         id;     // 0 water, 1 nukage, 2 sludge, 3 blood
-                bool        isFall; // gated by rt_water_falls
+                int         id;    // 0 water, 1 nukage, 2 sludge, 3 blood
             };
             static const LiquidMatch kLiquids[] = {
-                { "D64W1_", false, 0, false },   { "D64W2_", false, 0, false },
-                { "D64WATR1", true, 0, false },  { "D64WATR2", true, 0, false },
-                { "D64N1_", false, 1, false },   { "D64N2_", false, 1, false },
-                { "D64NUKG1", true, 1, false },  { "D64NUKG2", true, 1, false },
-                { "D64S1_", false, 2, false },   { "D64S2_", false, 2, false },
-                { "D64SLDG1", true, 2, false },  { "D64SLDG2", true, 2, false },
-                { "D64B1_", false, 3, false },   { "D64B2_", false, 3, false },
-                { "D64BLOD1", true, 3, false },  { "D64BLOD2", true, 3, false },
-                { "WFALL", false, 0, true },     { "SFALL", false, 1, true },
-                { "BFALL", false, 3, true },
+                { "D64W1_", false, 0 },   { "D64W2_", false, 0 },
+                { "D64WATR1", true, 0 },  { "D64WATR2", true, 0 },
+                { "D64N1_", false, 1 },   { "D64N2_", false, 1 },
+                { "D64NUKG1", true, 1 },  { "D64NUKG2", true, 1 },
+                { "D64S1_", false, 2 },   { "D64S2_", false, 2 },
+                { "D64SLDG1", true, 2 },  { "D64SLDG2", true, 2 },
+                { "D64B1_", false, 3 },   { "D64B2_", false, 3 },
+                { "D64BLOD1", true, 3 },  { "D64BLOD2", true, 3 },
             };
             static const char* const kLiquidName[] = { "water", "nukage", "sludge", "blood" };
 
@@ -3849,10 +3854,6 @@ private:
                     continue;
                 }
                 if( m.id != 0 && !cvar::rt_water_liquids )
-                {
-                    return RgMeshPrimitiveFlags( 0 );
-                }
-                if( m.isFall && !cvar::rt_water_falls )
                 {
                     return RgMeshPrimitiveFlags( 0 );
                 }
