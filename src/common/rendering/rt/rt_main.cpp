@@ -526,6 +526,45 @@ namespace cvar
     // That is the "A/B cvars must not persist" failure this project has already paid for.
     RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at Baron-family fist lights" )
 
+    // Lava is a LIGHT, and it has to be an analytic one.
+    //
+    // textures.json has carried lightIntensity 140 + lightColor on all seven lava
+    // entries for as long as the lava has existed, and it has never lit anything:
+    // that meta only produces a light for SPRITES. A flat's emissive shades the
+    // flat and nothing else, so a lava room path-traces as a black box with a
+    // glowing net painted on the floor (screen/lavanoemit_needshader.png).
+    //
+    // Same conclusion as the flames, for the same reason, so the same shape of fix:
+    // one analytic light per patch of surface, uploaded per frame, keyed on stable
+    // ids. The difference is that a flame is a point and a lava lake is an AREA, so
+    // these are scattered on a grid over the sector's own subsectors rather than
+    // placed one per actor.
+    RT_CVAR( rt_lava_light_on,          true,   "upload analytic lights over the lava flats (HLAVA*, D64LAVA*), scattered "
+                                                "on a grid. Without this the lava lights nothing at all: the "
+                                                "lightIntensity in textures.json only ever worked for sprites, so a lava "
+                                                "room renders as a black box with a glowing net on the floor." )
+    RT_CVAR( rt_lava_light_intensity,   0.9f,   "intensity of ONE grid light, before the spacing correction. The "
+                                                "correction keeps total output constant when rt_lava_light_spacing "
+                                                "changes, so this is the knob for how bright the lava room is and "
+                                                "spacing is the knob for how even it looks." )
+    RT_CVAR( rt_lava_light_spacing,     96.f,   "grid spacing in MAP UNITS. Smaller is smoother and more expensive; the "
+                                                "per-light intensity is scaled by (spacing/96)^2 so changing this does "
+                                                "not change the room's brightness, only the evenness of it." )
+    RT_CVAR( rt_lava_light_radius,      0.6f,   "RT source radius in METRES. Wide on purpose — a lava lake is an area "
+                                                "source, and a small radius gives every grid point its own hard little "
+                                                "shadow, which reads as a row of lamps under the floor." )
+    RT_CVAR( rt_lava_light_z,           12.f,   "how far ABOVE the floor plane each light sits, map units. Lights placed "
+                                                "exactly on the plane self-shadow against it and half the output is "
+                                                "lost into the floor." )
+    RT_CVAR( rt_lava_light_max,         256,    "cap on lava lights per frame, nearest to the camera first. A big lake "
+                                                "at 96-unit spacing is hundreds of grid points and they are all equally "
+                                                "worthless once they are a room away." )
+    RT_CVAR( rt_lava_light_dist,        2048.f, "cull radius from the camera, map units" )
+    RT_CVAR( rt_lava_light_r,         255,      "lava light colour Red [0,255]" )
+    RT_CVAR( rt_lava_light_g,          90,      "lava light colour Green [0,255]" )
+    RT_CVAR( rt_lava_light_b,          20,      "lava light colour Blue [0,255]" )
+    RT_CVAR( rt_lava_light_debug,       false,  "print how many lava subsectors matched, how many grid points they "
+                                                "produced and how many survived the cap" )
     RT_CVAR( rt_flame_light_on,         true,   "upload one analytic, FLICKERING light per open flame — the standing torches "
                                                 "(TL*/TS*), the wall torches (A030/A031/A032/GTCH), the loose fires "
                                                 "(BFLM/GFLM/RFLM/YFLM), the bonfire (FIRE) and the candle (CAND) — "
@@ -1605,6 +1644,12 @@ constexpr uint64_t SpinPanelId_Base      = 1ull << 45;
 // die and respawn every frame and throws away its temporal reservoirs. Room for
 // sidedefIndex * 4 + part, which at Retribution's map sizes is far inside the next bit.
 constexpr uint64_t SwitchLightId_Base    = 1ull << 46;
+// Lava. Bit 47, keyed on the SECTOR index times the grid slot within it, so a lake's
+// lights keep the same id every frame -- an id that moves makes RTGL1 see the whole
+// set die and respawn, and it throws away its temporal reservoirs, which on lights
+// this large reads as the entire room boiling.
+constexpr uint64_t LavaLightId_Base      = 1ull << 47;
+constexpr uint64_t LavaSlotsPerSector    = 256;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -10090,6 +10135,213 @@ void RT_UploadSwitchLights()
     }
 }
 
+// Is this flat one of the lava textures? PREFIX match, and for the usual reason:
+// HLAVA1 is frame 1 of a 5-frame ANIMDEFS ping-pong, so the name on the sector is
+// almost never the name the renderer is holding. D64LAVA1/2 are the warp2 patches.
+static bool RT_IsLavaFlat( const char* nm )
+{
+    if( !nm || !*nm )
+    {
+        return false;
+    }
+    return strncmp( nm, "HLAVA", 5 ) == 0 || strncmp( nm, "D64LAVA", 7 ) == 0;
+}
+
+// Lava lights.
+//
+// The lava's own emissive shades the lava and nothing else -- RTGL1 emissive is not
+// a light source -- and the lightIntensity sitting in textures.json only ever
+// produced a light for sprites. So a lava room path-traces as a black box with a
+// glowing net on the floor, which is what screen/lavanoemit_needshader.png is.
+//
+// A lake is an AREA, so one light at the sector's centerspot is wrong twice: a
+// concave lake gets its light outside itself, and a long one gets a single bright
+// spot in the middle with dark ends. These are scattered on a world-space grid and
+// tested against the BSP, which handles both and costs one PointInSubsector per
+// candidate point.
+//
+// Grid points are anchored to WORLD coordinates, not to each subsector's own
+// bounding box. Two neighbouring subsectors of the same lake would otherwise each
+// start their grid at their own corner, and the seam between them would get a
+// double row of lights -- a bright line across the lake exactly where the BSP
+// happened to split it.
+void RT_UploadLavaLights()
+{
+    if( !cvar::rt_lava_light_on || !primaryLevel )
+    {
+        return;
+    }
+
+    const float baseIntensity = std::max( 0.f, float{ cvar::rt_lava_light_intensity } );
+    const int   budget        = std::max( 0, int{ cvar::rt_lava_light_max } );
+    if( baseIntensity <= 0.001f || budget == 0 )
+    {
+        return;
+    }
+
+    const double spacing  = std::max( 16.0, double( float{ cvar::rt_lava_light_spacing } ) );
+    const float  srcRad   = std::max( 0.01f, float{ cvar::rt_lava_light_radius } );
+    const double zOff     = double( float{ cvar::rt_lava_light_z } );
+    const double maxDist  = std::max( 64.0, double( float{ cvar::rt_lava_light_dist } ) );
+    const double maxDist2 = maxDist * maxDist;
+
+    // Constant total output as the grid changes density: one light covers spacing^2
+    // of floor, so its share of the lake scales with the square. Without this,
+    // halving the spacing to smooth the falloff quadruples the room's brightness and
+    // every other value has to be retuned around it.
+    const float intensity = baseIntensity * float( ( spacing * spacing ) / ( 96.0 * 96.0 ) );
+
+    const RgColor4DPacked32 color =
+        rt.rgUtilPackColorByte4D( uint8_t( std::clamp( *cvar::rt_lava_light_r, 0, 255 ) ),
+                                  uint8_t( std::clamp( *cvar::rt_lava_light_g, 0, 255 ) ),
+                                  uint8_t( std::clamp( *cvar::rt_lava_light_b, 0, 255 ) ),
+                                  255 );
+
+    const DVector3 vpos = r_viewpoint.Pos;
+
+    struct LavaCand
+    {
+        double   d2;
+        double   x, y, z;
+        uint64_t id;
+    };
+    std::vector< LavaCand > cand;
+
+    int matchedSecs = 0, gridPoints = 0;
+
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
+    {
+        const sector_t& sec = primaryLevel->sectors[ i ];
+
+        auto* gtex = TexMan.GetGameTexture( sec.GetTexture( sector_t::floor ), true );
+        if( !gtex || !RT_IsLavaFlat( gtex->GetName().GetChars() ) )
+        {
+            continue;
+        }
+        matchedSecs++;
+
+        double minx = 1e30, miny = 1e30, maxx = -1e30, maxy = -1e30;
+        for( unsigned li = 0; li < sec.Lines.Size(); li++ )
+        {
+            const line_t* ln = sec.Lines[ li ];
+            if( !ln || !ln->v1 || !ln->v2 )
+            {
+                continue;
+            }
+            for( const vertex_t* v : { ln->v1, ln->v2 } )
+            {
+                minx = std::min( minx, v->fX() );
+                maxx = std::max( maxx, v->fX() );
+                miny = std::min( miny, v->fY() );
+                maxy = std::max( maxy, v->fY() );
+            }
+        }
+        if( minx > maxx )
+        {
+            continue;
+        }
+
+        // Snap to the world grid, then walk it -- see the note above about seams.
+        const long long gx0 = (long long)std::floor( minx / spacing );
+        const long long gx1 = (long long)std::floor( maxx / spacing );
+        const long long gy0 = (long long)std::floor( miny / spacing );
+        const long long gy1 = (long long)std::floor( maxy / spacing );
+
+        for( long long gy = gy0; gy <= gy1; gy++ )
+        {
+            for( long long gx = gx0; gx <= gx1; gx++ )
+            {
+                const double px = ( double( gx ) + 0.5 ) * spacing;
+                const double py = ( double( gy ) + 0.5 ) * spacing;
+
+                const double dx = px - vpos.X;
+                const double dy = py - vpos.Y;
+                const double d2 = dx * dx + dy * dy;
+                if( d2 > maxDist2 )
+                {
+                    continue;
+                }
+
+                // The BSP decides, not the bounding box. A lava sector is rarely
+                // convex and its box always overlaps the walkway beside it, so a box
+                // test alone hangs lights over dry land. This also deduplicates for
+                // free: a world grid point is inside exactly one sector.
+                if( primaryLevel->PointInSector( px, py ) != &sec )
+                {
+                    continue;
+                }
+                gridPoints++;
+
+                const double pz = sec.floorplane.ZatPoint( DVector2{ px, py } ) + zOff;
+
+                // Stable id: sector index and the grid CELL within it, never the
+                // insertion order. The candidate list is re-sorted by camera distance
+                // every frame, so an order-derived id would rename every light as the
+                // player walks -- and RTGL1 answers a changed id by throwing away that
+                // light's temporal reservoir, which on sources this large boils the
+                // whole room.
+                const uint64_t slot =
+                    uint64_t( ( gy - gy0 ) * ( gx1 - gx0 + 1 ) + ( gx - gx0 ) ) %
+                    LavaSlotsPerSector;
+
+                cand.push_back( { d2,
+                                  px,
+                                  py,
+                                  pz,
+                                  LavaLightId_Base + uint64_t( i ) * LavaSlotsPerSector +
+                                      slot } );
+            }
+        }
+    }
+
+    // Nearest first. A lake three rooms away contributes nothing a player can see and
+    // would otherwise spend the whole budget before the one underfoot is reached.
+    if( int( cand.size() ) > budget )
+    {
+        std::partial_sort( cand.begin(),
+                           cand.begin() + budget,
+                           cand.end(),
+                           []( const LavaCand& a, const LavaCand& b ) { return a.d2 < b.d2; } );
+        cand.resize( budget );
+    }
+
+    for( const LavaCand& c : cand )
+    {
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = color,
+            .intensity = intensity,
+            .position  = { float( c.x ), float( c.y ), float( c.z ) },
+            .radius    = srcRad,
+        };
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = c.id,
+            .isExportable = false,
+        };
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+    }
+
+    if( cvar::rt_lava_light_debug )
+    {
+        static int s_last = -1;
+        if( int( cand.size() ) != s_last )
+        {
+            s_last = int( cand.size() );
+            Printf( "rt_lava_light: %d lava sector(s), %d grid point(s) in range, "
+                    "%d uploaded (spacing %.0f, intensity %.3f each)\n",
+                    matchedSecs,
+                    gridPoints,
+                    int( cand.size() ),
+                    spacing,
+                    intensity );
+        }
+    }
+}
+
 void RT_UploadFlameLights()
 {
     // Fire is the one light source in this game that must not hold still. See the
@@ -10579,6 +10831,7 @@ void RTFrameBuffer::RT_DrawFrame()
     RT_UploadHangingTechLamps();
     RT_UploadHandGlowLights();
     RT_UploadFlameLights();
+    RT_UploadLavaLights();
     RT_UploadSwitchLights();
     RT_UpdateSectorEmisThreshold();
     RT_WatchLightlevels();
