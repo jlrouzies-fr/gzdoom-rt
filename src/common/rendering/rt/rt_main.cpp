@@ -5881,6 +5881,83 @@ static void RT_DrawTitle();
 static void RT_ClearTitles();
 static void RT_InjectTitleIntoDoomMap( const char* mapname );
 
+// Is this flat one of the lava textures? PREFIX match, and for the usual reason:
+// HLAVA1 is frame 1 of a 5-frame ANIMDEFS ping-pong, so the name on the sector is
+// almost never the name the renderer is holding. D64LAVA1/2 are the warp2 patches.
+static bool RT_IsLavaFlat( const char* nm )
+{
+    if( !nm || !*nm )
+    {
+        return false;
+    }
+    return strncmp( nm, "HLAVA", 5 ) == 0 || strncmp( nm, "D64LAVA", 7 ) == 0;
+}
+
+// Walk to the lava, without walking to the lava.
+//
+// Every "the lava lights nothing" report so far was judged from wherever the
+// player happened to be standing, and the debug line eventually showed the
+// camera 1530 map units -- 48 metres -- from the nearest lava light. At that
+// range 60 lumen delivers an irradiance of about 0.03, so "no difference" was
+// the correct observation and said nothing at all about the feature.
+//
+// This puts the player on the lava so the comparison is actually the one being
+// argued about. Prints the sectors it found either way, so "there is no lava
+// here" is distinguishable from "the lava is not lit".
+CCMD( rt_lava_goto )
+{
+    if( !primaryLevel )
+    {
+        Printf( "rt_lava_goto: no level\n" );
+        return;
+    }
+
+    AActor* pmo = players[ consoleplayer ].mo;
+    if( !pmo )
+    {
+        Printf( "rt_lava_goto: no player\n" );
+        return;
+    }
+
+    int found = 0;
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
+    {
+        const sector_t& sec = primaryLevel->sectors[ i ];
+        auto* gtex = TexMan.GetGameTexture( sec.GetTexture( sector_t::floor ), true );
+        if( !gtex || !RT_IsLavaFlat( gtex->GetName().GetChars() ) )
+        {
+            continue;
+        }
+        found++;
+
+        const DVector2 c{ double( sec.centerspot.X ), double( sec.centerspot.Y ) };
+        // centerspot is the bounding-box centre and a concave sector's can lie
+        // outside it, so only move if it really is in this sector.
+        const bool inside = ( primaryLevel->PointInSector( c.X, c.Y ) == &sec );
+        const double z = sec.floorplane.ZatPoint( c );
+
+        Printf( "rt_lava_goto: sector %u floor \"%s\" at (%.0f %.0f %.0f)%s\n",
+                i,
+                gtex->GetName().GetChars(),
+                c.X,
+                c.Y,
+                z,
+                inside ? "" : "  [centre is outside the sector, not moving there]" );
+
+        if( found == 1 && inside )
+        {
+            pmo->SetOrigin( DVector3{ c.X, c.Y, z + 8.0 }, false );
+            Printf( "rt_lava_goto: moved you there. rt_lava_light_debug 1 prints "
+                    "the distance to the nearest lava light.\n" );
+        }
+    }
+
+    if( found == 0 )
+    {
+        Printf( "rt_lava_goto: no lava floor in this map. MAP15/20/21/34 have one.\n" );
+    }
+}
+
 CCMD( rt_sky_here )
 {
     if( !bool{ cvar::rt_sky_log } )
@@ -10147,17 +10224,6 @@ void RT_UploadSwitchLights()
     }
 }
 
-// Is this flat one of the lava textures? PREFIX match, and for the usual reason:
-// HLAVA1 is frame 1 of a 5-frame ANIMDEFS ping-pong, so the name on the sector is
-// almost never the name the renderer is holding. D64LAVA1/2 are the warp2 patches.
-static bool RT_IsLavaFlat( const char* nm )
-{
-    if( !nm || !*nm )
-    {
-        return false;
-    }
-    return strncmp( nm, "HLAVA", 5 ) == 0 || strncmp( nm, "D64LAVA", 7 ) == 0;
-}
 
 // Lava lights.
 //
