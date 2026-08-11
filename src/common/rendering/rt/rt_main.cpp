@@ -28,6 +28,10 @@
 #include "texturemanager.h"
 #include "actor.h"
 #include "d_player.h" // player_t::ReadyWeapon, for RT_AddWeaponGlow
+// whatsthat: name the surface under the crosshair instead of guessing it from a
+// screenshot. P_LineTrace + the hit's texture/sector.
+#include "p_linetracedata.h"
+#include "p_local.h"
 #include "r_state.h"
 
 #include "rt_state.h"
@@ -6781,6 +6785,92 @@ namespace classic_toggle
                     "last until the next level load. Paste the row below to keep them.\n" );
         }
         report();
+    }
+
+    // `whatsthat` -- name the surface under the crosshair.
+    //
+    // Every wrong guess in this work has been the same mistake: identifying a reported
+    // surface from a screenshot by rendering candidate textures and picking the one
+    // that looks right. That got C921 right and C53 wrong, HDOR10 right and C52 wrong,
+    // and each miss cost a round trip. A screenshot does not carry a sector index; the
+    // running game does.
+    //
+    // Point at the thing, type `whatsthat`, and it reports the sector, its lightlevel,
+    // its tag, the texture on the exact surface hit, and whether that sector is above
+    // this map's rt_sector_emis threshold -- i.e. whether it is self-emitting, which is
+    // the whole question.
+    CCMD( whatsthat )
+    {
+        if( !primaryLevel || !players[ consoleplayer ].mo )
+        {
+            Printf( "whatsthat: no level\n" );
+            return;
+        }
+        AActor* pmo = players[ consoleplayer ].mo;
+
+        FLineTraceData d{};
+        const bool hit = P_LineTrace( pmo,
+                                      pmo->Angles.Yaw,
+                                      8192.,
+                                      pmo->Angles.Pitch,
+                                      0,
+                                      pmo->Height * 0.5,
+                                      0.,
+                                      0.,
+                                      &d );
+        if( !hit || !d.HitSector )
+        {
+            Printf( "whatsthat: nothing hit within 8192 units\n" );
+            return;
+        }
+
+        const int   idx  = d.HitSector->Index();
+        const int   ll   = d.HitSector->lightlevel;
+        const char* tex  = "?";
+        if( d.HitTexture.isValid() )
+        {
+            if( auto* gt = TexMan.GetGameTexture( d.HitTexture, true ) )
+            {
+                tex = gt->GetName().GetChars();
+            }
+        }
+        static const char* partname[] = { "top", "middle", "bottom" };
+        const char* what =
+            d.HitType == TRACE_HitFloor    ? "floor"
+            : d.HitType == TRACE_HitCeiling ? "ceiling"
+            : d.HitType == TRACE_HitWall
+                ? ( d.LinePart >= 0 && d.LinePart <= 2 ? partname[ d.LinePart ] : "wall" )
+                : "actor";
+
+        Printf( "whatsthat: sector %d  lightlevel %d  tag %d  %s texture '%s'\n",
+                idx,
+                ll,
+                primaryLevel->GetFirstSectorTag( d.HitSector ),
+                what,
+                tex );
+        Printf( "           threshold %.0f -> %s\n",
+                g_sectorEmisThreshold,
+                float( ll ) > g_sectorEmisThreshold ? "ABOVE: this surface SELF-EMITS"
+                                                    : "below: not self-emitting" );
+        {
+            // The frame test, printed: what does this element sit inside?
+            int hi = -1, hiIdx = -1;
+            for( auto ln : d.HitSector->Lines )
+            {
+                sector_t* o = ( ln->frontsector == d.HitSector ) ? ln->backsector
+                                                                 : ln->frontsector;
+                if( o && o != d.HitSector && o->lightlevel > hi )
+                {
+                    hi    = o->lightlevel;
+                    hiIdx = o->Index();
+                }
+            }
+            if( hiIdx >= 0 )
+            {
+                Printf( "           brightest neighbour: sector %d at %d  (delta %+d)\n",
+                        hiIdx, hi, ll - hi );
+            }
+        }
     }
 
     // `rt_dump_lightthinkers` -- who is animating a sector's lightlevel.
