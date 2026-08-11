@@ -579,17 +579,32 @@ namespace cvar
     // Raise this and drop rt_lava_light_on for the area-source version; it is
     // softer and correct, at the cost of being carried by the indirect pass,
     // which is noisier and has no sharp shadow.
-    RT_CVAR( rt_lava_gi,                1.0f,   "multiplier on the lava's INDIRECT emission -- the lava lighting the "
+    // The heat's hue. The flat's cracks photograph yellow-orange once boosted --
+    // partly the art, partly that any bright emission drifts toward white -- and
+    // molten rock should read RED. Applied to the screen emission and the GI
+    // together, so the room does not bounce a different colour than the surface.
+    RT_CVAR( rt_lava_tint_r,          255,      "lava emission tint Red [0,255]" )
+    RT_CVAR( rt_lava_tint_g,          140,      "lava emission tint Green [0,255]. This is the one to pull DOWN for "
+                                                "a redder, angrier lava; raise it toward 255 for the yellow-orange "
+                                                "the raw texture gives." )
+    RT_CVAR( rt_lava_tint_b,           76,      "lava emission tint Blue [0,255]" )
+    RT_CVAR( rt_lava_gi,               40.f,   "multiplier on the lava's INDIRECT emission -- the lava lighting the "
                                                 "room as an area source instead of via the analytic light grid. "
-                                                "Try 20-60 with rt_lava_light_on 0." )
+                                                "Default now that this is the shipping model: the grid is off and "
+                                                "the lava lights the room by being a large warm surface." )
     RT_CVAR_NOARCH( rt_lava_debug,      false,  "paint every surface the shader sees as lava MAGENTA. Answers "
                                                 "'does the LAVA flag reach the shader' on its own -- a boost that "
                                                 "changes nothing cannot tell 'the multiply is not happening' apart "
                                                 "from 'what it multiplies is already zero'." )
-    RT_CVAR( rt_lava_light_on,          true,   "upload analytic lights over the lava flats (HLAVA*, D64LAVA*), scattered "
+    RT_CVAR( rt_lava_light_on,          false,  "upload analytic lights over the lava flats (HLAVA*, D64LAVA*), scattered "
                                                 "on a grid. Without this the lava lights nothing at all: the "
                                                 "lightIntensity in textures.json only ever worked for sprites, so a lava "
-                                                "room renders as a black box with a glowing net on the floor." )
+                                                "room renders as a black box with a glowing net on the floor. OFF by "
+                                                "default: it works, but a grid of point lights is not what a lake "
+                                                "is, and it shows -- each point owns a pool, and walking past one "
+                                                "drags a circle of illumination along the wall. rt_lava_gi does the "
+                                                "same job as an area source. Kept for the A/B and for the case "
+                                                "where a sharp shadow is wanted." )
     RT_CVAR( rt_lava_light_intensity,   1800.f, "intensity of ONE grid light, before the spacing correction. The "
                                                 "correction keeps total output constant when rt_lava_light_spacing "
                                                 "changes, so this is the knob for how bright the lava room is and "
@@ -10942,7 +10957,26 @@ void RT_UploadSwitchLights()
 // happened to split it.
 void RT_UploadLavaLights()
 {
-    if( !cvar::rt_lava_light_on || !primaryLevel )
+    if( !primaryLevel )
+    {
+        return;
+    }
+
+    // BEFORE the rt_lava_light_on early-out, deliberately. The arms that turn
+    // the analytic grid OFF (gi, flagcheck) are exactly the ones being judged,
+    // and having them silently skip the teleport left two of them evaluated
+    // from the far side of the map.
+    if( cvar::rt_lava_autogoto )
+    {
+        static const void* s_goto = nullptr;
+        if( s_goto != primaryLevel )
+        {
+            s_goto = primaryLevel;
+            AddCommandString( "rt_lava_goto" );
+        }
+    }
+
+    if( !cvar::rt_lava_light_on )
     {
         return;
     }
@@ -10971,18 +11005,6 @@ void RT_UploadLavaLights()
                                   uint8_t( std::clamp( *cvar::rt_lava_light_g, 0, 255 ) ),
                                   uint8_t( std::clamp( *cvar::rt_lava_light_b, 0, 255 ) ),
                                   255 );
-
-    // Teleport-to-lava, once per level. Done here rather than at level load
-    // because this function already knows which sectors are lava.
-    if( cvar::rt_lava_autogoto )
-    {
-        static const void* s_done = nullptr;
-        if( s_done != primaryLevel )
-        {
-            s_done = primaryLevel;
-            AddCommandString( "rt_lava_goto" );
-        }
-    }
 
     const DVector3 vpos = r_viewpoint.Pos;
 
@@ -11829,6 +11851,9 @@ void RTFrameBuffer::RT_DrawFrame()
         .lavaPulseSpeed         = cvar::rt_lava_pulse_speed,
         .lavaGiBoost            = std::max( 0.f, float{ cvar::rt_lava_gi } ),
         .lavaDebug              = cvar::rt_lava_debug ? 1.f : 0.f,
+        .lavaTint               = l_col255( cvar::rt_lava_tint_r,
+                                            cvar::rt_lava_tint_g,
+                                            cvar::rt_lava_tint_b ),
         .stylizedWaterDebug     = float( *cvar::rt_water_debug ),
         .stylizedWaterReflMin   = cvar::rt_water_reflmin,
         .waterCausticGain       = cvar::rt_water_caustics,
