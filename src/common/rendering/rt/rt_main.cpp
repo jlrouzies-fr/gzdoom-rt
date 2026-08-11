@@ -573,6 +573,13 @@ namespace cvar
     RT_CVAR( rt_lava_light_b,          20,      "lava light colour Blue [0,255]" )
     RT_CVAR( rt_lava_light_debug,       false,  "print how many lava subsectors matched, how many grid points they "
                                                 "produced and how many survived the cap" )
+    // Diagnostic, NOARCH so it cannot stick: every "the lava lights nothing"
+    // judgement in this feature's history was made from wherever the player
+    // happened to be, and the debug line eventually showed the camera 48 METRES
+    // from the nearest lava light, where 60 lumen is an irradiance of 0.03. The
+    // observation was correct and measured nothing. This removes the step.
+    RT_CVAR_NOARCH( rt_lava_autogoto,   false,  "on the first frame of a map that has lava, move the player onto it. "
+                                                "For the A/B arms only -- it teleports you." )
     RT_CVAR( rt_flame_light_on,         true,   "upload one analytic, FLICKERING light per open flame — the standing torches "
                                                 "(TL*/TS*), the wall torches (A030/A031/A032/GTCH), the loose fires "
                                                 "(BFLM/GFLM/RFLM/YFLM), the bonfire (FIRE) and the candle (CAND) — "
@@ -10274,6 +10281,18 @@ void RT_UploadLavaLights()
                                   uint8_t( std::clamp( *cvar::rt_lava_light_g, 0, 255 ) ),
                                   uint8_t( std::clamp( *cvar::rt_lava_light_b, 0, 255 ) ),
                                   255 );
+
+    // Teleport-to-lava, once per level. Done here rather than at level load
+    // because this function already knows which sectors are lava.
+    if( cvar::rt_lava_autogoto )
+    {
+        static const void* s_done = nullptr;
+        if( s_done != primaryLevel )
+        {
+            s_done = primaryLevel;
+            AddCommandString( "rt_lava_goto" );
+        }
+    }
 
     const DVector3 vpos = r_viewpoint.Pos;
 
