@@ -571,8 +571,14 @@ namespace cvar
     RT_CVAR( rt_lava_light_r,         255,      "lava light colour Red [0,255]" )
     RT_CVAR( rt_lava_light_g,          90,      "lava light colour Green [0,255]" )
     RT_CVAR( rt_lava_light_b,          20,      "lava light colour Blue [0,255]" )
-    RT_CVAR( rt_lava_light_debug,       false,  "print how many lava subsectors matched, how many grid points they "
-                                                "produced and how many survived the cap" )
+    RT_CVAR( rt_lava_light_debug,       0,      "1 = print how many lava sectors matched, how many grid points they "
+                                                "produced, how many survived the cap, and the TRUE nearest light. "
+                                                "2 = also upload one 2000 lm light AT THE CAMERA. That last one "
+                                                "separates the two questions that have been tangled all along: if a "
+                                                "light on top of the camera does not light the room, then analytic "
+                                                "lights are not working here at all and nothing about the lava grid "
+                                                "matters; if it does, the grid is at fault and the camera light is "
+                                                "the control." )
     // Diagnostic, NOARCH so it cannot stick: every "the lava lights nothing"
     // judgement in this feature's history was made from wherever the player
     // happened to be, and the debug line eventually showed the camera 48 METRES
@@ -1308,6 +1314,86 @@ namespace cvar
     RT_CVAR( rt_rr_reset_debug,         false,  "DLSS-RR reset: diagnostic — log every history flush (with its "
                                                 "cause) plus a once-a-second fired/suppressed tally. Use this to "
                                                 "check whether a trigger is over-firing." )
+
+    // --- Illuminated fog (Doom64-RT) -------------------------------------
+    //
+    // Doom 64 fogs whole levels, and says so in MAPINFO: `fade` is the colour
+    // and `fogdensity` is how thick. Nine Retribution maps carry it -- MAP26's
+    // cyan "00 56 56" at density 200 is the one in screen/
+    // doom64original_level26fog.png -- and under RT not one of them showed it,
+    // because fade/fogdensity are rasterizer fog and the RT path never reads
+    // them.
+    //
+    // This is not that fog rebuilt. Rasterizer fog is a per-pixel LERP toward a
+    // colour by distance: it cannot be lit, so a lamp inside it has no halo and
+    // a dark corner fogs exactly as brightly as a lit hall. What is built here
+    // is the medium itself, in RTGL1's froxel volume -- light scatters through
+    // it, so the fog around a torch glows and the fog in an unlit corridor
+    // stays dark. The map's authored colour and density are the input.
+    //
+    // OPT-IN per map (RT_FOG_PRESETS), for the reason the cloud deck is: fog is
+    // not neutral scenery, it changes every distance judgement in the level.
+    RT_CVAR( rt_fog,                    true,   "master switch for the per-map illuminated fog. OFF: the volumetrics fall "
+                                                "back to the plain global rt_volume_* values on every map, which is the "
+                                                "stock behaviour." )
+    RT_CVAR( rt_fog_presets,            true,   "apply the per-map fog table (RT_FOG_PRESETS) at level load. It writes "
+                                                "rt_fog_color/_density/_far/_ambient/_illum AFTER the command line is "
+                                                "parsed, so on a listed map it overrides a +rt_fog_* pin -- the same trap "
+                                                "RT_CLOUD_PRESETS has. 0 to tune with the `fog` CCMD." )
+    RT_CVAR_COLOR( rt_fog_color,      0x000000, "fog colour (hex): the medium's scattering albedo, so it tints the fog AND "
+                                                "the haze around anything glowing inside it. BLACK (000000) is the "
+                                                "sentinel for `use the map's own MAPINFO fade`, which is what every "
+                                                "preset row wants -- a genuinely black fog would be invisible anyway, so "
+                                                "nothing is given up by spending the value. Extinction stays monochrome, "
+                                                "so distance fades TOWARD this colour rather than filtering by it." )
+    RT_CVAR( rt_fog_density,            -1.f,   "fog density. NEGATIVE means `derive it from the map's MAPINFO "
+                                                "fogdensity`, scaled by rt_fog_density_mult. Feeds rt_volume_scatter, "
+                                                "whose per-froxel coefficient is a flat 0.001 per cell over 64 cells -- "
+                                                "so useful values here are tens, not fractions, and shortening "
+                                                "rt_fog_far makes the same number read THICKER per metre." )
+    // NEAR and FAR are separate because one density cannot be both thin enough
+    // to see your own feet through and thick enough to swallow a corridor. The
+    // froxel grid's slices are uniform in distance, so the split costs one
+    // mix() per cell -- no second volume, no extra rays.
+    RT_CVAR( rt_fog_density_far,        -1.f,   "fog density at rt_fog_far, the far end of the ramp whose near end is "
+                                                "rt_fog_density. NEGATIVE means `same as near`, i.e. a uniform medium, "
+                                                "which is what a map inheriting its density from MAPINFO gets. Set this "
+                                                "ABOVE rt_fog_density for the usual look -- clear air around the player, "
+                                                "thickening with distance -- and BELOW it for the opposite, which is "
+                                                "what a room full of smoke with a clear ceiling gap reads like." )
+    RT_CVAR_COLOR( rt_fog_color_far,  0x000000, "fog colour at rt_fog_far. BLACK (000000) is the sentinel for `same as "
+                                                "rt_fog_color`, which is what almost everything wants. Splitting it lets "
+                                                "the distance go a different hue from the air in the room -- the fog is "
+                                                "one medium either way, so this is stylization, not physics." )
+    RT_CVAR( rt_fog_curve,              1.f,    "shape of the near->far ramp. 1 = linear. ABOVE 1 holds the near value "
+                                                "longer and thickens late, so the room you are standing in stays clear "
+                                                "and the far end still closes -- usually what you want when near and far "
+                                                "are far apart. BELOW 1 thickens immediately." )
+    RT_CVAR( rt_fog_density_mult,       0.3f,   "scale from MAPINFO fogdensity (0..255) to rt_fog_density. Doom 64's "
+                                                "density is a rasterizer fog factor with no physical meaning here, so "
+                                                "this is the one number that had to be settled by eye against "
+                                                "screen/doom64original_level26fog.png." )
+    RT_CVAR( rt_fog_far,                45.f,   "far plane of the fog volume, in METRES (1 map unit = 1/32 m, so 45 m is "
+                                                "~1440 units). Everything beyond it is shaded with the far slice, i.e. "
+                                                "fully fogged, which is what makes a bounded volume read as unbounded "
+                                                "fog. It is also the precision knob: 64 slices are spread over this, so "
+                                                "raising it coarsens the fog near the camera." )
+    RT_CVAR( rt_fog_ambient,            0.02f,  "unlit floor of the fog: what a froxel scatters with no light reaching "
+                                                "it at all. Keep it LOW -- this is the term that makes fog look painted "
+                                                "on rather than lit, and 0 is a legitimate setting now that the fog has "
+                                                "real lights in it." )
+    RT_CVAR( rt_fog_lightmult,          1.f,    "multiplier on light scattered by the fog (rt_volume_lintensity while a "
+                                                "fog map is loaded)." )
+    RT_CVAR( rt_fog_illum,              true,   "light the fog from ALL lights, not just one. The stock froxel pass "
+                                                "scatters exactly the single light LightManager::TryGetVolumetricLight "
+                                                "picks -- a RG_LIGHT_ADDITIONAL_VOLUMETRIC light if any exists, and "
+                                                "nothing in this game sets that flag, so in practice the SUN. On a map "
+                                                "with the moon turned off (MAP26) that leaves the fog with no source at "
+                                                "all and it collapses to flat rt_fog_ambient. 1 runs the full direct "
+                                                "estimate per froxel instead. Costs one NEE + shadow ray per cell of a "
+                                                "160x88x64 grid, and is the reason this is per map rather than global." )
+    RT_CVAR_NOARCH( rt_fog_debug,       false,  "log the fog resolved for each level: the map's MAPINFO fade/fogdensity, "
+                                                "the preset row applied, and the values that actually reached RTGL." )
 
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             30.f,   "max distance of scattering volume (in meteres)" )
@@ -6083,7 +6169,19 @@ constexpr MoonPreset RT_MOON_PRESETS[] = {
       "about, and the restated copy would go stale the moment the launcher's "
       "changed. sky 6 because VOIDSKY's flat teal is 186x the starfield's mean "
       "radiance -- at the global 25 the void would glow like a lightbox." },
-    { "map26", -1.f, -1.f, -1.f, false, 6.f, "VOIDSKY, as MAP25." },
+    // MAP26 goes further than MAP25/31: the moon's LIGHT is off too, not only
+    // its disc. The map is fogged (RT_FOG_PRESETS -- its MAPINFO asks for cyan
+    // `fade` at fogdensity 200) and a directional light is the one thing that
+    // wrecks a fogged level. It rakes the froxel volume from a single bearing,
+    // so the fog reads as a lit slab with a hard edge to it instead of as the
+    // even medium the map was authored around; and MAP26's rooms have no
+    // opening the moon could honestly be arriving through in the first place,
+    // so under rt_sun_require_sky most of what it delivered was leak anyway.
+    // The fog's light now comes from the level's own lamps and lava
+    // (rt_fog_illum), which is where it should have come from.
+    { "map26", -1.f, -1.f, 0.f, false, 6.f,
+      "VOIDSKY, as MAP25, but moon OFF entirely -- disc and light. This map is "
+      "fogged; see RT_FOG_PRESETS." },
     { "map31", -1.f, -1.f, -1.f, false, 6.f, "VOIDSKY, as MAP25." },
 
     // The five fire-sky maps (FRSKYNRM on 22/24/28, FRSKYGRN on 23/32).
@@ -6386,7 +6484,292 @@ void RT_ApplyMoonPreset( const char* mapname )
     cvar::rt_moon_geo      = p ? p->disc : g_moon_base_disc;
     cvar::rt_sky           = ( p && p->sky >= 0.f ) ? p->sky : g_moon_base_sky;
 }
+
+//-----------------------------------------------------------------------------
+//
+// Doom64-RT: per-map ILLUMINATED FOG.
+//
+// WHERE THE FOG COMES FROM. Not from here -- from the map. Doom 64 fogs whole
+// levels and Retribution's MAPINFO carries it verbatim:
+//
+//     map MAP26 ... { fade = "00 56 56"  fogdensity = 200 }
+//
+// Nine maps have it (MAP12/21/25/26/27/29/30/31/33 by fade colour: cyan, brown,
+// dark red). Under RT none of them showed it, because `fade` and `fogdensity`
+// are consumed by the rasterizer's fog and the RT path never looks at them. The
+// reference for what is missing is screen/doom64original_level26fog.png: the
+// console game's MAP26, teal to the point that the far end of a corridor is
+// gone.
+//
+// WHAT IS BUILT INSTEAD. Not that fog. Rasterizer fog is a per-pixel lerp
+// toward a colour by distance -- it cannot be lit, so a lamp inside it gets no
+// halo, and an unlit corridor fogs exactly as brightly as a lit hall. Under a
+// path tracer the honest form of the same authored intent is the MEDIUM: a
+// participating volume in RTGL1's froxel grid, which real lights scatter
+// through. The map supplies the colour and the density; the renderer supplies
+// what the fog does with the level's own light.
+//
+// Two things had to change in RTGL1 for that, both in RtVolumetric.rgen:
+//
+//   1. volumeMediaColor -- a scattering albedo. The froxel pass had no notion
+//      of a coloured medium at all; the only colour available was the flat
+//      ambient term, which tints the unlit fog and leaves everything the fog
+//      does with LIGHT white. Now the tint multiplies the whole in-scattered
+//      term, so cyan fog around a lamp is cyan.
+//   2. volumeAllLights -- the pass scatters ONE light: whatever
+//      LightManager::TryGetVolumetricLight picks, which is a
+//      RG_LIGHT_ADDITIONAL_VOLUMETRIC light if one exists and otherwise the
+//      sun. Nothing in this game sets that flag, so it is always the sun, and
+//      on a map whose moon is deliberately off (MAP26 -- see RT_MOON_PRESETS)
+//      that means the fog receives NOTHING and collapses to flat ambient.
+//      With this it runs the full per-froxel direct estimate instead.
+//
+// Extinction stays monochrome on purpose: the transmittance channel is a single
+// float all the way to CmPrepareFinal, so making it per-channel is a framebuffer
+// change, not a shader one. The visible difference is that distance fades toward
+// the fog colour rather than being filtered by it -- which is what the console
+// game does anyway, since its fog is a lerp.
+//
+// OPT-IN, like RT_CLOUD_PRESETS and for the same reason: fog is not neutral
+// scenery. It changes every distance judgement in a level and it costs a shadow
+// ray per froxel cell. A map gets fog because someone looked at it.
+//
+// NOTE the table writes rt_fog_* at level load, after the command line is
+// parsed, so on a listed map it overrides a +rt_fog_* pin. rt_fog_presets 0
+// turns the table off -- which is what every tools/ab-fog.cmd arm except
+// `preset` does.
+//
+// Authoring loop, same as `moon` and `clouds`: rt_fog_presets 0, tune with the
+// `fog` CCMD, then type bare `fog` and paste the row it prints.
+struct FogPreset
+{
+    const char* map;
+    bool        fog;         // fog on at all
+    uint32_t    color;       // 0 = use the map's own MAPINFO `fade`
+    float       density;     // < 0 = derive from the map's own MAPINFO `fogdensity`
+    float       far_m;       // < 0 = keep the launcher's rt_fog_far
+    float       ambient;     // < 0 = keep
+    int         illum;       // 1 = all-lights, 0 = single light, -1 = keep
+    // The far end of the near->far ramp. Everything a map can leave alone, it
+    // should: density_far < 0 means "same as near", i.e. a uniform medium, and
+    // color_far 0 means "same colour". A row that fills these in is asking for
+    // a ramp on purpose.
+    float       density_far; // < 0 = same as density (uniform)
+    uint32_t    color_far;   // 0 = same as color
+    float       curve;       // < 0 = keep. 1 = linear
+    const char* note;
+};
+
+constexpr FogPreset RT_FOG_PRESETS[] = {
+    { "map26", true, 0, -1.f, -1.f, -1.f, 1, -1.f, 0, -1.f,
+      "Hardcore. The map this exists for, and the one with a reference shot "
+      "(screen/doom64original_level26fog.png). Everything is inherited: colour "
+      "from its own `fade` 00 56 56, density from its own `fogdensity` 200. A "
+      "row that restated them would be a second copy of the map's data, and the "
+      "copy is what goes stale. illum 1 is not optional here -- MAP26's moon is "
+      "off (RT_MOON_PRESETS), so the single-light path would leave this fog with "
+      "no source at all." },
+};
+
+// The launcher's values, captured once before any preset overwrites them, so a
+// map with no row gets the global back instead of inheriting the last fogged
+// map's settings. Same reason g_moon_base_* exists.
+bool     g_fog_base_set     = false;
+uint32_t g_fog_base_color   = 0;
+float    g_fog_base_density = -1.f;
+float    g_fog_base_far     = 0.f;
+float    g_fog_base_ambient = 0.f;
+bool     g_fog_base_illum   = false;
+float    g_fog_base_dfar    = -1.f;
+uint32_t g_fog_base_cfar    = 0;
+float    g_fog_base_curve   = 1.f;
+
+// Resolution is DEFERRED to the first rendered frame, not done in
+// RT_OnLevelLoad, because RT_OnLevelLoad runs from G_InitNew -- which is called
+// BEFORE P_SetupLevel. At that point primaryLevel->fadeto and ->fogdensity
+// still hold the PREVIOUS map's values, so reading them there gives every
+// fogged map the fog of whatever was played before it.
+FString g_fog_pending_map;
+bool    g_fog_pending = false;
+// Whether the map currently loaded has fog at all. Read every frame.
+bool    g_fog_active = false;
+
+const FogPreset* RT_FindFogPreset( const char* mapname )
+{
+    if( !mapname || mapname[ 0 ] == '\0' )
+    {
+        return nullptr;
+    }
+    for( const auto& p : RT_FOG_PRESETS )
+    {
+        if( stricmp( mapname, p.map ) == 0 )
+        {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+void RT_ApplyFogPreset( const char* mapname )
+{
+    if( !g_fog_base_set )
+    {
+        g_fog_base_set     = true;
+        g_fog_base_color   = *( cvar::rt_fog_color );
+        g_fog_base_density = float{ cvar::rt_fog_density };
+        g_fog_base_far     = float{ cvar::rt_fog_far };
+        g_fog_base_ambient = float{ cvar::rt_fog_ambient };
+        g_fog_base_illum   = bool{ cvar::rt_fog_illum };
+        g_fog_base_dfar    = float{ cvar::rt_fog_density_far };
+        g_fog_base_cfar    = *( cvar::rt_fog_color_far );
+        g_fog_base_curve   = float{ cvar::rt_fog_curve };
+    }
+
+    const FogPreset* p = bool{ cvar::rt_fog_presets } ? RT_FindFogPreset( mapname ) : nullptr;
+
+    // With the table off, a map keeps whatever the cvars say and whether it is
+    // fogged is then rt_fog_color's business alone -- that is what makes the
+    // `fog` CCMD able to put fog on an unlisted map to look at it.
+    if( !bool{ cvar::rt_fog_presets } )
+    {
+        g_fog_active = true;
+        return;
+    }
+
+    g_fog_active = ( p != nullptr ) && p->fog;
+
+    RT_SetColorCVar( cvar::rt_fog_color, p ? p->color : g_fog_base_color );
+    cvar::rt_fog_density = ( p && p->density >= 0.f ) ? p->density : g_fog_base_density;
+    cvar::rt_fog_far     = ( p && p->far_m >= 0.f ) ? p->far_m : g_fog_base_far;
+    cvar::rt_fog_ambient = ( p && p->ambient >= 0.f ) ? p->ambient : g_fog_base_ambient;
+    cvar::rt_fog_illum   = ( p && p->illum >= 0 ) ? ( p->illum != 0 ) : g_fog_base_illum;
+
+    cvar::rt_fog_density_far = p ? p->density_far : g_fog_base_dfar;
+    RT_SetColorCVar( cvar::rt_fog_color_far, p ? p->color_far : g_fog_base_cfar );
+    cvar::rt_fog_curve = ( p && p->curve > 0.f ) ? p->curve : g_fog_base_curve;
+}
+
+// The two sentinels resolved against the map's own MAPINFO. Called every frame
+// (it is a few reads), so `fog 00A0A0` in the console takes effect immediately
+// instead of at the next level load.
+struct ResolvedFog
+{
+    bool  on;
+    float r, g, b;      // 0..1, the medium's scattering albedo AT THE CAMERA
+    float rf, gf, bf;   // ... and at far_m. Equal to the above = uniform
+    float density;      // at the camera
+    float density_far;  // at far_m
+    float curve;        // shape of the ramp between them
+    float far_m;
+    float ambient;
+    bool  illum;
+};
+
+ResolvedFog RT_ResolveFog()
+{
+    auto out = ResolvedFog{ .on = false };
+
+    if( !bool{ cvar::rt_fog } || !g_fog_active || !primaryLevel )
+    {
+        return out;
+    }
+
+    // Colour: the cvar, or -- and this is what every preset row asks for -- the
+    // map's own `fade`. Black is the sentinel rather than a separate "use map"
+    // bool because a black fog scatters nothing and would be invisible, so the
+    // value is not one anybody can want.
+    uint32_t rgb = *( cvar::rt_fog_color ) & 0xFFFFFF;
+    if( rgb == 0 )
+    {
+        rgb = primaryLevel->fadeto & 0xFFFFFF;
+    }
+    if( rgb == 0 )
+    {
+        // No fade in MAPINFO either: the map is listed but says nothing about a
+        // colour. Fogging it white would be a guess; showing nothing is honest.
+        return out;
+    }
+
+    // Density: the cvar, or the map's own fogdensity scaled. Doom 64's density
+    // is a rasterizer fog factor, so the scale is an eyeballed conversion and
+    // lives in a cvar for that reason.
+    float density = float{ cvar::rt_fog_density };
+    if( density < 0.f )
+    {
+        density = float( primaryLevel->fogdensity ) * float{ cvar::rt_fog_density_mult };
+    }
+    if( density <= 0.f )
+    {
+        return out;
+    }
+
+    // The far end of the ramp. Both sentinels mean "same as near", so a medium
+    // stays uniform unless something asked for a ramp -- and a map that
+    // inherited its density from MAPINFO has nothing to say about a far value,
+    // which is exactly the case that must not invent one.
+    const float dfar = float{ cvar::rt_fog_density_far } >= 0.f
+                           ? float{ cvar::rt_fog_density_far }
+                           : density;
+    uint32_t    cfar = *( cvar::rt_fog_color_far ) & 0xFFFFFF;
+    if( cfar == 0 )
+    {
+        cfar = rgb;
+    }
+
+    out.on          = true;
+    out.r           = RPART( rgb ) / 255.f;
+    out.g           = GPART( rgb ) / 255.f;
+    out.b           = BPART( rgb ) / 255.f;
+    out.rf          = RPART( cfar ) / 255.f;
+    out.gf          = GPART( cfar ) / 255.f;
+    out.bf          = BPART( cfar ) / 255.f;
+    out.density     = density;
+    out.density_far = dfar;
+    out.curve       = std::max( 0.01f, float{ cvar::rt_fog_curve } );
+    out.far_m       = std::max( 1.f, float{ cvar::rt_fog_far } );
+    out.ambient     = std::max( 0.f, float{ cvar::rt_fog_ambient } );
+    out.illum       = bool{ cvar::rt_fog_illum };
+    return out;
+}
 } // namespace
+
+// Called from the frame path: the level is certainly loaded by then, which is
+// the whole point (see g_fog_pending).
+void RT_ResolveFogIfPending()
+{
+    if( !g_fog_pending || !primaryLevel || primaryLevel->info == nullptr )
+    {
+        return;
+    }
+    g_fog_pending = false;
+
+    RT_ApplyFogPreset( g_fog_pending_map.GetChars() );
+
+    if( bool{ cvar::rt_fog_debug } )
+    {
+        const uint32_t fade = primaryLevel->fadeto & 0xFFFFFF;
+        const auto     f    = RT_ResolveFog();
+        Printf( "rt_fog: %s -- MAPINFO fade %06X, fogdensity %d; preset %s\n",
+                g_fog_pending_map.GetChars(),
+                fade,
+                primaryLevel->fogdensity,
+                RT_FindFogPreset( g_fog_pending_map.GetChars() ) ? "YES" : "none" );
+        if( f.on )
+        {
+            Printf( "        ACTIVE: color %02X%02X%02X  density %.1f  far %.0fm  "
+                    "ambient %.3f  illum %s\n",
+                    int( f.r * 255 ), int( f.g * 255 ), int( f.b * 255 ),
+                    f.density, f.far_m, f.ambient, f.illum ? "ALL LIGHTS" : "single light" );
+        }
+        else
+        {
+            Printf( "        OFF (%s)\n",
+                    !bool{ cvar::rt_fog } ? "rt_fog 0"
+                    : !g_fog_active       ? "no RT_FOG_PRESETS row"
+                                          : "no colour or zero density" );
+        }
+    }
+}
 
 //-----------------------------------------------------------------------------
 //
@@ -6628,6 +7011,13 @@ void RT_OnLevelLoad( const char* mapname )
 
     RT_ApplyCloudPreset( mapname );
     RT_ApplyMoonPreset( mapname );
+    // Fog is only REQUESTED here. It cannot be resolved yet: this runs from
+    // G_InitNew, before P_SetupLevel, so primaryLevel still carries the
+    // previous map's `fade` and `fogdensity`. RT_ResolveFogIfPending picks it
+    // up on the first rendered frame. See RT_FOG_PRESETS.
+    g_fog_pending_map = mapname ? mapname : "";
+    g_fog_pending     = true;
+    g_fog_active      = false;
     g_resetposteffects = true;
     g_resetfluid       = true;
     g_rt_lightcut      = true; // DLSS-RR: new scene, flush temporal history unconditionally
@@ -6925,6 +7315,200 @@ namespace classic_toggle
         {
             Printf( "clouds: NOTE this map has a RT_CLOUD_PRESETS entry -- these values "
                     "last until the next level load. Paste the row below to keep them.\n" );
+        }
+        report();
+    }
+
+    // Tune the fog from the console: `fog [on|off] [colour hex] [density] [far]`.
+    //
+    // Bare `fog` prints what the medium currently is, where each number came
+    // from -- the map's MAPINFO or a cvar -- and the RT_FOG_PRESETS row to
+    // paste. Saying where a value came from matters more here than in `moon` or
+    // `clouds`, because two of them default to being read out of the map rather
+    // than set anywhere you could grep for.
+    CCMD( fog )
+    {
+        auto report = []() {
+            const char* mn = RT_GetMapName();
+            const auto  f  = RT_ResolveFog();
+
+            if( !f.on )
+            {
+                Printf( "fog: OFF (%s)\n",
+                        !bool{ cvar::rt_fog } ? "rt_fog 0"
+                        : !g_fog_active
+                            ? "this map has no RT_FOG_PRESETS row -- `fog on` needs "
+                              "rt_fog_presets 0 to stick"
+                            : "no colour (rt_fog_color 0 and the map has no MAPINFO fade) "
+                              "or zero density" );
+            }
+            else
+            {
+                Printf( "fog: ON  colour %02X%02X%02X (%s)  density %.1f (%s)  far %.0fm\n",
+                        int( f.r * 255 ), int( f.g * 255 ), int( f.b * 255 ),
+                        ( *( cvar::rt_fog_color ) & 0xFFFFFF ) ? "rt_fog_color"
+                                                               : "the map's MAPINFO fade",
+                        f.density,
+                        float{ cvar::rt_fog_density } >= 0.f
+                            ? "rt_fog_density"
+                            : "the map's MAPINFO fogdensity x rt_fog_density_mult",
+                        f.far_m );
+                // The ramp, spelled out as near -> far rather than as two cvar
+                // values, because the question actually being asked at the
+                // console is "how much thicker does it get by the far end".
+                const bool ramped = ( f.density_far != f.density ) || ( f.rf != f.r ) ||
+                                    ( f.gf != f.g ) || ( f.bf != f.b );
+                if( ramped )
+                {
+                    Printf( "  RAMP: density %.1f -> %.1f (x%.2f), colour %02X%02X%02X -> "
+                            "%02X%02X%02X, curve %.2f%s\n",
+                            f.density,
+                            f.density_far,
+                            f.density > 0.f ? f.density_far / f.density : 0.f,
+                            int( f.r * 255 ), int( f.g * 255 ), int( f.b * 255 ),
+                            int( f.rf * 255 ), int( f.gf * 255 ), int( f.bf * 255 ),
+                            f.curve,
+                            f.curve > 1.f    ? " (clear near, thickens late)"
+                            : f.curve < 1.f  ? " (thickens immediately)"
+                                             : " (linear)" );
+                }
+                else
+                {
+                    Printf( "  RAMP: none -- uniform medium. `fog far <density>` thickens "
+                            "the distance without touching the air around you.\n" );
+                }
+                Printf( "  ambient %.3f, lightmult %.2f, lit by %s\n",
+                        f.ambient,
+                        float{ cvar::rt_fog_lightmult },
+                        f.illum ? "ALL LIGHTS (per-froxel direct estimate)"
+                                : "ONE light -- whatever TryGetVolumetricLight picked, "
+                                  "i.e. the sun, i.e. nothing if the moon is off" );
+            }
+
+            if( primaryLevel )
+            {
+                Printf( "  this map authored: fade %06X, fogdensity %d\n",
+                        primaryLevel->fadeto & 0xFFFFFF,
+                        primaryLevel->fogdensity );
+            }
+
+            if( mn && mn[ 0 ] )
+            {
+                Printf( "  %s currently has %s%s. Row for RT_FOG_PRESETS:\n",
+                        mn,
+                        RT_FindFogPreset( mn ) ? "a preset" : "NO preset (so no fog)",
+                        bool{ cvar::rt_fog_presets } ? "" : " -- but rt_fog_presets is OFF" );
+                Printf( "    { \"%s\", %s, 0x%06X, %.1ff, %.0ff, %.3ff, %d, %.1ff, "
+                        "0x%06X, %.2ff, \"...\" },\n",
+                        mn,
+                        f.on ? "true" : "false",
+                        *( cvar::rt_fog_color ) & 0xFFFFFF,
+                        float{ cvar::rt_fog_density },
+                        float{ cvar::rt_fog_far },
+                        float{ cvar::rt_fog_ambient },
+                        bool{ cvar::rt_fog_illum } ? 1 : 0,
+                        float{ cvar::rt_fog_density_far },
+                        *( cvar::rt_fog_color_far ) & 0xFFFFFF,
+                        float{ cvar::rt_fog_curve } );
+                Printf( "    (colour 0 = use the map's fade, density -1 = use its "
+                        "fogdensity -- prefer both.\n"
+                        "     density_far -1 and colour_far 0 mean `same as near`, i.e. "
+                        "no ramp)\n" );
+            }
+        };
+
+        if( argv.argc() < 2 )
+        {
+            report();
+            Printf( "  usage: fog <on|off> [colour hex] [density] [far metres]\n"
+                    "         fog near  <density> [colour hex]   the air around you\n"
+                    "         fog far   <density> [colour hex]   at rt_fog_far\n"
+                    "         fog curve <k>                      the shape between them\n" );
+            return;
+        }
+
+        // `fog near|far <density> [colour]` -- the two ends of the ramp, by
+        // name. A 5th and 6th positional argument would have been shorter to
+        // write and impossible to remember, and these are the two knobs that
+        // get touched most while a map is being settled.
+        const bool wantNear = stricmp( argv[ 1 ], "near" ) == 0;
+        const bool wantFar  = stricmp( argv[ 1 ], "far" ) == 0;
+        if( wantNear || wantFar )
+        {
+            if( argv.argc() < 3 )
+            {
+                Printf( "  usage: fog %s <density> [colour hex]   (on `far`: density -1 "
+                        "and colour 0 mean `same as near`)\n",
+                        wantNear ? "near" : "far" );
+                return;
+            }
+            const float d = float( atof( argv[ 2 ] ) );
+            if( wantNear )
+            {
+                cvar::rt_fog_density = d;
+            }
+            else
+            {
+                cvar::rt_fog_density_far = d;
+            }
+            if( argv.argc() >= 4 )
+            {
+                const uint32_t c = uint32_t( strtoul( argv[ 3 ], nullptr, 16 ) );
+                RT_SetColorCVar( wantNear ? cvar::rt_fog_color : cvar::rt_fog_color_far, c );
+            }
+            report();
+            return;
+        }
+
+        if( stricmp( argv[ 1 ], "curve" ) == 0 )
+        {
+            if( argv.argc() < 3 )
+            {
+                Printf( "  usage: fog curve <k>   (1 = linear, >1 clear near and thickens "
+                        "late, <1 thickens immediately)\n" );
+                return;
+            }
+            cvar::rt_fog_curve = std::max( 0.01f, float( atof( argv[ 2 ] ) ) );
+            report();
+            return;
+        }
+
+        if( stricmp( argv[ 1 ], "on" ) == 0 )
+        {
+            cvar::rt_fog = true;
+            g_fog_active = true;
+        }
+        else if( stricmp( argv[ 1 ], "off" ) == 0 )
+        {
+            g_fog_active = false;
+        }
+        else
+        {
+            Printf( "fog: first argument must be on, off, near, far or curve\n" );
+            return;
+        }
+
+        if( argv.argc() >= 3 )
+        {
+            RT_SetColorCVar( cvar::rt_fog_color,
+                             uint32_t( strtoul( argv[ 2 ], nullptr, 16 ) ) );
+        }
+        if( argv.argc() >= 4 )
+        {
+            cvar::rt_fog_density = float( atof( argv[ 3 ] ) );
+        }
+        if( argv.argc() >= 5 )
+        {
+            cvar::rt_fog_far = std::max( 1.f, float( atof( argv[ 4 ] ) ) );
+        }
+
+        // Tuning a map the table will overwrite on the next load looks like the
+        // command did nothing, so say so rather than making it a second thing
+        // to remember. Same note `clouds` prints, same trap.
+        if( bool{ cvar::rt_fog_presets } && RT_FindFogPreset( RT_GetMapName() ) )
+        {
+            Printf( "fog: NOTE this map has a RT_FOG_PRESETS entry -- these values last "
+                    "until the next level load. Paste the row below to keep them.\n" );
         }
         report();
     }
@@ -10432,6 +11016,48 @@ void RT_UploadLavaLights()
         RG_CHECK( r );
     }
 
+    // rt_lava_light_debug 2: a control light sitting on the camera.
+    //
+    // Every stage up to LightManager::Add is now verified by the RTGL probe --
+    // nothing rejected, position converted correctly, radiance non-zero, array
+    // far from full -- and the room is still black. That leaves two very
+    // different possibilities which no amount of grid tuning can separate:
+    // these lights are lost after Add, or analytic lights do not work in this
+    // build at all. A 2000 lm light one metre over the camera answers it: if
+    // THAT does not light the room, the lava is not the subject.
+    if( int{ cvar::rt_lava_light_debug } >= 2 )
+    {
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = rt.rgUtilPackColorByte4D( 255, 255, 255, 255 ),
+            .intensity = 2000.f,
+            .position  = { float( vpos.X ) * ONEGAMEUNIT_IN_METERS,
+                           float( vpos.Y ) * ONEGAMEUNIT_IN_METERS,
+                           float( vpos.Z + 32.0 ) * ONEGAMEUNIT_IN_METERS },
+            .radius    = 0.2f,
+        };
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = LavaLightId_Base - 1,
+            .isExportable = false,
+        };
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        static int s_once = 0;
+        if( ( s_once++ % 600 ) == 0 )
+        {
+            Printf( "rt_lava_light: CONTROL light 2000 lm at the camera "
+                    "map(%.0f %.0f %.0f). If the room is still black, analytic "
+                    "lights are broken here and the lava grid is not the bug.\n",
+                    vpos.X,
+                    vpos.Y,
+                    vpos.Z + 32.0 );
+        }
+    }
+
     // The "found lava, lit nothing" case announces itself, with no cvar.
     //
     // A feature that produces zero output is indistinguishable from a feature
@@ -10471,9 +11097,31 @@ void RT_UploadLavaLights()
             // Positions in BOTH spaces, and the camera with them. A light that
             // is correct in map units and wrong in metres is invisible in every
             // other symptom, so the conversion is printed rather than trusted.
+            //
+            // cand.front() is NOT the nearest: the partial_sort above only runs
+            // when the list is over budget, so under it the order is scan order.
+            // That printed a light 990 units away while the player stood in the
+            // middle of the lake and cost a round. Compute it properly, and say
+            // how many are actually close -- one number that answers "is this
+            // being judged from somewhere it could possibly matter".
             if( !cand.empty() )
             {
-                const LavaCand& c = cand.front();
+                size_t  nearestIdx = 0;
+                int     within256  = 0;
+                for( size_t k = 0; k < cand.size(); k++ )
+                {
+                    if( cand[ k ].d2 < cand[ nearestIdx ].d2 )
+                    {
+                        nearestIdx = k;
+                    }
+                    if( cand[ k ].d2 < 256.0 * 256.0 )
+                    {
+                        within256++;
+                    }
+                }
+                Printf( "rt_lava_light: %d light(s) within 256 map units of the camera\n",
+                        within256 );
+                const LavaCand& c = cand[ nearestIdx ];
                 Printf( "rt_lava_light: nearest light map(%.0f %.0f %.0f) -> "
                         "rt(%.2f %.2f %.2f) m, camera map(%.0f %.0f %.0f), "
                         "%.1f map units away\n",
@@ -11099,24 +11747,51 @@ void RTFrameBuffer::RT_DrawFrame()
         .sunSkyProbeMaxDist = std::max( 0.f, float{ cvar::rt_sun_skyprobe_dist } ),
     };
 
+    // Doom64-RT: the map's own fog, if it has any. A fogged map REPLACES the
+    // global rt_volume_* values rather than adding to them -- two densities
+    // stacked is a fog nobody authored, and it would make the global knobs mean
+    // something different on nine maps than on the other twenty-three.
+    RT_ResolveFogIfPending();
+    const ResolvedFog fog = RT_ResolveFog();
+
     auto volumetrics_params = RgDrawFrameVolumetricParams{
         .sType                   = RG_STRUCTURE_TYPE_DRAW_FRAME_VOLUMETRIC_PARAMS,
         .pNext                   = &sky_params,
-        .enable                  = cvar::rt_volume_type != 0,
-        .maxHistoryLength        = cvar::rt_volume_type == 1 ? cvar::rt_volume_history : 0.f,
-        .useSimpleDepthBased     = cvar::rt_volume_type == 2,
-        .volumetricFar           = cvar::rt_volume_far,
-        .ambientColor            = { cvar::rt_volume_ambient,
-                                     cvar::rt_volume_ambient,
-                                     cvar::rt_volume_ambient },
-        .scaterring              = cvar::rt_volume_scatter,
+        .enable                  = fog.on || cvar::rt_volume_type != 0,
+        .maxHistoryLength        = ( fog.on || cvar::rt_volume_type == 1 ) ? float{ cvar::rt_volume_history } : 0.f,
+        // A fogged map always takes the froxel path: the depth-based one cannot
+        // be lit, which is the whole point here. rt_volume_type 2 still selects
+        // it for an A/B (tools/ab-fog.cmd flat) because that arm turns rt_fog
+        // off first.
+        .useSimpleDepthBased     = !fog.on && cvar::rt_volume_type == 2,
+        .volumetricFar           = fog.on ? fog.far_m : float{ cvar::rt_volume_far },
+        .ambientColor            = fog.on ? RgFloat3D{ fog.ambient, fog.ambient, fog.ambient }
+                                          : RgFloat3D{ cvar::rt_volume_ambient,
+                                                       cvar::rt_volume_ambient,
+                                                       cvar::rt_volume_ambient },
+        .scaterring              = fog.on ? fog.density : float{ cvar::rt_volume_scatter },
         .assymetry               = cvar::rt_volume_lassymetry,
         .useIlluminationVolume   = cvar::rt_illum_volume && cvar::rt_volume_type != 0,
         .fallbackSourceColor     = { 0, 0, 0 },
         .fallbackSourceDirection = { 0, -1, 0 },
-        .lightMultiplier         = cvar::rt_volume_lintensity,
+        .lightMultiplier         = fog.on ? std::max( 0.f, float{ cvar::rt_fog_lightmult } )
+                                          : float{ cvar::rt_volume_lintensity },
         .allowTintUnderwater     = false,
         .underwaterColor         = {},
+        // The two RTGL1 additions this feature is built on. Both are no-ops off
+        // a fogged map: mediaColor { 1, 1, 1 } is the identity tint, and
+        // illuminateFromAllLights false leaves the stock single-light pass
+        // exactly as it was.
+        .illuminateFromAllLights = fog.on && fog.illum,
+        .mediaColor              = fog.on ? RgFloat3D{ fog.r, fog.g, fog.b }
+                                          : RgFloat3D{ 1.f, 1.f, 1.f },
+        // Near and far are one medium with a ramp through it, not two fogs. See
+        // rt_fog_density_far -- the froxel slices are uniform in distance, so
+        // this costs one mix() per cell and nothing else.
+        .mediaColorFar           = fog.on ? RgFloat3D{ fog.rf, fog.gf, fog.bf }
+                                          : RgFloat3D{ 1.f, 1.f, 1.f },
+        .farScattering           = fog.on ? fog.density_far : float{ cvar::rt_volume_scatter },
+        .densityCurve            = fog.on ? fog.curve : 1.f,
     };
 
     auto texture_params = RgDrawFrameTexturesParams{
