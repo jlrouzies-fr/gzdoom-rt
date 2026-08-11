@@ -550,14 +550,22 @@ namespace cvar
     // threshold and no painting can fix it. This multiplies lava surfaces ONLY,
     // which is why the geometry has to carry a LAVA flag: raising
     // rt_emis_maxscrcolor instead would rebalance every emissive in the game.
-    RT_CVAR( rt_lava_emis,              6.0f,   "screen-emission multiplier for lava surfaces, on top of "
+    RT_CVAR( rt_lava_emis,              1.0f,   "screen-emission multiplier for lava surfaces, on top of "
                                                 "rt_emis_maxscrcolor. This is what lets the cracks cross "
-                                                "rt_bloom_threshold; below about 6 they cannot bloom at all. 1 = "
-                                                "the old, un-boostable behaviour." )
-    RT_CVAR( rt_lava_flow,              0.45f,  "how far the drifting heat field swings the emission, 0..1. 0 = a "
+                                                "rt_bloom_threshold. DELIBERATELY LOW NOW, and bloom is not the goal "
+                                                "here: the tint is a multiply, so at 2 the result is about "
+                                                "(2.0, 1.1, 0.6) -- red clips, green and blue do not, and the hue "
+                                                "survives as molten rock. Push it to 20 for bloom and all three "
+                                                "channels clip to equal values, i.e. WHITE. Brightness and hue are "
+                                                "fighting over the same headroom, and hue won. The heat now lives "
+                                                "in a volume ABOVE the surface instead -- see d64r-lava-fx.pk3." )
+    RT_CVAR( rt_lava_flow,              0.0f,  "how far the drifting heat field swings the emission, 0..1. 0 = a "
                                                 "still surface. The flat itself cannot supply this: its 5-frame "
                                                 "animation had to be averaged away because the frames light "
-                                                "different cracks, which read as blinking rather than flowing." )
+                                                "different cracks, which read as blinking rather than flowing. OFF by "
+                                                "default: modulating the texture's own emission IS changing the "
+                                                "texture, and the heat belongs in the volume above it. Kept "
+                                                "because it is the cheaper option if the haze ever has to go." )
     RT_CVAR( rt_lava_flow_speed,        0.03f,  "drift speed of the heat field. Slow on purpose -- this is molten "
                                                 "rock crusting over, not a texture scroll." )
     RT_CVAR( rt_lava_flow_scale,        0.12f,  "heat field frequency, UV per METRE. Lower = larger hot and cold "
@@ -567,7 +575,7 @@ namespace cvar
                                                 "sampling. 0.25 m is about the flat's own texel; a smooth gradient "
                                                 "sliding over 64x64 pixel art reads as a modern shader bolted onto "
                                                 "the wrong texture. 0 = smooth." )
-    RT_CVAR( rt_lava_pulse,             0.10f,  "depth of a slow whole-surface breath under the drift, 0..1" )
+    RT_CVAR( rt_lava_pulse,             0.1f,  "depth of a slow whole-surface breath under the drift, 0..1" )
     RT_CVAR( rt_lava_pulse_speed,       0.35f,  "rate of that breath, radians per second" )
     // The lava as an AREA light, which is what a lake actually is.
     //
@@ -584,11 +592,11 @@ namespace cvar
     // molten rock should read RED. Applied to the screen emission and the GI
     // together, so the room does not bounce a different colour than the surface.
     RT_CVAR( rt_lava_tint_r,          255,      "lava emission tint Red [0,255]" )
-    RT_CVAR( rt_lava_tint_g,          140,      "lava emission tint Green [0,255]. This is the one to pull DOWN for "
+    RT_CVAR( rt_lava_tint_g,           60,      "lava emission tint Green [0,255]. This is the one to pull DOWN for "
                                                 "a redder, angrier lava; raise it toward 255 for the yellow-orange "
                                                 "the raw texture gives." )
     RT_CVAR( rt_lava_tint_b,           76,      "lava emission tint Blue [0,255]" )
-    RT_CVAR( rt_lava_gi,               40.f,   "multiplier on the lava's INDIRECT emission -- the lava lighting the "
+    RT_CVAR( rt_lava_gi,               20.f,   "multiplier on the lava's INDIRECT emission -- the lava lighting the "
                                                 "room as an area source instead of via the analytic light grid. "
                                                 "Default now that this is the shipping model: the grid is off and "
                                                 "the lava lights the room by being a large warm surface." )
@@ -735,6 +743,11 @@ namespace cvar
                                                 "MAP02's blue armor room) — Doom 64's colored rooms are saturated, and because "
                                                 "the hue is peak-normalized this only ever removes off-hue channels, never "
                                                 "brightens. Lower it toward 0 for a more neutral, less stylized look" )
+    RT_CVAR_NOARCH( rt_sector_tint_presets, true, "apply the per-map albedo-tint table (RT_TINT_PRESETS) at level load, which "
+                                                "softens rt_sector_tint_albedo on the maps whose colormaps are cool enough to "
+                                                "neutralize a warm flashlight. A map with no row is left EXACTLY as it is -- "
+                                                "notably MAP02, whose switch-triggered blue room is the effect the 1.0 default "
+                                                "was chosen for. 0 turns the whole table off" )
 
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
