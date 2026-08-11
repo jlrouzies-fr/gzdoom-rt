@@ -543,20 +543,22 @@ namespace cvar
                                                 "on a grid. Without this the lava lights nothing at all: the "
                                                 "lightIntensity in textures.json only ever worked for sprites, so a lava "
                                                 "room renders as a black box with a glowing net on the floor." )
-    RT_CVAR( rt_lava_light_intensity,   60.f,   "intensity of ONE grid light, before the spacing correction. The "
+    RT_CVAR( rt_lava_light_intensity,   600.f,  "intensity of ONE grid light, before the spacing correction. The "
                                                 "correction keeps total output constant when rt_lava_light_spacing "
                                                 "changes, so this is the knob for how bright the lava room is and "
                                                 "spacing is the knob for how even it looks. HUNDREDS, not units: "
                                                 "RgLightSphericalEXT.intensity is luminous flux in lumen and the rest "
                                                 "of this file works in the same scale (flames 900, wall strip segment "
-                                                "180, faux panel 500). Lower than those on purpose: there are ~120 of "
-                                                "these in a lava hall and each one sits under a metre above the "
-                                                "surface, so the per-light number that reads right is well below a "
-                                                "torch's." )
+                                                "180, faux panel 500). Set by MEASUREMENT, not analogy: with the "
+                                                "instrumentation reporting a light 47.9 map units from the camera and "
+                                                "11 within 256, a 2000 lm control light one metre overhead was barely "
+                                                "visible in this hall -- so 60 lm at 1.5 m was never going to show. "
+                                                "Every earlier value here (0.9, then 180, then 60) was reasoned from "
+                                                "what other families use rather than from what this room does." )
     RT_CVAR( rt_lava_light_spacing,     96.f,   "grid spacing in MAP UNITS. Smaller is smoother and more expensive; the "
                                                 "per-light intensity is scaled by (spacing/96)^2 so changing this does "
                                                 "not change the room's brightness, only the evenness of it." )
-    RT_CVAR( rt_lava_light_radius,      0.6f,   "RT source radius in METRES. Wide on purpose — a lava lake is an area "
+    RT_CVAR( rt_lava_light_radius,      0.3f,   "RT source radius in METRES. Wide on purpose — a lava lake is an area "
                                                 "source, and a small radius gives every grid point its own hard little "
                                                 "shadow, which reads as a row of lamps under the floor." )
     RT_CVAR( rt_lava_light_z,           24.f,   "how far ABOVE the floor plane each light sits, map units. Lights placed "
