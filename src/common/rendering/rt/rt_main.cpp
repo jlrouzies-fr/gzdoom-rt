@@ -1654,7 +1654,11 @@ constexpr uint64_t SwitchLightId_Base    = 1ull << 46;
 // set die and respawn, and it throws away its temporal reservoirs, which on lights
 // this large reads as the entire room boiling.
 constexpr uint64_t LavaLightId_Base      = 1ull << 47;
-constexpr uint64_t LavaSlotsPerSector    = 256;
+// 16 bits of slot: the grid CELL packed as (cellY & 0xFF) * 256 + (cellX & 0xFF).
+// 256 was not enough -- a lava hall is easily more than 256 grid cells, and the
+// wrap gave two lights in the same sector the same id, which RTGL1 asserts on and
+// otherwise resolves by keeping one of them.
+constexpr uint64_t LavaSlotsPerSector    = 65536;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -10285,9 +10289,10 @@ void RT_UploadLavaLights()
                 // player walks -- and RTGL1 answers a changed id by throwing away that
                 // light's temporal reservoir, which on sources this large boils the
                 // whole room.
-                const uint64_t slot =
-                    uint64_t( ( gy - gy0 ) * ( gx1 - gx0 + 1 ) + ( gx - gx0 ) ) %
-                    LavaSlotsPerSector;
+                // Cell coordinates, masked to a byte each. Two cells can only
+                // collide if they are 256 cells apart in one sector, i.e. 24576
+                // map units at the default spacing -- larger than any Doom sector.
+                const uint64_t slot = ( uint64_t( gy & 0xFF ) << 8 ) | uint64_t( gx & 0xFF );
 
                 cand.push_back( { d2,
                                   px,
@@ -10330,6 +10335,28 @@ void RT_UploadLavaLights()
         RG_CHECK( r );
     }
 
+    // The "found lava, lit nothing" case announces itself, with no cvar.
+    //
+    // A feature that produces zero output is indistinguishable from a feature
+    // that was never called, and this one has now been debugged twice from the
+    // wrong end because of that. If there IS lava in the map and no light came
+    // out of it, that is always worth a line.
+    if( matchedSecs > 0 && cand.empty() )
+    {
+        static std::unordered_set< const void* > s_warned;
+        if( s_warned.insert( primaryLevel ).second )
+        {
+            Printf( "RT lava: %d lava sector(s) found, but NO light placed. "
+                    "Grid points inside a sector: %d (spacing %.0f, cull %.0f). "
+                    "If grid points is 0 the sectors are smaller than the spacing "
+                    "or further than the cull radius.\n",
+                    matchedSecs,
+                    gridPoints,
+                    spacing,
+                    maxDist );
+        }
+    }
+
     if( cvar::rt_lava_light_debug )
     {
         static int s_last = -1;
@@ -10337,12 +10364,13 @@ void RT_UploadLavaLights()
         {
             s_last = int( cand.size() );
             Printf( "rt_lava_light: %d lava sector(s), %d grid point(s) in range, "
-                    "%d uploaded (spacing %.0f, intensity %.3f each)\n",
+                    "%d uploaded (spacing %.0f, intensity %.1f lm each, radius %.2f m)\n",
                     matchedSecs,
                     gridPoints,
                     int( cand.size() ),
                     spacing,
-                    intensity );
+                    intensity,
+                    srcRad );
         }
     }
 }
