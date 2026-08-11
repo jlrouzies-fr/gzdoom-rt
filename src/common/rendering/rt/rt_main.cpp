@@ -6047,25 +6047,32 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
       "The other CLOUDBRN map, same room and same scroll rate as MAP10, so the "
       "same orange. Kept as its own row rather than shared, because the table is "
       "keyed by map and a shared row would hide which maps are actually on." },
-    { "map12", true, 0x8660C0, 1.0f, 0.010f, 8, 1.0f, 0.45f,
+    { "map12", true, 0x9C55DC, 1.0f, 0.010f, 8, 1.0f, 0.45f,
       "MAXED, and the one map that leans on the deck as a light rather than as "
       "scenery. Full alpha, all 8 shells, double the global thickness: the sky "
       "is solid cloud with no clear patches to speak of.\n"
-      "  The tint is matched to the console game's own sky rather than picked. "
-      "The slice art is achromatic, so a cloud texel is LIT x tint x the shell "
-      "ramp and the darkest is SHADOW x tint x that ramp -- which makes both "
-      "ends computable. 8660C0 puts the bright cloud at #7153AC against Doom "
-      "64's #745BAD and the dark at #110C1D against its #100F1F "
-      "(screen/doom64clouds.png). It matters more here than anywhere else "
-      "because the tint is doing two jobs: the colour of the picture AND the "
-      "colour of every bit of moonlight that reaches the level, and under total "
-      "cover the second job is the only light the outdoors gets.\n"
+      "  The tint matters more here than anywhere else because it is doing two "
+      "jobs: the colour of the picture AND the colour of every bit of moonlight "
+      "that reaches the level, since under total cover that is the only light "
+      "the outdoors gets. The slice art is achromatic, so a cloud texel is "
+      "LIT x tint x the shell ramp and the darkest is SHADOW x tint x that ramp "
+      "-- both ends of the rendered range are arithmetic, which is what makes "
+      "this tunable on paper at all.\n"
+      "  It was 8660C0 first, matched to the console game's own sky pixel for "
+      "pixel (bright #7253AC against its #745BAD, dark #110D1E against its "
+      "#100F1F -- screen/doom64clouds.png). That measured right and read WEAK in "
+      "motion, so this is a deliberate step past the reference: same luminance, "
+      "saturation 0.50 -> 0.61. Held at the same Y on purpose, so `stronger "
+      "purple` means more saturated and not brighter -- G carries most of the "
+      "luminance, so the cost of the saturation is paid in R and B rather than "
+      "by darkening. Sweep it without rebuilding: tools\\ab-clouds.cmd <arm> "
+      "<map> <tint>.\n"
       "  transmit 0.45 against the global 0.22 is what makes that survivable. "
       "The deck's transmittance is now a slab (see hw_skyportal.cpp), so this is "
       "literally what a fully covered patch passes: 0.45 of the tint, which "
       "works out at about a sixth of the moon's luminance arriving strongly "
       "violet. At the global 0.22 a deck this thick would be a lid." },
-    { "map30", true, 0x8660C0, 0.85f, 0.010f, -1, -1.f, -1.f,
+    { "map30", true, 0x9C55DC, 0.85f, 0.010f, -1, -1.f, -1.f,
       "Same purple as MAP12 -- same CLOUDPRP room, same MOUNTC ridge, same "
       "scroll rate -- but not MAP12's maxed shape: this map wants the deck as "
       "scenery, not as its light source." },
