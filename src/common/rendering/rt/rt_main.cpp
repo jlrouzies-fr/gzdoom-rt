@@ -57,6 +57,9 @@
 // Generated fist offsets + colours for RT_UploadHandGlowLights.
 #include "rt_hand_lights.h"
 
+// Generated lit-switch-face table for RT_UploadSwitchLights.
+#include "rt_switch_lights.h"
+
 RgInterface rt      = {};
 FRtState    rtstate = {};
 
@@ -222,6 +225,45 @@ namespace cvar
     RT_CVAR( rt_wall_strip_max,         128,    "hard cap on strip lights per frame, so a large open map cannot flood the light "
                                                 "list and wreck ReSTIR/RR temporal reuse" )
     RT_CVAR( rt_wall_strip_debug,       false,  "periodic console dump of wall strip light uploads + rejection tally" )
+
+    RT_CVAR( rt_switch_lights,          true,   "a thrown switch lights the wall it is set into. Retribution's switches change "
+                                                "art when used -- SWXC's demon face gains red eyes, SWXSG's plate gains a pink "
+                                                "gem -- and gen_world_emissives.py makes those texels GLOW, but an emissive "
+                                                "surface is not a light source under RTGL1 (see rt_wall_strips), so the switch "
+                                                "lit up and the wall around it stayed black. This places one analytic light on "
+                                                "the lit face. Table is GENERATED (tools/gen_switch_lights.py -> "
+                                                "rt_switch_lights.h): position is the centroid of the texture's own emissive "
+                                                "mask and colour is that mask's hue, so cast light and glow are measured from "
+                                                "the same pixels and cannot drift. Covers the bare 32x32 faces AND the 56 "
+                                                "CMPSW* wall panels that stamp them. Off = the eyes still glow, they just light "
+                                                "nothing -- which is the old behaviour, unlike rt_flame_light_on (2026-08-11)" )
+    RT_CVAR( rt_switch_light_intensity, 60.f,   "RT intensity for a switch face of ~7 lit texels (the SWXC eyes). Scaled up for "
+                                                "bigger emitters by sqrt(lit/7) so the 46-texel SWXSG gem is brighter without a "
+                                                "second table -- sqrt, not linear, or the gem lands 6.5x the eyes and reads as a "
+                                                "floodlight. Deliberately modest: this is a detail on a wall, not room lighting, "
+                                                "and 95 switch faces exist across 14 maps" )
+    RT_CVAR( rt_switch_light_radius,    0.06f,  "RT source radius in meters. Small -- a pair of eyes is a hard little source, "
+                                                "and a wide radius here smears the light across the whole plate" )
+    RT_CVAR( rt_switch_light_ofs,       2.f,    "map units to push the light off the wall face, along the surface normal. "
+                                                "Coplanar emitters self-shadow at grazing angles; this is the same 2.0 nudge "
+                                                "RT_UploadWallStripLights uses, and for the same reason" )
+    RT_CVAR( rt_switch_light_zofs,      0.f,    "map units added to the computed height, for CALIBRATING texture space against "
+                                                "world space. The vertical position depends on the sidedef's pegging flags and "
+                                                "row offset, and deriving that from an unverified convention is the mistake "
+                                                "recorded at RT_UploadWallStripLights and again at rt_spin_panel_yaw. If every "
+                                                "switch light sits a consistent distance above or below its eyes, correct it "
+                                                "here and say so; if only SOME are wrong, the pegging branch is wrong and this "
+                                                "cvar will not save it" )
+    RT_CVAR( rt_switch_light_maxdist,   2048.f, "skip switch lights further than this from the camera. Tighter than the flame "
+                                                "cull: a switch is a detail you read up close, not room light you notice "
+                                                "arriving" )
+    RT_CVAR( rt_switch_light_max,       48,     "nearest-first budget, split from every other family so a corridor of switch "
+                                                "panels cannot starve the real fixtures" )
+    // NOARCH like every other debug switch here: a marker cvar that persists into the
+    // ini turns up weeks later as "why is the map full of cyan dots".
+    RT_CVAR_NOARCH( rt_switch_light_debug, false, "cyan markers at each switch light plus a per-60-frame "
+                                                "dump of texture, part, pegging and world position. The markers must sit ON the "
+                                                "lit eyes; if they float above or below, see rt_switch_light_zofs" )
 
     RT_CVAR( rt_ceiling_edge_lamps,     true,   "place lights around the PERIMETER of lamp ceilings (SFLATAS/SFLATAQ/SFLATAP/"
                                                 "SPORT*) instead of one sphere at the centre. rt_ceiling_lamps skips any sector "
@@ -1559,6 +1601,11 @@ constexpr uint64_t CeilingLatticeId_Base = 1ull << 44;
 // are secIndex<<1 + face, which cannot reach 1<<45 for any sector count a Doom map can
 // hold. Two per sector, so the low bit is the face (0 floor, 1 ceiling).
 constexpr uint64_t SpinPanelId_Base      = 1ull << 45;
+// Switch faces. Keyed on the SIDEDEF index and part, not on a pointer: a switch is
+// static geometry, so the id must be stable across frames or RTGL1 sees the whole set
+// die and respawn every frame and throws away its temporal reservoirs. Room for
+// sidedefIndex * 4 + part, which at Retribution's map sizes is far inside the next bit.
+constexpr uint64_t SwitchLightId_Base    = 1ull << 46;
 // Segments per line, so a line's light IDs never collide with the next line's.
 constexpr uint64_t WallStripSegsPerLine = 16;
 // Bounds the id packing in RT_UploadCeilingEdgeLamps: line->Index() * 2 * this stays well
@@ -6047,7 +6094,7 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
       "The other CLOUDBRN map, same room and same scroll rate as MAP10, so the "
       "same orange. Kept as its own row rather than shared, because the table is "
       "keyed by map and a shared row would hide which maps are actually on." },
-    { "map12", true, 0x9C55DC, 1.0f, 0.010f, 8, 1.0f, 0.45f,
+    { "map12", true, 0x6135A0, 1.0f, 0.010f, 8, 1.0f, 0.45f,
       "MAXED, and the one map that leans on the deck as a light rather than as "
       "scenery. Full alpha, all 8 shells, double the global thickness: the sky "
       "is solid cloud with no clear patches to speak of.\n"
@@ -6058,21 +6105,26 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
       "LIT x tint x the shell ramp and the darkest is SHADOW x tint x that ramp "
       "-- both ends of the rendered range are arithmetic, which is what makes "
       "this tunable on paper at all.\n"
-      "  It was 8660C0 first, matched to the console game's own sky pixel for "
-      "pixel (bright #7253AC against its #745BAD, dark #110D1E against its "
-      "#100F1F -- screen/doom64clouds.png). That measured right and read WEAK in "
-      "motion, so this is a deliberate step past the reference: same luminance, "
-      "saturation 0.50 -> 0.61. Held at the same Y on purpose, so `stronger "
-      "purple` means more saturated and not brighter -- G carries most of the "
-      "luminance, so the cost of the saturation is paid in R and B rather than "
-      "by darkening. Sweep it without rebuilding: tools\\ab-clouds.cmd <arm> "
-      "<map> <tint>.\n"
+      "  Settled by sweeping, not by matching. It was 8660C0 first, which is the "
+      "console game's own sky pixel for pixel (bright #7253AC against its "
+      "#745BAD, dark #110D1E against its #100F1F -- screen/doom64clouds.png); "
+      "that measured right and read WEAK in motion. Then 9C55DC and a run up "
+      "into the neon range as far as 9A28FF, and the answer came back down: "
+      "6135A0 is 9A28FF faded (saturation 0.84 -> 0.67) and deepened (Y 80 -> "
+      "70). Bright cloud #522E8F, dark #0D0719, moonlight #F997FF.\n"
+      "  NOTE it delivers about a THIRD less light than 9C55DC did -- moon "
+      "intensity 11.1 against 17.4 at rt_sun_intensity 90 -- because tint "
+      "luminance scales the moonlight as well as the picture and this tint is "
+      "both darker and more saturated. Deliberately not compensated here: if "
+      "MAP12's outdoors wants the light back, raise this row's transmit from "
+      "0.45 to 0.60, which restores it without touching the colour. Sweep "
+      "either without rebuilding: tools\\ab-clouds.cmd <arm> <map> <tint>.\n"
       "  transmit 0.45 against the global 0.22 is what makes that survivable. "
       "The deck's transmittance is now a slab (see hw_skyportal.cpp), so this is "
       "literally what a fully covered patch passes: 0.45 of the tint, which "
       "works out at about a sixth of the moon's luminance arriving strongly "
       "violet. At the global 0.22 a deck this thick would be a lid." },
-    { "map30", true, 0x9C55DC, 0.85f, 0.010f, -1, -1.f, -1.f,
+    { "map30", true, 0x6135A0, 0.85f, 0.010f, -1, -1.f, -1.f,
       "Same purple as MAP12 -- same CLOUDPRP room, same MOUNTC ridge, same "
       "scroll rate -- but not MAP12's maxed shape: this map wants the deck as "
       "scenery, not as its light source." },
@@ -9619,6 +9671,334 @@ static const RtFlameKind* RT_FlameKindOf( AActor* mo )
     return nullptr;
 }
 
+// A thrown switch changes its own texture (ANIMDEFS: CMPSW##A -> ON -> CMPSW##B) and the
+// new art has lit eyes or a lit gem. Nothing else needs to happen for this to be correct
+// across a save, a level reset or a switch thrown back off: the walk reads
+// side->GetTexture(), which IS the swapped texture, so the light exists exactly while the
+// lit face is on the wall. There is no state to track and nothing to keep in sync.
+//
+// Which frame is "on" is not the A/B letter -- SWXCL and SWXCKL light on A, their eyes go
+// OUT when pressed -- but that is settled in the generated table, which is built from
+// which textures actually carry an emissive mask.
+static const RtSwitchLight* RT_SwitchLightFor( FGameTexture* gtex )
+{
+    if( !gtex )
+    {
+        return nullptr;
+    }
+    // Built once. 67 rows is small enough that a linear scan per sidedef part per frame
+    // would still be cheap, but this runs 3x over every sidedef in the level every frame.
+    static const std::unordered_map< std::string, const RtSwitchLight* > lookup = [] {
+        std::unordered_map< std::string, const RtSwitchLight* > m;
+        for( const RtSwitchLight& s : RT_SWITCH_LIGHTS )
+        {
+            m.emplace( s.tex, &s );
+        }
+        return m;
+    }();
+
+    const char* nm = gtex->GetName().GetChars();
+    if( !nm || !*nm )
+    {
+        return nullptr;
+    }
+    std::string key = nm;
+    for( char& c : key )
+    {
+        c = char( toupper( (unsigned char)c ) );
+    }
+    auto it = lookup.find( key );
+    return it == lookup.end() ? nullptr : it->second;
+}
+
+void RT_UploadSwitchLights()
+{
+    if( !cvar::rt_switch_lights || !primaryLevel )
+    {
+        return;
+    }
+    const float baseI = std::max( 0.f, float{ cvar::rt_switch_light_intensity } );
+    const int   budget = std::max( 0, int{ cvar::rt_switch_light_max } );
+    if( baseI <= 0.01f || budget == 0 )
+    {
+        return;
+    }
+
+    const float  srcRadius = std::max( 0.01f, float{ cvar::rt_switch_light_radius } );
+    const double wallOfs   = double( float{ cvar::rt_switch_light_ofs } );
+    const double zNudge    = double( float{ cvar::rt_switch_light_zofs } );
+    const double maxDist   = std::max( 64.0, double( float{ cvar::rt_switch_light_maxdist } ) );
+    const double maxDist2  = maxDist * maxDist;
+    const bool   dbg       = bool{ cvar::rt_switch_light_debug };
+
+    struct SwCand
+    {
+        double              d2;
+        double              x, y, z;
+        const RtSwitchLight* sw;
+        uint64_t            id;
+        const char*         why; // debug only: which pegging branch placed it
+    };
+    std::vector< SwCand > cand;
+
+    const DVector3 vpos = r_viewpoint.Pos;
+
+    for( unsigned i = 0; i < primaryLevel->lines.Size(); i++ )
+    {
+        const line_t& line = primaryLevel->lines[ i ];
+        if( !line.v1 || !line.v2 )
+        {
+            continue;
+        }
+        const double x1 = line.v1->fX(), y1 = line.v1->fY();
+        const double x2 = line.v2->fX(), y2 = line.v2->fY();
+        const double lineLen = std::hypot( x2 - x1, y2 - y1 );
+        if( lineLen < 1.0 )
+        {
+            continue;
+        }
+
+        for( int s = 0; s < 2; s++ )
+        {
+            side_t* side = line.sidedef[ s ];
+            if( !side || !side->sector )
+            {
+                continue;
+            }
+            const sector_t* thisSec   = side->sector;
+            const side_t*   otherSide = line.sidedef[ 1 - s ];
+            const sector_t* otherSec  = otherSide ? otherSide->sector : nullptr;
+
+            for( int part = 0; part < 3; part++ )
+            {
+                const RtSwitchLight* sw =
+                    RT_SwitchLightFor( TexMan.GetGameTexture( side->GetTexture( part ), true ) );
+                if( !sw )
+                {
+                    continue;
+                }
+
+                // Vertical band this part covers, same derivation as the wall strips.
+                const DVector2 mid{ ( x1 + x2 ) * 0.5, ( y1 + y2 ) * 0.5 };
+                double         zLow = 0.0, zHigh = 0.0;
+                if( part == side_t::top && otherSec )
+                {
+                    zLow  = otherSec->ceilingplane.ZatPoint( mid );
+                    zHigh = thisSec->ceilingplane.ZatPoint( mid );
+                }
+                else if( part == side_t::bottom && otherSec )
+                {
+                    zLow  = thisSec->floorplane.ZatPoint( mid );
+                    zHigh = otherSec->floorplane.ZatPoint( mid );
+                }
+                else if( part == side_t::mid && otherSec )
+                {
+                    zLow  = std::max( thisSec->floorplane.ZatPoint( mid ),
+                                     otherSec->floorplane.ZatPoint( mid ) );
+                    zHigh = std::min( thisSec->ceilingplane.ZatPoint( mid ),
+                                      otherSec->ceilingplane.ZatPoint( mid ) );
+                }
+                else
+                {
+                    zLow  = thisSec->floorplane.ZatPoint( mid );
+                    zHigh = thisSec->ceilingplane.ZatPoint( mid );
+                }
+                if( zHigh < zLow )
+                {
+                    std::swap( zLow, zHigh );
+                }
+                if( zHigh - zLow < 1.0 )
+                {
+                    continue;
+                }
+
+                // World units per texel. Doom 64 Retribution authors these at 1.0, but a
+                // scaled sidedef would otherwise put the light at a fraction of the right
+                // height and look like a pegging bug rather than a scale one.
+                const double sx = side->GetTextureXScale( part );
+                const double sy = side->GetTextureYScale( part );
+                const double wptX = ( std::abs( sx ) > 1e-6 ) ? 1.0 / sx : 1.0;
+                const double wptY = ( std::abs( sy ) > 1e-6 ) ? 1.0 / sy : 1.0;
+
+                // Where the TOP of the texture sits in world Z. This is the part that is a
+                // convention rather than a measurement -- see rt_switch_light_zofs.
+                const bool  pegTop = ( line.flags & ML_DONTPEGTOP ) != 0;
+                const bool  pegBot = ( line.flags & ML_DONTPEGBOTTOM ) != 0;
+                const double texH  = double( sw->th ) * wptY;
+                double       zTexTop;
+                const char*  why;
+                if( part == side_t::top )
+                {
+                    // Unpegged upper: texture hangs from this sector's ceiling. Pegged:
+                    // it rises from the bottom of the upper band.
+                    zTexTop = pegTop ? zHigh : ( zLow + texH );
+                    why     = pegTop ? "top/pegTop" : "top/bottomup";
+                }
+                else if( part == side_t::bottom )
+                {
+                    // Unpegged lower takes its origin from the CEILING of this sector,
+                    // not from the step it is drawn on -- that is the whole point of the
+                    // flag, and getting it backwards is what makes a lower texture appear
+                    // to slide when a floor moves.
+                    zTexTop = pegBot ? thisSec->ceilingplane.ZatPoint( mid ) : zHigh;
+                    why     = pegBot ? "bot/pegBot" : "bot/bandtop";
+                }
+                else
+                {
+                    zTexTop = pegBot ? ( zLow + texH ) : zHigh;
+                    why     = pegBot ? "mid/pegBot" : "mid/bandtop";
+                }
+                zTexTop -= side->GetTextureYOffset( part );
+
+                const double z = zTexTop - double( sw->cy ) * wptY + zNudge;
+                // A switch whose lit face is outside the band it is drawn in means the
+                // pegging branch above guessed wrong for this sidedef. Drop it rather than
+                // put a red light inside a wall, where it is invisible and indistinguishable
+                // from the feature not working.
+                if( z < zLow - 8.0 || z > zHigh + 8.0 )
+                {
+                    continue;
+                }
+
+                // Horizontal: the texture repeats every tw texels along the line, so solve
+                // for every column at which the lit centroid lands inside this line.
+                const double texW = double( sw->tw ) * wptX;
+                if( texW < 1.0 )
+                {
+                    continue;
+                }
+                const double xoff = side->GetTextureXOffset( part );
+                double       d0   = std::fmod( double( sw->cx ) * wptX - xoff, texW );
+                if( d0 < 0.0 )
+                {
+                    d0 += texW;
+                }
+
+                const double ux = ( x2 - x1 ) / lineLen;
+                const double uy = ( y2 - y1 ) / lineLen;
+                // Outward normal decided against the sector centre, NOT against Doom's
+                // winding: getting that convention backwards buries every light 2 units
+                // inside solid geometry, which looks exactly like uploading nothing. Same
+                // trap, same fix, as RT_UploadWallStripLights.
+                const double nx = -uy, ny = ux;
+                const double towardX = double( thisSec->centerspot.X ) - ( x1 + x2 ) * 0.5;
+                const double towardY = double( thisSec->centerspot.Y ) - ( y1 + y2 ) * 0.5;
+                const double ofs = ( nx * towardX + ny * towardY ) >= 0.0 ? wallOfs : -wallOfs;
+
+                int rep = 0;
+                for( double d = d0; d <= lineLen && rep < 4; d += texW, rep++ )
+                {
+                    const double px = x1 + ux * d + nx * ofs;
+                    const double py = y1 + uy * d + ny * ofs;
+                    const double dx = px - vpos.X, dy = py - vpos.Y, dz = z - vpos.Z;
+                    const double d2 = dx * dx + dy * dy + dz * dz;
+                    if( d2 > maxDist2 )
+                    {
+                        continue;
+                    }
+                    cand.push_back( SwCand{
+                        d2,
+                        px,
+                        py,
+                        z,
+                        sw,
+                        // sidedef index, part and repeat all fold in, so two switches on
+                        // one line never collide and the id never moves between frames.
+                        SwitchLightId_Base +
+                            ( uint64_t( side->Index() ) * 16ull ) + uint64_t( part ) * 4ull +
+                            uint64_t( rep ),
+                        why,
+                    } );
+                }
+            }
+        }
+    }
+
+    const size_t wanted = cand.size();
+    if( wanted > size_t( budget ) )
+    {
+        std::partial_sort( cand.begin(),
+                           cand.begin() + budget,
+                           cand.end(),
+                           []( const SwCand& a, const SwCand& b ) { return a.d2 < b.d2; } );
+        cand.resize( size_t( budget ) );
+    }
+
+    for( const SwCand& c : cand )
+    {
+        // sqrt, not linear: the SWXSG gem is 46 lit texels against the SWXC eyes' 7, and
+        // a linear scale would hand it 6.5x the intensity and turn a gem into a spotlight.
+        const float scale = std::sqrt( float( std::max( 1, c.sw->lit ) ) / 7.0f );
+        const float I     = baseI * scale;
+
+        const float kR = ( ( c.sw->rgb >> 16 ) & 0xFF ) / 255.0f;
+        const float kG = ( ( c.sw->rgb >> 8 ) & 0xFF ) / 255.0f;
+        const float kB = ( c.sw->rgb & 0xFF ) / 255.0f;
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = rt.rgUtilPackColorFloat4D( kR, kG, kB, 1.0f ),
+            .intensity = I,
+            .position  = { float( c.x ) * ONEGAMEUNIT_IN_METERS,
+                           float( c.y ) * ONEGAMEUNIT_IN_METERS,
+                           float( c.z ) * ONEGAMEUNIT_IN_METERS },
+            .radius    = srcRadius,
+        };
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = c.id,
+            .isExportable = false,
+        };
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        if( dbg )
+        {
+            auto markSph = RgLightSphericalEXT{
+                .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+                .pNext     = nullptr,
+                .color     = rt.rgUtilPackColorByte4D( 0, 255, 255, 255 ),
+                .intensity = float{ cvar::rt_light_mark_intensity },
+                .position  = sph.position,
+                .radius    = 0.04f,
+            };
+            auto markInfo = RgLightInfo{
+                .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+                .pNext        = &markSph,
+                .uniqueID     = c.id + ( 1ull << 41 ),
+                .isExportable = false,
+            };
+            RgResult mr = rt.rgUploadLight( &markInfo );
+            RG_CHECK( mr );
+        }
+    }
+
+    if( dbg )
+    {
+        static int frame = 0;
+        if( ( frame++ % 60 ) == 0 )
+        {
+            Printf( "rt_switch_light: uploaded=%d of %d wanted (cap %d, within %.0fu)\n",
+                    int( cand.size() ),
+                    int( wanted ),
+                    budget,
+                    maxDist );
+            for( size_t k = 0; k < cand.size() && k < 6; k++ )
+            {
+                Printf( "    %-10s %-12s (%.0f, %.0f, %.0f)  lit=%d\n",
+                        cand[ k ].sw->tex,
+                        cand[ k ].why,
+                        cand[ k ].x,
+                        cand[ k ].y,
+                        cand[ k ].z,
+                        cand[ k ].sw->lit );
+            }
+        }
+    }
+}
+
 void RT_UploadFlameLights()
 {
     // Fire is the one light source in this game that must not hold still. See the
@@ -10108,6 +10488,7 @@ void RTFrameBuffer::RT_DrawFrame()
     RT_UploadHangingTechLamps();
     RT_UploadHandGlowLights();
     RT_UploadFlameLights();
+    RT_UploadSwitchLights();
     RT_UpdateSectorEmisThreshold();
     RT_WatchLightlevels();
     RT_UploadWallStripLights();
