@@ -569,6 +569,23 @@ namespace cvar
                                                 "the wrong texture. 0 = smooth." )
     RT_CVAR( rt_lava_pulse,             0.10f,  "depth of a slow whole-surface breath under the drift, 0..1" )
     RT_CVAR( rt_lava_pulse_speed,       0.35f,  "rate of that breath, radians per second" )
+    // The lava as an AREA light, which is what a lake actually is.
+    //
+    // The analytic grid (rt_lava_light_*) works but shows its seams: each point
+    // gets its own pool, and walking past one draws a circle of illumination
+    // across the wall. A lake does not light a room that way. Indirect emission
+    // does -- it is already the mechanism (emissiveMult, then rt_emis_mapboost
+    // in RtRaygenIndirect), it was simply never strong enough on this material.
+    // Raise this and drop rt_lava_light_on for the area-source version; it is
+    // softer and correct, at the cost of being carried by the indirect pass,
+    // which is noisier and has no sharp shadow.
+    RT_CVAR( rt_lava_gi,                1.0f,   "multiplier on the lava's INDIRECT emission -- the lava lighting the "
+                                                "room as an area source instead of via the analytic light grid. "
+                                                "Try 20-60 with rt_lava_light_on 0." )
+    RT_CVAR_NOARCH( rt_lava_debug,      false,  "paint every surface the shader sees as lava MAGENTA. Answers "
+                                                "'does the LAVA flag reach the shader' on its own -- a boost that "
+                                                "changes nothing cannot tell 'the multiply is not happening' apart "
+                                                "from 'what it multiplies is already zero'." )
     RT_CVAR( rt_lava_light_on,          true,   "upload analytic lights over the lava flats (HLAVA*, D64LAVA*), scattered "
                                                 "on a grid. Without this the lava lights nothing at all: the "
                                                 "lightIntensity in textures.json only ever worked for sprites, so a lava "
@@ -11810,6 +11827,8 @@ void RTFrameBuffer::RT_DrawFrame()
         .lavaFlowPixel          = cvar::rt_lava_flow_pixel,
         .lavaPulse              = std::clamp( float{ cvar::rt_lava_pulse }, 0.f, 1.f ),
         .lavaPulseSpeed         = cvar::rt_lava_pulse_speed,
+        .lavaGiBoost            = std::max( 0.f, float{ cvar::rt_lava_gi } ),
+        .lavaDebug              = cvar::rt_lava_debug ? 1.f : 0.f,
         .stylizedWaterDebug     = float( *cvar::rt_water_debug ),
         .stylizedWaterReflMin   = cvar::rt_water_reflmin,
         .waterCausticGain       = cvar::rt_water_caustics,
