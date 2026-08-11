@@ -543,24 +543,27 @@ namespace cvar
                                                 "on a grid. Without this the lava lights nothing at all: the "
                                                 "lightIntensity in textures.json only ever worked for sprites, so a lava "
                                                 "room renders as a black box with a glowing net on the floor." )
-    RT_CVAR( rt_lava_light_intensity,   180.f,  "intensity of ONE grid light, before the spacing correction. The "
+    RT_CVAR( rt_lava_light_intensity,   60.f,   "intensity of ONE grid light, before the spacing correction. The "
                                                 "correction keeps total output constant when rt_lava_light_spacing "
                                                 "changes, so this is the knob for how bright the lava room is and "
                                                 "spacing is the knob for how even it looks. HUNDREDS, not units: "
                                                 "RgLightSphericalEXT.intensity is luminous flux in lumen and the rest "
                                                 "of this file works in the same scale (flames 900, wall strip segment "
-                                                "180, faux panel 500). The first version of this shipped at 0.9 and "
-                                                "was reported as the lava casting no light at all -- which it was, "
-                                                "200x under everything else in the map." )
+                                                "180, faux panel 500). Lower than those on purpose: there are ~120 of "
+                                                "these in a lava hall and each one sits under a metre above the "
+                                                "surface, so the per-light number that reads right is well below a "
+                                                "torch's." )
     RT_CVAR( rt_lava_light_spacing,     96.f,   "grid spacing in MAP UNITS. Smaller is smoother and more expensive; the "
                                                 "per-light intensity is scaled by (spacing/96)^2 so changing this does "
                                                 "not change the room's brightness, only the evenness of it." )
     RT_CVAR( rt_lava_light_radius,      0.6f,   "RT source radius in METRES. Wide on purpose — a lava lake is an area "
                                                 "source, and a small radius gives every grid point its own hard little "
                                                 "shadow, which reads as a row of lamps under the floor." )
-    RT_CVAR( rt_lava_light_z,           12.f,   "how far ABOVE the floor plane each light sits, map units. Lights placed "
+    RT_CVAR( rt_lava_light_z,           24.f,   "how far ABOVE the floor plane each light sits, map units. Lights placed "
                                                 "exactly on the plane self-shadow against it and half the output is "
-                                                "lost into the floor." )
+                                                "lost into the floor; placed too close they burn a hard pool into it "
+                                                "directly underneath. 24 units is 0.75 m, about a quarter of the grid "
+                                                "spacing, which keeps the wash even." )
     RT_CVAR( rt_lava_light_max,         256,    "cap on lava lights per frame, nearest to the camera first. A big lake "
                                                 "at 96-unit spacing is hundreds of grid points and they are all equally "
                                                 "worthless once they are a room away." )
@@ -10317,12 +10320,21 @@ void RT_UploadLavaLights()
 
     for( const LavaCand& c : cand )
     {
+        // METRES. RTGL1 world space is metres and every other light family in
+        // this file converts (ONEGAMEUNIT_IN_METERS); this one did not, so the
+        // grid was uploaded 32x too far out -- a light meant to sit 12 units
+        // over the lava landed 12 METRES over it, and one 40 units away landed
+        // 40 metres away. Irradiance goes as 1/d^2, so the whole lake arrived
+        // ~1000x too weak AND in the wrong place. It looked exactly like the
+        // lights not existing, which is where three rounds went.
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = color,
             .intensity = intensity,
-            .position  = { float( c.x ), float( c.y ), float( c.z ) },
+            .position  = { float( c.x ) * ONEGAMEUNIT_IN_METERS,
+                           float( c.y ) * ONEGAMEUNIT_IN_METERS,
+                           float( c.z ) * ONEGAMEUNIT_IN_METERS },
             .radius    = srcRad,
         };
         auto info = RgLightInfo{
@@ -10371,6 +10383,26 @@ void RT_UploadLavaLights()
                     spacing,
                     intensity,
                     srcRad );
+            // Positions in BOTH spaces, and the camera with them. A light that
+            // is correct in map units and wrong in metres is invisible in every
+            // other symptom, so the conversion is printed rather than trusted.
+            if( !cand.empty() )
+            {
+                const LavaCand& c = cand.front();
+                Printf( "rt_lava_light: nearest light map(%.0f %.0f %.0f) -> "
+                        "rt(%.2f %.2f %.2f) m, camera map(%.0f %.0f %.0f), "
+                        "%.1f map units away\n",
+                        c.x,
+                        c.y,
+                        c.z,
+                        c.x * ONEGAMEUNIT_IN_METERS,
+                        c.y * ONEGAMEUNIT_IN_METERS,
+                        c.z * ONEGAMEUNIT_IN_METERS,
+                        vpos.X,
+                        vpos.Y,
+                        vpos.Z,
+                        std::sqrt( c.d2 ) );
+            }
         }
     }
 }
