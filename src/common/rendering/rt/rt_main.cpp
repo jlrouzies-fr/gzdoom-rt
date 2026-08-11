@@ -592,6 +592,20 @@ namespace cvar
                                                 "room as an area source instead of via the analytic light grid. "
                                                 "Default now that this is the shipping model: the grid is off and "
                                                 "the lava lights the room by being a large warm surface." )
+    // Unattended capture, for driving an A/B without a human at the keyboard.
+    //
+    // GZDoom's console "wait" takes no argument, so a deferred -exec script
+    // fires everything on the first tic: screenshot at the title screen, then
+    // quit before the map is even loaded. These count MAP time instead, so the
+    // shot lands with the level up and the player wherever rt_lava_autogoto put
+    // them. NOARCH -- an autoquit that stuck in the ini would be unpleasant.
+    RT_CVAR_NOARCH( rt_autoshot,        0,      "take a screenshot this many TICS after the map starts (35 = 1s). "
+                                                "0 = off. Pairs with rt_lava_autogoto for a hands-free A/B." )
+    RT_CVAR_NOARCH( rt_autoquit,        0,      "quit this many tics after the map starts. 0 = off." )
+    RT_CVAR_NOARCH( rt_autoshot_every,  0,      "after the first rt_autoshot, keep taking one every this many "
+                                                "tics. 0 = a single shot. A moving effect cannot be judged from "
+                                                "one frame, and relaunching for each moment is slower than "
+                                                "shooting a burst." )
     RT_CVAR_NOARCH( rt_lava_debug,      false,  "paint every surface the shader sees as lava MAGENTA. Answers "
                                                 "'does the LAVA flag reach the shader' on its own -- a boost that "
                                                 "changes nothing cannot tell 'the multiply is not happening' apart "
@@ -11751,6 +11765,37 @@ void RTFrameBuffer::RT_DrawFrame()
         }
     }
 
+    // Unattended capture -- see rt_autoshot.
+    if( primaryLevel && ( int{ cvar::rt_autoshot } > 0 || int{ cvar::rt_autoquit } > 0 ) )
+    {
+        const int t = primaryLevel->maptime;
+        static int s_shotAt = -1;
+        static int s_quitAt = -1;
+        if( int{ cvar::rt_autoshot } > 0 && t >= int{ cvar::rt_autoshot } && s_shotAt != t )
+        {
+            s_shotAt = t;
+            static int s_lastShot = -100000;
+            const int  every      = std::max( 0, int{ cvar::rt_autoshot_every } );
+            if( s_lastShot < 0 || ( every > 0 && t - s_lastShot >= every ) )
+            {
+                s_lastShot = t;
+                Printf( "rt_autoshot: screenshot at maptime %d\n", t );
+                AddCommandString( "screenshot" );
+            }
+        }
+        if( int{ cvar::rt_autoquit } > 0 && t >= int{ cvar::rt_autoquit } && s_quitAt != t )
+        {
+            s_quitAt = t;
+            static bool s_quitDone = false;
+            if( !s_quitDone )
+            {
+                s_quitDone = true;
+                Printf( "rt_autoquit: quitting at maptime %d\n", t );
+                AddCommandString( "quit" );
+            }
+        }
+    }
+
     RT_UploadExportableSectorLights();
     RT_UploadGzDoomDynamicLights();
     RT_UploadCeilingInsetLamps();
@@ -13386,12 +13431,19 @@ static void RT_InjectTitleIntoDoomMap( const char* mapname )
     // what used to happen: "EPISODE III / HELL" landed on MAP21 "Pitfalls",
     // which is 94% stone and one of the least hellish maps in the back half.
     //
-    // DBIGFONT is Retribution's own FON2 lump (it overrides BIGFONT); stock
-    // Doom II has no such lump, so this cleanly separates the two games.
-    const bool isdoom64tc = fileSystem.CheckNumForName( "DBIGFONT" ) >= 0;
+    // Test on where the MAP LUMP came from, not on a lump lookup by name:
+    // RT_GetMapWadName() returns empty for maps out of doom2.wad (it special-
+    // cases the IWAD) and the pwad's name otherwise. DoLoadLevel already uses
+    // exactly this call to build RT_MapName, so it is load-bearing code rather
+    // than a guess about filesystem namespaces -- a CheckNumForName("DBIGFONT")
+    // here looked obvious and silently returned -1, which is why the DOOM II
+    // cards kept firing.
+    extern FString RT_GetMapWadName( const char* mapname );
+    const FString  wad_of_map = RT_GetMapWadName( mapname );
+    const bool     ispwadmap  = !wad_of_map.IsEmpty();
 
     const char* titlename = nullptr;
-    if( isdoom64tc )
+    if( ispwadmap )
     {
         // Doom 64's own act boundaries. Deduced from texture families across the
         // 25 campaign maps: MAP01-08 are 99-100% SPACE/SFLAT tech with zero
@@ -13423,13 +13475,35 @@ static void RT_InjectTitleIntoDoomMap( const char* mapname )
         }
     }
 
+    // Say what happened on every map that could produce a card. Without this a
+    // silent no-card is indistinguishable from a wrong-card, and both have now
+    // cost a launch to diagnose.
+    const bool candidate = stricmp( mapname, "map01" ) == 0 || //
+                           stricmp( mapname, "map09" ) == 0 || //
+                           stricmp( mapname, "map12" ) == 0 || //
+                           stricmp( mapname, "map20" ) == 0 || //
+                           stricmp( mapname, "map21" ) == 0;
+    if( candidate )
+    {
+        Printf( "RT_Title: %s from wad \"%s\" (%s) -> %s\n",
+                mapname,
+                wad_of_map.GetChars(),
+                ispwadmap ? "mod" : "stock doom2",
+                titlename ? titlename : "no card" );
+    }
+
     if( !titlename )
     {
         return;
     }
 
+    // 7s, not the stock 5s: the card now carries two lines of Doom 64 type with
+    // real air between them, and 5s was not long enough to read it and still see
+    // it settle. The 3s fade-out is the tail END of the 7s, not extra on top --
+    // RT_DrawTitle() derives alpha from (endtick - maptime), so the card is up
+    // from 1.5s to 8.5s and spends the last 3s of that fading.
     constexpr int BEGIN_TICS    = int( 1.5f * TICRATE );
-    constexpr int DURATION_TICS = int( 5.0f * TICRATE );
+    constexpr int DURATION_TICS = int( 7.0f * TICRATE );
     constexpr int FADEOUT_TICS  = int( 3.0f * TICRATE );
 
     RT_StartTitleImage( titlename, BEGIN_TICS, BEGIN_TICS + DURATION_TICS, FADEOUT_TICS );
