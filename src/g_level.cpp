@@ -1407,6 +1407,17 @@ void FLevelLocals::DoLoadLevel(const FString &nextmapname, int position, bool au
 			RT_MapName = wad_of_map.MakeLower() + "_" + MapName.MakeLower();
 		}
 	}
+
+	// Every level load, not just the ones that go through G_InitNew. Ordinary
+	// map-to-map progression does not call G_InitNew, so without this the moon
+	// aim, rt_sky, cloud deck and fog request stay on the PREVIOUS map's values
+	// when you walk into a level, but are correct when you type `map mapNN`.
+	// Takes the plain map name ("MAP13"), matching the preset tables' keys --
+	// not RT_MapName, which is wad-prefixed.
+	{
+		extern void RT_OnLevelLoadPresets( const char* );
+		RT_OnLevelLoadPresets( MapName.GetChars() );
+	}
 #endif
 	static int lastposition = 0;
 	int i;

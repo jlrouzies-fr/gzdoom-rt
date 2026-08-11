@@ -7157,6 +7157,41 @@ void RT_OnLevelLoad( const char* mapname )
     RT_ForceIntroCutsceneMusicStop();
 }
 
+// The per-map lighting presets, re-applied on EVERY level load.
+//
+// RT_OnLevelLoad above runs from G_InitNew, which is reached by `map mapNN` and
+// by starting a new game -- but NOT by ordinary map-to-map progression, which
+// goes G_ChangeLevel -> G_DoCompleted -> G_DoWorldDone -> G_DoLoadLevel. So
+// walking out of MAP12 into MAP13 left MAP12's moon aim, rt_sky, cloud deck and
+// fog request in place, while `map map13` applied MAP13's. The same map was lit
+// differently depending on how you arrived, which quietly invalidates any A/B
+// whose arms do not all enter the same way.
+//
+// Deliberately NOT the whole of RT_OnLevelLoad: titles, the cutscene music stop
+// and the post-effect/fluid resets belong to the new-game path and are not
+// idempotent enough to run again here. This is only the name-keyed preset state
+// plus the two stale carry-overs that feed it.
+//
+// Safe to run twice -- the new-game path reaches both this and RT_OnLevelLoad.
+// RT_Apply*Preset capture their g_*_base_* baseline behind a one-shot guard and
+// then assign cvars from the table or that baseline, so a second call with the
+// same map name is a no-op rather than a second capture of already-preset values.
+void RT_OnLevelLoadPresets( const char* mapname )
+{
+    g_lightning.active = false;
+    RT_SetCloudSunTransmittance( 1.f, 1.f, 1.f );
+
+    RT_ApplyCloudPreset( mapname );
+    RT_ApplyMoonPreset( mapname );
+
+    // Fog is only REQUESTED, for the reason given on g_fog_pending_map: the map's
+    // own `fade`/`fogdensity` are not readable until P_SetupLevel has run, so
+    // RT_ResolveFogIfPending picks this up on the first rendered frame instead.
+    g_fog_pending_map = mapname ? mapname : "";
+    g_fog_pending     = true;
+    g_fog_active      = false;
+}
+
 void RT_RequestMelt()
 {
     // HACKHACK: suppress melting when getting into the first start
