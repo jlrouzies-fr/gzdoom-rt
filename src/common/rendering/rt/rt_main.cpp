@@ -543,7 +543,7 @@ namespace cvar
                                                 "on a grid. Without this the lava lights nothing at all: the "
                                                 "lightIntensity in textures.json only ever worked for sprites, so a lava "
                                                 "room renders as a black box with a glowing net on the floor." )
-    RT_CVAR( rt_lava_light_intensity,   600.f,  "intensity of ONE grid light, before the spacing correction. The "
+    RT_CVAR( rt_lava_light_intensity,   1800.f, "intensity of ONE grid light, before the spacing correction. The "
                                                 "correction keeps total output constant when rt_lava_light_spacing "
                                                 "changes, so this is the knob for how bright the lava room is and "
                                                 "spacing is the knob for how even it looks. HUNDREDS, not units: "
@@ -554,14 +554,17 @@ namespace cvar
                                                 "11 within 256, a 2000 lm control light one metre overhead was barely "
                                                 "visible in this hall -- so 60 lm at 1.5 m was never going to show. "
                                                 "Every earlier value here (0.9, then 180, then 60) was reasoned from "
-                                                "what other families use rather than from what this room does." )
+                                                "what other families use rather than from what this room does. 600 "
+                                                "lit the near walls and left the hall underwhelming, so 1800: a lake "
+                                                "is not a fixture, and the thing it has to do is fill a room ~40 m "
+                                                "across and 24 m tall." )
     RT_CVAR( rt_lava_light_spacing,     96.f,   "grid spacing in MAP UNITS. Smaller is smoother and more expensive; the "
                                                 "per-light intensity is scaled by (spacing/96)^2 so changing this does "
                                                 "not change the room's brightness, only the evenness of it." )
     RT_CVAR( rt_lava_light_radius,      0.3f,   "RT source radius in METRES. Wide on purpose — a lava lake is an area "
                                                 "source, and a small radius gives every grid point its own hard little "
                                                 "shadow, which reads as a row of lamps under the floor." )
-    RT_CVAR( rt_lava_light_z,           24.f,   "how far ABOVE the floor plane each light sits, map units. Lights placed "
+    RT_CVAR( rt_lava_light_z,           40.f,   "how far ABOVE the floor plane each light sits, map units. Lights placed "
                                                 "exactly on the plane self-shadow against it and half the output is "
                                                 "lost into the floor; placed too close they burn a hard pool into it "
                                                 "directly underneath. 24 units is 0.75 m, about a quarter of the grid "
@@ -6563,14 +6566,31 @@ struct FogPreset
 };
 
 constexpr FogPreset RT_FOG_PRESETS[] = {
-    { "map26", true, 0, -1.f, -1.f, -1.f, 1, -1.f, 0, -1.f,
+    // Clear air around the player, a wall of teal at corridor distance. That
+    // shape is the whole look of the reference shot and it is what the ramp
+    // exists for -- see the transmittance ladder in the note.
+    { "map26", true, 0, 6.f, 32.f, -1.f, 1, 190.f, 0, 2.4f,
       "Hardcore. The map this exists for, and the one with a reference shot "
-      "(screen/doom64original_level26fog.png). Everything is inherited: colour "
-      "from its own `fade` 00 56 56, density from its own `fogdensity` 200. A "
-      "row that restated them would be a second copy of the map's data, and the "
-      "copy is what goes stale. illum 1 is not optional here -- MAP26's moon is "
-      "off (RT_MOON_PRESETS), so the single-light path would leave this fog with "
-      "no source at all." },
+      "(screen/doom64original_level26fog.png). "
+      "COLOUR is inherited: 0 means its own `fade` 00 56 56, and a row that "
+      "restated it would be a second copy of the map's data -- the copy is what "
+      "goes stale. "
+      "DENSITY is not inherited, and cannot be: this is a RAMP, and a single "
+      "MAPINFO `fogdensity` has no way to say `clear here, solid over there`, so "
+      "both ends are stated outright. They are set against the reference, where "
+      "the near wall keeps its rivets and only takes a tint while the far end of "
+      "the corridor is simply gone -- transmittance ~0.95 at 128 map units, 0.88 "
+      "at 256, 0.59 at 512, 0.20 at 768, 0.02 by 1024. "
+      "CURVE 2.4 is what holds the near value out that far. At curve 1 the same "
+      "two ends start hazing the room you are standing in immediately, which is "
+      "the exact failure this row exists to avoid: the ends are rarely what is "
+      "wrong, the curve is. "
+      "REACH 32 m is 1024 map units and is part of the look, not a budget -- "
+      "everything past it is shaded with the far slice, so the teal closes at "
+      "corridor distance rather than a room-and-a-half further out. It is also "
+      "where the volume spends its 64 slices of precision. "
+      "ILLUM 1 is not optional here: MAP26's moon is off (RT_MOON_PRESETS), so "
+      "the single-light path would leave this fog with no source at all." },
 };
 
 // The launcher's values, captured once before any preset overwrites them, so a
