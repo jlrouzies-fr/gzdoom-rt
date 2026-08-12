@@ -2501,6 +2501,11 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .samplesPerCell = uint32_t( std::clamp( int{ cvar::rt_smoke_spp }, 1, 16 ) ),
         .maxLight       = std::max( 0.f, float{ cvar::rt_smoke_maxlight } ),
         .debugMode      = uint32_t( std::max( 0, int{ cvar::rt_smoke_debug } ) ),
+        // Stylization. Inside smoke_evalAt rather than a screen-space filter, so
+        // a frame with no puffs is untouched and smoke-fogsafe still holds.
+        .stylize        = std::clamp( float{ cvar::rt_smoke_stylize }, 0.f, 1.f ),
+        .stylizeSteps   = uint32_t( std::clamp( int{ cvar::rt_smoke_stylize_steps }, 1, 64 ) ),
+        .stylizeGrid    = std::max( 0.f, float{ cvar::rt_smoke_stylize_grid } ),
     };
 
     auto volumetrics_params = RgDrawFrameVolumetricParams{
