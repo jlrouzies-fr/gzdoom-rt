@@ -16,6 +16,9 @@
 #include "i_modelvertexbuffer.h"
 #include "image.h"
 #include "flatvertices.h"
+// GPalette / TranslationToTable / IsLuminosityTranslation, for the translated
+// material names in MakeTextureName.
+#include "palettecontainer.h"
 // FSkyVertex: the sky dome hands the vertex buffer its own vertex type, which is
 // why the buffer holds a variant rather than one layout.
 #include "hw_skydome.h"
@@ -434,7 +437,7 @@ public:
         }
 
         m_created = true;
-        m_name    = MakeTextureName( src );
+        m_name    = MakeTextureName( src, translation );
 
         if( m_name.empty() || !src.GetTexture() )
         {
@@ -520,12 +523,70 @@ public:
     }
 
 private:
-    static auto MakeTextureName( FGameTexture& fgametex ) -> std::string
+    // Doom64-RT: the suffix that makes a PALETTE-TRANSLATED texture its own
+    // RTGL1 material.
+    //
+    // Without it, every translation of a sprite is uploaded under the same name
+    // and RTGL1 keeps only the first (PreferExistingMaterials in its
+    // TextureManager: "Material with the same name already exists, ignoring new
+    // data"). GZDoom does the remap correctly -- it allocates a separate
+    // hardware texture per translation and CreateTexBuffer produces the right
+    // pixels -- and then the upload is silently dropped. That is why a monster's
+    // DECORATE BloodColor never rendered: BLUDA0 was already taken by the red
+    // one. Worse, WHICH one wins is upload order, so a session where a
+    // purple-blooded monster bled first would tint every other monster's blood.
+    //
+    // The index comes from GPalette, normalised exactly the way gzdoom's own
+    // FHardwareTextureContainer::GetTexID does (hw_texcontainer.h), so equal
+    // translations collapse onto one name. FRemapTable::Index is a global,
+    // CRC-deduplicated index into uniqueRemaps, so two different translations
+    // can never land on the same suffix.
+    //
+    // Kept to filesystem-safe characters on purpose: RTGL1 uses this name as a
+    // FILE STEM when it looks for material overrides (<ovrd>/<name>_e.ktx2 and
+    // friends), so anything exotic here becomes a bad path.
+    static auto TranslationSuffix( int translation ) -> std::string
     {
+        if( !cvar::rt_tex_translations || translation <= 0 )
+        {
+            return {};
+        }
+
+        if( IsLuminosityTranslation( translation ) )
+        {
+            // Only the colour range identifies these; same packing as GetTexID.
+            return "_tl" + std::to_string( ( translation >> 16 ) & 0x3fff );
+        }
+
+        const FRemapTable* remap = GPalette.TranslationToTable( translation );
+        const int          index = remap == nullptr ? 0 : remap->Index;
+
+        // Index 0 is the identity table -- not a translation at all, and it must
+        // keep the untranslated name or it would fork every texture in the game.
+        return index == 0 ? std::string{} : "_tr" + std::to_string( index );
+    }
+
+    static auto MakeTextureName( FGameTexture& fgametex, int translation ) -> std::string
+    {
+        const std::string suffix = TranslationSuffix( translation );
+
         // highest priority: FGameTexture name
         if( !fgametex.GetName().IsEmpty() )
         {
-            return fgametex.GetName().GetChars();
+            std::string name = fgametex.GetName().GetChars();
+            if( !suffix.empty() )
+            {
+                if( cvar::rt_tex_translations_debug )
+                {
+                    Printf( "rt_tex_translations: %s  translation %d  ->  %s%s\n",
+                            name.c_str(),
+                            translation,
+                            name.c_str(),
+                            suffix.c_str() );
+                }
+                name += suffix;
+            }
+            return name;
         }
 
         // if no lump name, stringify the image ID;
@@ -538,7 +599,7 @@ private:
             {
                 // MSVC's std::string has 16 chars inlined,
                 // so no allocation should happen
-                return std::to_string( imgsrc->GetId() );
+                return std::to_string( imgsrc->GetId() ) + suffix;
             }
         }
 
