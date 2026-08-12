@@ -912,6 +912,13 @@
     RT_CVAR( rt_emis_maxscrcolor,       8.f,    "burn on-screen emissive colors" )
     RT_CVAR( rt_emis_additive_dflt,     0.5f,   "emission value for objects with additive blending" )
     RT_CVAR( rt_smoothtextures,         false,  "enable linear texture filtering" )
+    RT_CVAR( rt_tex_translations,       true,   "give a palette-TRANSLATED texture its own RTGL1 material name (BLUDA0 -> BLUDA0_tr7). "
+                                                "Off = stock behaviour, where every translation of a sprite is uploaded under the same "
+                                                "name and RTGL1 keeps only the FIRST one (PreferExistingMaterials) -- which is why "
+                                                "per-monster BloodColor never rendered. LAUNCH-TIME ONLY: the name is computed once "
+                                                "per hardware texture and cached, so toggling this mid-session changes nothing" )
+    RT_CVAR_NOARCH( rt_tex_translations_debug, false, "print one line per translated texture as it is uploaded: base name, "
+                                                "translation index, final RTGL1 name. The proof that rt_tex_translations is live" )
 
     RT_CVAR( rt_tnmp_ev100_min,         2.f,    "min brightness for auto-exposure" )
     RT_CVAR( rt_tnmp_ev100_max,         7.7f,   "max brightness for auto-exposure" )
@@ -1586,7 +1593,9 @@
                                                 "The ROCKET trail and the monster guns divide by this before "
                                                 "multiplying back, so they emit a fixed number of parcels and moving "
                                                 "this knob is purely a player-weapon change." )
-    RT_CVAR( rt_smoke_budget,           72,     "maximum live puffs UPLOADED, of the 128 the uniform can carry "
+    RT_CVAR( rt_smoke_budget,          120,     "maximum live puffs UPLOADED, of the 128 the uniform can carry "
+                                                "(RG_MAX_SMOKE_PUFFS). Raised 72 -> 120 to feed "
+                                                "rt_smoke_ambient_far 60; 120 leaves 8 of the hard cap spare. "
                                                 "(RG_MAX_SMOKE_PUFFS). When more exist the NEAREST survive, since the "
                                                 "whole point is the smoke in front of your face. "
                                                 "THIS IS A SHADER-TIME KNOB, not a memory one, and the two limits are "
@@ -1786,7 +1795,14 @@
                                                 "read as heat carrying soot upward, not as a puff -- a torch that "
                                                 "coughs like a shotgun looks like it is going out. 0 is the same as "
                                                 "rt_smoke_ambient_fx 0." )
-    RT_CVAR( rt_smoke_ambient_budget,   52,     "ceiling on how many AMBIENT puffs may be alive at once (40 -> 52, sized for rt_smoke_ambient_far 14). This is the "
+    RT_CVAR( rt_smoke_ambient_budget,   96,     "ceiling on how many AMBIENT puffs may be alive at once. 40 -> 52 -> 96, "
+                                                "resized each time rt_smoke_ambient_far moved (now 60). "
+                                                "THE BUDGET, NOT THE RANGE, IS THE REAL LIMIT AT 60 m: one torch holds "
+                                                "~8 parcels, so 96 serves about a DOZEN torches. Past that the pool is "
+                                                "full and further emitters simply do not emit -- nearest-first, so the "
+                                                "torches near you win and a distant hall stays dry. Raising the range "
+                                                "beyond this buys nothing without a bigger pool, and the pool is capped "
+                                                "at RG_MAX_SMOKE_PUFFS 128 by uniform bytes. This is the "
                                                 "knob that keeps flames from eating the feature: every other source is "
                                                 "an EVENT and stops on its own, but a torch never does, so ambient "
                                                 "smoke would win every contest for a pool slot simply by outlasting "
@@ -1794,7 +1810,7 @@
                                                 "smoke out -- and separately, the pool evicts ambient puffs BEFORE any "
                                                 "other kind, so a shot always finds room even when flames are at their "
                                                 "cap. Must stay well under rt_smoke_budget." )
-    RT_CVAR( rt_smoke_ambient_far,      14.f,    "METRES beyond which a flame makes no smoke. 9 -> 14, and note this is a SPAWN cull rather than a render one -- the emitter returns before creating anything, which is why raising rt_volume_far changed nothing at all. Widening it alone is useless because rt_smoke_ambient_budget is shared across every flame in range: one torch keeps ~8 parcels alive, so 14 m is about 6 torches wanting ~49, which is what sized the 52 cap. 20 m was rejected -- it wants ~96, the cap would bite constantly, and the symptom of that is EVERY plume thinning rather than the distant ones going missing. Tighter than "
+    RT_CVAR( rt_smoke_ambient_far,      60.f,    "METRES beyond which a flame makes no smoke. 9 -> 14, and note this is a SPAWN cull rather than a render one -- the emitter returns before creating anything, which is why raising rt_volume_far changed nothing at all. Widening it alone is useless because rt_smoke_ambient_budget is shared across every flame in range: one torch keeps ~8 parcels alive, so 14 m is about 6 torches wanting ~49, which is what sized the 52 cap. 20 m was rejected -- it wants ~96, the cap would bite constantly, and the symptom of that is EVERY plume thinning rather than the distant ones going missing. Tighter than "
                                                 "rt_smoke_monster_far because a level holds far more flames than "
                                                 "gunmen -- 117 placements of 64BigFire alone across nine maps -- and a "
                                                 "torch two rooms away is a slot spent on something the froxel grid "
