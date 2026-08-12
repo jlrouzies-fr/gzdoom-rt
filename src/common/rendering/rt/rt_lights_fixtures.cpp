@@ -22,6 +22,24 @@
 // rt_main.cpp's anonymous namespace.
 using namespace rtx;
 
+// Sector planes that got real bulb-lattice lights on the last uploaded frame, keyed by
+// secIndex*2 + isCeiling. See the rebuild in RT_UploadCeilingEdgeLamps and the reader
+// RT_IsLatticeLitPlane below.
+static std::unordered_set< uint32_t > g_latticeLitPlanes;
+
+// Did this sector plane get real lights, i.e. may its painted glow be switched off?
+//
+// The question is NOT "is this one of the lamp textures". MAP03 hangs SFLATAQ on 46
+// ceilings AND their 46 matching floors, and most of those are thin recessed strips --
+// small panes where the lattice places nothing. Suppressing by texture name put every one
+// of those strips out: no glow, no light, a dead groove in the ceiling. So the glow comes
+// off exactly the panes that got something to replace it, and nowhere else.
+bool RT_IsLatticeLitPlane( unsigned secIndex, bool ceiling )
+{
+    return g_latticeLitPlanes.find( ( secIndex << 1 ) | unsigned( ceiling ) ) !=
+           g_latticeLitPlanes.end();
+}
+
 static bool RT_IsCeilingInsetLampTexture( const char* name )
 {
     if( !name || !*name )
@@ -1055,7 +1073,14 @@ void RT_UploadCeilingEdgeLamps()
         FVector3 hue;
         float    intensity;
         float    radius;
+        // secIndex*2 + isCeiling, or NoPlane for anything that is not a real bulb
+        // lattice. Carried this far so the set of planes that ACTUALLY got lights can be
+        // built after the distance cap has trimmed the list -- see g_latticeLitPlanes.
+        // Recording at placement time instead would mark a pane lit that the cap then
+        // dropped, and that pane would lose its painted glow and gain nothing.
+        uint32_t planeKey;
     };
+    static constexpr uint32_t NoPlane = UINT32_MAX;
     std::vector< Cand > cand;
     // Faux panels and solo bulbs each collect into their own list and get their own cap,
     // then all three are merged. Appending them to `cand` would let invented/solo fixtures
@@ -1125,7 +1150,8 @@ void RT_UploadCeilingEdgeLamps()
     auto addLattice = [ & ]( const sector_t& sector, unsigned secIndex, bool isCeiling,
                              const double* offX, const double* offY, int nOff, int stride,
                              FVector3 hue, float intensity, float radius, float zofs,
-                             uint64_t idBase, std::vector< Cand >& out ) {
+                             uint64_t idBase, std::vector< Cand >& out,
+                             uint32_t planeKey = NoPlane ) {
         double minx = 1.e9, miny = 1.e9, maxx = -1.e9, maxy = -1.e9;
         for( unsigned li = 0; li < sector.Lines.Size(); li++ )
         {
@@ -1213,7 +1239,7 @@ void RT_UploadCeilingEdgeLamps()
                             uint64_t( gx & 0x3FF ) +
                             ( isCeiling ? 0ull : 0x80000ull );
 
-                        out.push_back( Cand{ d2, px, py, pz, id, hue, intensity, radius } );
+                        out.push_back( Cand{ d2, px, py, pz, id, hue, intensity, radius, planeKey } );
                     }
                 }
             }
@@ -1354,7 +1380,11 @@ void RT_UploadCeilingEdgeLamps()
                         srcRadius,
                         zOfs,
                         CeilingLatticeId_Base,
-                        cand );
+                        cand,
+                        // Only this path marks a plane as lattice-lit. The perimeter walk,
+                        // the faux panels and the solo bulbs all pass NoPlane: none of them
+                        // replaces a pane's own glow, so none of them may switch it off.
+                        ( i << 1 ) | unsigned( isCeiling ) );
             continue;
         }
 
@@ -1442,7 +1472,8 @@ void RT_UploadCeilingEdgeLamps()
                     id,
                     RT_SectorHue( sector.Colormap.LightColor, float{ cvar::rt_sector_tint_lights } ),
                     peak,
-                    srcRadius } );
+                    srcRadius,
+                    NoPlane } );
             }
         }
         }
@@ -1488,6 +1519,20 @@ void RT_UploadCeilingEdgeLamps()
     std::sort( cand.begin(), cand.end(), []( const Cand& a, const Cand& b ) {
         return a.dist2 < b.dist2;
     } );
+
+    // Rebuilt every frame from the SURVIVING candidates, so a pane that lost its lights to
+    // the distance cap or the budget is not in it and keeps its painted glow. Read a frame
+    // later by the draw path (RT_IsLatticeLitPlane); a one-frame lag on "does this pane
+    // have real lights" is invisible, and the alternative -- deciding at placement time --
+    // silently blacks out every pane the cap trims.
+    g_latticeLitPlanes.clear();
+    for( const Cand& c : cand )
+    {
+        if( c.planeKey != NoPlane )
+        {
+            g_latticeLitPlanes.insert( c.planeKey );
+        }
+    }
 
     const int markMax = std::max( 0, int{ cvar::rt_light_mark_max } );
     int       marked  = 0;

@@ -320,6 +320,14 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
         (hacktype & SSRF_PLANEHACK) || (hacktype & SSRF_FLOODHACK) ?
         RtPrim::Ignored : RtPrim::Identity);
     auto rtnorm = rtstate.push_type(ceiling ? RtPrim::Identity : RtPrim::ExportInvertNormals);
+    // Only a plane that ACTUALLY got bulb-lattice lights gives up its painted glow.
+    // Asked per plane, not per texture: MAP03 hangs SFLATAQ on 46 ceilings and their 46
+    // matching floors, mostly thin recessed strips too small for the lattice to place
+    // anything in -- suppressing those by texture name left a dead groove with neither
+    // glow nor light. Both planes are asked because the lattice lights floors too.
+    auto rtflat = rtstate.push_type(
+        (sector && RT_IsLatticeLitPlane(unsigned(sector->Index()), ceiling))
+            ? RtPrim::LatticeLitFlat : RtPrim::Identity);
     // sector is not unique -- but subsector is, hope that they are pushed in a certain order
     auto rttemp = rtstate.push_uniqueid<RtManyPrimsPerId::Set1>(sector, ceiling ? 0 : 1);
 #endif

@@ -63,6 +63,16 @@ enum class RtPrim : uint32_t
     ExportInstance      = 1 << 10,
     ExportInvertNormals = 1 << 11,
     NoMotionVectors     = 1 << 12,
+    // "this sector plane got real bulb-lattice lights this frame". Pushed by
+    // HWFlat::DrawFlat, which is the only place that knows both the sector and which
+    // plane is being drawn.
+    // Doom 64 hangs the SAME texture on both: SFLATAQ is a lamp ceiling in one place
+    // and a wall light strip in another (MAP02 alone: 33 ceilings, 18 floors, 30 wall
+    // faces). emissiveMult lives on the TEXTURE, so it cannot tell those apart -- which
+    // is how switching the lamp ceilings to real point lights also put out the wall
+    // strips in MAP02's bloom room. This flag is what lets rt_draw suppress the glow on
+    // the planes that now have real lights, and leave the wall strips glowing.
+    LatticeLitFlat      = 1 << 13,
 };
 
 enum class RtManyPrimsPerId : uint32_t

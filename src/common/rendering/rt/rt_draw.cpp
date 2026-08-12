@@ -888,10 +888,27 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         return RG_MESH_PRIMITIVE_LAVA;
     };
 
+    // Put out the painted glow on a lamp PANE, because the bulb lattice now lights that
+    // room for real and the texture would otherwise light it a second time. The flat test
+    // is what keeps MAP02's wall strips -- same texture, no lattice -- still glowing;
+    // see RT_IsLampBulbFlat.
+    auto l_noemisflag = [ & ]() -> RgMeshPrimitiveFlags {
+        if( isUI || !texname || !cvar::rt_ceiling_bulb_noemis )
+        {
+            return RgMeshPrimitiveFlags( 0 );
+        }
+        if( !rtstate.is< RtPrim::LatticeLitFlat >() )
+        {
+            return RgMeshPrimitiveFlags( 0 );
+        }
+        return RG_MESH_PRIMITIVE_NO_EMISSIVE;
+    };
+
     auto prim = RgMeshPrimitiveInfo{
         .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
         .pNext = isUI ? &ui : nullptr,
         .flags = makePrimFlags( isUI ) | l_waterflag() | l_nocausticsflag() | l_lavaflag() |
+                 l_noemisflag() |
                  RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
                  ( rtstate.is< RtPrim::ExportInvertNormals >()
                        ? RG_MESH_PRIMITIVE_EXPORT_INVERT_NORMALS
