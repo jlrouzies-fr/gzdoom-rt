@@ -1725,7 +1725,7 @@
                                                 "0 is the plain weighted average, 1 makes a puff its own colour however "
                                                 "thin it is. This is the knob for 'smoke should look grey', and it fixes "
                                                 "that WITHOUT making the parcels bigger." )
-    RT_CVAR( rt_smoke_absorb,           3.f,     "how much smoke ABSORBS, as a multiple of its scattering. THIS is the "
+    RT_CVAR( rt_smoke_absorb,           1.f,     "how much smoke ABSORBS, as a multiple of its scattering. THIS is the "
                                                 "knob for 'I cannot see the smoke in a lit room'. The froxel volume "
                                                 "stores in-scattered light and EXTINCTION, and absorption was hardcoded "
                                                 "to zero since it was written -- so the medium is purely SCATTERING, "
@@ -1737,7 +1737,14 @@
                                                 "smoke is sooty and absorbs. Raising this darkens what is BEHIND a puff "
                                                 "without adding light, which is the only way smoke can show against a "
                                                 "background brighter than itself. Fog is untouched -- this is scaled by "
-                                                "the smoke density, so a cell with no smoke stores what it always did." )
+                                                "the smoke density, so a cell with no smoke stores what it always did. "
+                                                "IT IS A TRADE, and 1.0 is the middle of it. Extinction is scattering "
+                                                "+ absorption, so this value IS the sooty fraction: at 1 the "
+                                                "single-scattering albedo is 0.5, at 3 it is 0.25 -- sootier than "
+                                                "coal, and a puff lit by a rocket fireball then reads BLACK instead of "
+                                                "glowing, which was reported. Higher is more visible against a LIT "
+                                                "wall and darker when something bright lights it; lower glows nicely "
+                                                "and disappears in a lit room." )
     RT_CVAR( rt_smoke_history,          2.f,    "frames of per-pixel volume accumulation while smoke is live, on an "
                                                 "UNFOGGED map. This is the knob for 'the smoke stays bright after the "
                                                 "muzzle flash is gone'. There are two temporal filters stacked here: "
