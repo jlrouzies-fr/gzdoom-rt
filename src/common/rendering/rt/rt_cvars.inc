@@ -75,6 +75,26 @@
                                                 "radius, so this cvar is monotonic -- raising it always means less flicker "
                                                 "(2026-08-12). Arms in tools/ab-smon.cmd" )
 
+    RT_CVAR( rt_dynlight_rndflicker_floor, 0.3f, "same, but for RandomFlicker (9804) lights only -- the TV-static class.\n"
+                                                "\n"
+                                                "rt_dynlight_blink_floor is GLOBAL to every flicker/pulse light, so with 199 SMON "
+                                                "panels sharing it there is no way to make ONE fixture family swing harder: the "
+                                                "0.8 that calms the wall calms everything. This is the escape hatch, and it is "
+                                                "free because Retribution uses 9800 (989), 9801 (14) and 9802 (205) but "
+                                                "NOT A SINGLE 9804 -- so a separate floor for RandomFlicker cannot disturb any "
+                                                "existing fixture in the game.\n"
+                                                "\n"
+                                                "The two GZDoom types differ in kind, not just in rate (a_dynlight.cpp Tick):\n"
+                                                "  Flicker (9802)       binary -- radius is arg3 OR arg4, re-rolled every tic,\n"
+                                                "                       duty cycle from the thing's ANGLE out of 360.\n"
+                                                "  RandomFlicker (9804) continuous -- a random radius ACROSS the range, held for\n"
+                                                "                       ANGLE tics. At angle 1-2 that is a noise signal, which is\n"
+                                                "                       what a screen full of static actually looks like.\n"
+                                                "\n"
+                                                "0.3 gives a 3.3x swing where the 9802 wall gets 1.25x. Used by the SMONBA "
+                                                "readout panels (PANEL_LAMPS in tools/make_seqlight_fix.py), which are the only "
+                                                "9804s in the game (2026-08-12)" )
+
     RT_CVAR( rt_dynlight_flicker,       true,   "upload Flicker/RandomFlicker FDynamicLights (9802).\n"
                                                 "\n"
                                                 "Was false, and that suppressed EVERY SMON WALL MONITOR LIGHT IN THE GAME. The "
@@ -212,6 +232,26 @@
                                                 "Doubled from 1536 -- that cut lamps (incl. faux/solo, which share this same "
                                                 "distance check) at ~48m, visibly popping in as the camera approached (2026-08-09)" )
     RT_CVAR( rt_ceiling_edge_debug,     false,  "console dump of ceiling edge lamp uploads, split by ceiling vs floor" )
+    RT_CVAR( rt_ceiling_bulb_spacing,  128.f,   "UNITS between the real point lights placed across an SFLATAQ/SFLATAS "
+                                                "lamp ceiling. The lattice used to put one light on every bulb it kept "
+                                                "-- up to 1280 in a single room -- and then lose 15 of every 16 to the "
+                                                "stride and the rt_ceiling_edge_max cap WITHOUT compensating the "
+                                                "intensity, so a lamp ceiling delivered about a sixteenth of the light "
+                                                "its own table asked for. Measured: toggling all 320 of them moved a "
+                                                "119-luminance floor by +0.02, i.e. the room was ~98% emissive texture "
+                                                "GI -- which lights surfaces but is INVISIBLE to the froxel volume, so "
+                                                "smoke under a brilliant ceiling stayed black. One light per 128 units "
+                                                "makes a 512x512 ceiling ~16 real lights instead of 1024 wanted and 320 "
+                                                "delivered: far under the cap, so nothing is dropped and nothing is "
+                                                "patchy. Lower for finer placement at proportionally lower intensity; "
+                                                "the total energy does not change with this knob." )
+    RT_CVAR( rt_ceiling_bulb_gain,      4.f,    "brightness of a lamp ceiling's REAL lights, on top of the "
+                                                "energy-conserving placement. 1 delivers what the old per-bulb table "
+                                                "asked for and the two decimations then deleted; higher makes the "
+                                                "ceiling genuinely light its room rather than merely glow. This is the "
+                                                "knob for 'the room looks bright but nothing catches the light', and it "
+                                                "is deliberately separate from rt_ceiling_edge_intensity so the "
+                                                "perimeter walk on non-bulb ceilings is not dragged along with it." )
     RT_CVAR( rt_ceiling_edge_lattice,   true,   "place SFLATAS/SFLATAQ lights ON their painted bulbs (a per-64-unit-tile lattice, "
                                                 "like rt_faux_lamps does for SFLATC) instead of around the sector perimeter. The "
                                                 "perimeter walk lights a room's EDGES, but these two textures tile their bulbs "

@@ -1281,16 +1281,49 @@ void RT_UploadCeilingEdgeLamps()
         if( latticeOn && bulbLatticeFor( ftname, bulbOff, bulbN, bulbStride ) )
         {
             bulbLattices++;
+
+            // ENERGY-CONSERVING DECIMATION, and the reason it had to change.
+            //
+            // The stride SKIPS lattice points and passed `peak` through
+            // untouched, so every point it dropped was light simply deleted.
+            // SFLATAQ's stride 2 threw away three bulbs in four; the
+            // rt_ceiling_edge_max cap then threw away three in four of what was
+            // left -- measured in the lab as 1280 wanted, 320 uploaded. Neither
+            // stage compensated, so a lamp ceiling delivered about a sixteenth
+            // of the light its own table asked for.
+            //
+            // What that looked like: toggling ALL 320 lights in a lamp-lit room
+            // moved the floor by +0.02 luminance out of 119. The room was ~98%
+            // emissive texture GI -- which lights surfaces but is invisible to
+            // the froxel volume, so smoke under a brilliantly lit ceiling
+            // stayed black while a dim red door lit it perfectly.
+            //
+            // So: place ONE light per rt_ceiling_bulb_spacing units and give it
+            // the energy of the area it stands for. A 512x512 ceiling becomes
+            // ~16 real lights instead of 1024 wanted and 320 delivered -- far
+            // under the cap, so nothing is dropped and nothing is patchy, and
+            // the room's brightness is one number rather than an accident of
+            // two decimations.
+            const double bulbPitch = TileSize / double( bulbN );
+            const int    spaceN    = std::max(
+                1, int( std::lround( double{ cvar::rt_ceiling_bulb_spacing } / bulbPitch ) ) );
+            // Area per light scales with the square of the spacing, so the
+            // intensity does too. This is the whole trick: fewer lights, same
+            // total energy, and rt_ceiling_bulb_gain is then a single honest
+            // brightness knob on top.
+            const float bulbPeak = peak * float( spaceN * spaceN ) *
+                                   std::max( 0.f, float{ cvar::rt_ceiling_bulb_gain } );
+
             addLattice( sector,
                         i,
                         isCeiling,
                         bulbOff,
                         bulbOff,
                         bulbN,
-                        bulbStride,
+                        spaceN,
                         RT_SectorHue( sector.Colormap.LightColor,
                                       float{ cvar::rt_sector_tint_lights } ),
-                        peak,
+                        bulbPeak,
                         srcRadius,
                         zOfs,
                         CeilingLatticeId_Base,
