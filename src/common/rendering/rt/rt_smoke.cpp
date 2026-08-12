@@ -107,8 +107,18 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     // rt_smoke_repeat (5) tics, so at 2 tics the emitter alone would run the
     // pool to its ceiling and the oldest parcels -- the tail you actually read
     // as lingering -- would be culled to make room.
-    { "Chaingun",    0.34f, 0.07f, 0.70f, 0.8f, 0.30f, 0.07f, 1.6f, 9, 3, 0.14f,
-      "small trail, like the pistol" },
+    // MORE SMOKE, NOT MORE SMOKE-SHAPED SPACE. Reported as too subtle, and the row
+    // was thinner than the pistol on all three of the axes that matter: density
+    // 0.70 vs 0.90, and 9 trail parcels against 22. So density 0.70 -> 1.10, count
+    // 0.34 -> 0.46 and trail 9 -> 13.
+    //
+    // radius, growth and LIFE are untouched, deliberately. Life is the tempting
+    // knob and it is the one that broke the pistol: `rise` integrates over time and
+    // `curl` scales as age squared, so a 25% longer life raised that plume 32% and
+    // spread it 56% -- reported as "the smoke appears above me and is too sprayed
+    // out". Density and parcel count add smoke where the smoke already is.
+    { "Chaingun",    0.46f, 0.07f, 1.10f, 0.8f, 0.30f, 0.07f, 1.6f, 13, 3, 0.14f,
+      "small trail, like the pistol, but denser" },
     // Black powder from a wide bore: the fat one, and the reference for the rest.
     // SPARSE, not fat. A wide bore does make a cloud, but a cloud rendered as
     // one 0.4 m parcel per shot sits in the middle of the screen and blocks the
