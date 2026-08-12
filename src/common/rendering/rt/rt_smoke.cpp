@@ -1526,7 +1526,7 @@ CCMD( smoke )
     const int m = int{ cvar::rt_smoke_debug };
     // The ambient split is the number worth having here. "48 live" says nothing
     // about whether a room full of torches has spent the pool; "48 live, 40 of
-    // them ambient" says it outright -- and 40 IS rt_smoke_ambient_budget, so a
+    // them ambient" says it outright -- and 52 IS rt_smoke_ambient_budget, so a
     // reading sitting at the cap tells you the flames are being held back on
     // purpose rather than that something is broken.
     Printf( "smoke: rt_smoke %d, %u puff(s) live (%u ambient, cap %d), probe mode %d -- %s\n",
