@@ -1771,7 +1771,7 @@
                                                 "fifth of a second and each rises as it is born, so what you see is a "
                                                 "thread of separated beads rather than a cloud. 0 disables trails and "
                                                 "gives every weapon a single burst, which is the A/B." )
-    RT_CVAR( rt_smoke_light_far,        6.f,    "METRES beyond which a light stops lighting smoke. Smoke runs the "
+    RT_CVAR( rt_smoke_light_far,       30.f,    "METRES beyond which a light stops lighting smoke. Smoke runs the "
                                                 "ALL-LIGHTS estimate while the rest of the volume runs the single-light "
                                                 "path, so a puff picks up every emissive in the room -- an armour "
                                                 "bonus, a barrel, a monitor across the hall -- and a saturated one far "
