@@ -79,6 +79,32 @@ static FVector3 RT_FauxLampHue()
                      float( c & 0xFF ) / 255.0f };
 }
 
+// The lamp's OWN colour, multiplied onto the sector's colormap hue for the bulb lattice.
+//
+// It exists because SFLATAQ/SFLATAS stopped being emissive. While the flat glowed, the
+// beige of the art was mixed into every bounce in the room and the walls came out warm
+// (measured R-B +21.8 in the lab). Real point lights carry no such tint -- they took the
+// sector hue, which is neutral in most rooms -- so the same room came out grey-blue at
+// +5.5 and lost the look, even at matched brightness.
+//
+// The default is not invented. Sampling the brightest 3% of each texture's own _e map
+// gives FFFFED for SFLATAQ and FFF2E6 for SFLATAS; FFF2E6 is the warmer of the two and is
+// what a "white / beige" ceiling pane should throw.
+//
+// Multiplied, not substituted: a coloured room must still colour its own ceiling lamps,
+// which is what RT_SectorHue is for. A neutral sector leaves this tint showing; MAP02's
+// blue armor room still goes blue.
+// Takes the sector hue rather than returning a tint to multiply, because FVector3 has no
+// componentwise product -- only operator*(vec, scalar) -- and writing the three multiplies
+// at the call site is where a typo becomes a colour bug nobody traces.
+static FVector3 RT_CeilingBulbHue( FVector3 sectorHue )
+{
+    const uint32_t c = uint32_t( cvar::rt_ceiling_bulb_color );
+    return FVector3{ sectorHue.X * float( ( c >> 16 ) & 0xFF ) / 255.0f,
+                     sectorHue.Y * float( ( c >> 8 ) & 0xFF ) / 255.0f,
+                     sectorHue.Z * float( c & 0xFF ) / 255.0f };
+}
+
 // The solo pair: SFLATDE and SFLATCH. Different from the faux pair in the one way that
 // matters — these textures DO show a lit bulb baked into the art (a bright white blob
 // dead centre in an X-shaped or ringed housing), the base game simply never wired a light
@@ -1321,8 +1347,9 @@ void RT_UploadCeilingEdgeLamps()
                         bulbOff,
                         bulbN,
                         spaceN,
-                        RT_SectorHue( sector.Colormap.LightColor,
-                                      float{ cvar::rt_sector_tint_lights } ),
+                        RT_CeilingBulbHue( RT_SectorHue(
+                            sector.Colormap.LightColor,
+                            float{ cvar::rt_sector_tint_lights } ) ),
                         bulbPeak,
                         srcRadius,
                         zOfs,
