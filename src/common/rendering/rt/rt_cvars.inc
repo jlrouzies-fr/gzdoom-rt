@@ -1786,6 +1786,26 @@
                                                 "the per-weapon rows exist to shape. It drives the same "
                                                 "RT_SpawnSmokePuffs call a real shot does, trail included; what it does "
                                                 "NOT exercise is the extralight edge that decides WHEN to fire." )
+    RT_CVAR_NOARCH( rt_autofire,        0,      "DIAGNOSTIC: hold the fire button for real, starting at this maptime TIC "
+                                                "(0 = off). Pairs with rt_autoshot to capture the state AFTER a shot "
+                                                "rather than during one. "
+                                                "rt_smoke_autospawn cannot do this and that is why it exists: autospawn "
+                                                "creates puffs directly, so there is never a muzzle flash, never an "
+                                                "extralight edge, and therefore no 'after the flash' state at all. "
+                                                "Every measurement taken with it was of a different situation, and a "
+                                                "wrong diagnosis was committed on the strength of one. This ORs "
+                                                "BT_ATTACK into the ticcmd, so the weapon really fires." )
+    RT_CVAR_NOARCH( rt_autofire_slot,   5,      "weapon slot rt_autofire selects 20 tics before it pulls the trigger; "
+                                                "0 = leave the weapon alone. 5 is the rocket launcher, which is the "
+                                                "loudest smoke source in the game and therefore the one to judge "
+                                                "visibility with. The map drops a launcher and ammo on the spawn; this "
+                                                "is what actually equips it, because auto-switch-on-pickup did not "
+                                                "fire, a command-line +slot runs before the player exists, and a "
+                                                "player class with Player.StartItem is fatal (MAPINFO parses before "
+                                                "DECORATE)." )
+    RT_CVAR_NOARCH( rt_autofire_len,    2,      "how many TICS rt_autofire holds the trigger. Short on purpose: the "
+                                                "point is one shot followed by silence, so the flash has ended well "
+                                                "before rt_autoshot fires." )
     RT_CVAR_NOARCH( rt_smoke_autospawn, 0,      "DIAGNOSTIC: spawn a puff directly in front of the camera every this "
                                                 "many TICS, with no weapon and no trigger involved. 0 = off. This "
                                                 "exists so the RENDER path can be tested without the input path: if "

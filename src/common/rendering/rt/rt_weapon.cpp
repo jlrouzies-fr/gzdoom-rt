@@ -592,8 +592,17 @@ void RTRenderState::RT_AddMuzzleFlash( AActor*          viewactor,
 
         if( cvar::rt_smoke_debug )
         {
-            Printf( "rt_smoke A/trigger: extralight=%d wasFiring=%d tic=%d lastSpawn=%d "
-                    "flashpos %.2f %.2f %.2f\n",
+            // The READY WEAPON by name. Several rounds of lab captures were taken
+            // believing a rocket launcher was equipped when it was in fact the
+            // pistol, and nothing in any log said otherwise -- the ammo counter
+            // in the corner was the only clue, and it took a user to spot it.
+            // The profile that shapes the smoke is chosen from this name, so it
+            // belongs in the trace.
+            Printf( "rt_smoke A/trigger: weapon=%s extralight=%d wasFiring=%d tic=%d "
+                    "lastSpawn=%d flashpos %.2f %.2f %.2f\n",
+                    ( viewactor && viewactor->player && viewactor->player->ReadyWeapon )
+                        ? viewactor->player->ReadyWeapon->GetClass()->TypeName.GetChars()
+                        : "<none>",
                     extralight,
                     s_wasFiring ? 1 : 0,
                     tic,

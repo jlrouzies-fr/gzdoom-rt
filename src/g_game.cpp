@@ -122,6 +122,10 @@ CVAR (Bool, storesavepic, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Bool, longsavemessages, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Bool, cl_waitforsave, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
 CVAR (Bool, enablescriptscreenshot, false, CVAR_ARCHIVE | CVAR_GLOBALCONFIG);
+// Doom64-RT: the unattended trigger pull. The RT cvars live in namespace cvar
+// (rt_cvars.h), so a plain EXTERN_CVAR at global scope declares a different
+// symbol and fails to link -- the declaration has to be in that namespace.
+#include "common/rendering/rt/rt_cvars.h"
 EXTERN_CVAR (Float, con_midtime);
 
 //==========================================================================
@@ -675,6 +679,52 @@ void G_BuildTiccmd (ticcmd_t *cmd)
 
 	// buttons
 	if (buttonMap.ButtonDown(Button_Attack))		cmd->ucmd.buttons |= BT_ATTACK;
+
+	// Doom64-RT diagnostic: pull the trigger for real, without a human.
+	//
+	// tools/smoke-lab.cmd could only ever spawn puffs directly
+	// (rt_smoke_autospawn), which produces no muzzle flash and no extralight
+	// edge -- so the lab had no "just after a shot" state, and every reading
+	// taken there was of a different situation from the one being reported.
+	// This is the smallest place that can produce a genuine shot: the button
+	// the player would have pressed.
+	if (int(cvar::rt_autofire) > 0 && primaryLevel != nullptr)
+	{
+		const int t0 = int(cvar::rt_autofire);
+		const int n  = max(1, int(cvar::rt_autofire_len));
+		// GIVE the weapon, then select it, both well before firing.
+		//
+		// Every cheaper route failed silently and cost several rounds of
+		// captures that all came back showing the PISTOL:
+		//   - a launcher dropped on the player start is never collected,
+		//     because an item is only picked up when the player MOVES onto it
+		//     and this player never moves;
+		//   - `+slot 5` on the command line runs before the player exists;
+		//   - a player class with Player.StartItem is fatal, since MAPINFO is
+		//     parsed before DECORATE and the class does not exist yet;
+		//   - and `slot 5` alone selects nothing when the weapon was never in
+		//     the inventory, which is exactly what was happening.
+		// `give` needs sv_cheats, which the lab's pins already set.
+		const int slot = int(cvar::rt_autofire_slot);
+		if (slot > 0)
+		{
+			if (primaryLevel->maptime == max(1, t0 - 30))
+			{
+				AddCommandString("give weapons");
+				AddCommandString("give ammo");
+			}
+			if (primaryLevel->maptime == max(2, t0 - 20))
+			{
+				FString c; c.Format("slot %d", slot);
+				AddCommandString(c.GetChars());
+			}
+		}
+
+		if (primaryLevel->maptime >= t0 && primaryLevel->maptime < t0 + n)
+		{
+			cmd->ucmd.buttons |= BT_ATTACK;
+		}
+	}
 	if (buttonMap.ButtonDown(Button_AltAttack))		cmd->ucmd.buttons |= BT_ALTATTACK;
 	if (buttonMap.ButtonDown(Button_Use))			cmd->ucmd.buttons |= BT_USE;
 	if (buttonMap.ButtonDown(Button_Jump))			cmd->ucmd.buttons |= BT_JUMP;
