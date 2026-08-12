@@ -623,8 +623,25 @@ void RTRenderState::RT_AddMuzzleFlash( AActor*          viewactor,
                                     float( viewactor->Vel.Z ) } *
                           ( ONEGAMEUNIT_IN_METERS * float( TICRATE ) );
             }
+            // THE FLASH'S HEIGHT IS NOT THE SMOKE'S. Both are born at `pos` so
+            // the light and the smoke it lights are one point by construction,
+            // and that is still right -- but `pos` is placed for LIGHTING.
+            // rt_mzlflsh_u is -0.9 m, keeping the flash low so it washes the
+            // room instead of blowing out the gun sprite, and rt_smoke_offset
+            // then births the puff most of a metre BELOW eye level, around knee
+            // height. Rising ~1 m over its life, it climbs up THROUGH the view
+            // from underneath -- which reads as smoke appearing above you
+            // rather than coming off a barrel, and is why backing away from it
+            // looks better: from further off the same column reads as a column.
+            //
+            // So the smoke gets a vertical correction of its own. The flash
+            // does not move, and the puff is still on the traced segment, so it
+            // cannot be pushed inside the wall the trace just pulled it out of.
+            const FVector3 smokePos =
+                pos + gzvec3( up ) * float{ cvar::rt_smoke_muzzle_u };
+
             RT_SpawnSmokePuffs( gzvec3( basePosition ),
-                                pos,
+                                smokePos,
                                 gzvec3( forward ),
                                 inherit,
                                 RT_SmokeProfileFor( viewactor ) );

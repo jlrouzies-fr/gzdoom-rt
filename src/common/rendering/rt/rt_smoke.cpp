@@ -1114,7 +1114,19 @@ void RT_UpdateSmokePuffs()
                 ap = RT_SMOKE_PROFILES[ wi - 1 ];
             }
 
-            RT_SpawnSmokePuffs( eye, eye + fwd * 1.5f, fwd, FVector3{ 0, 0, 0 }, ap );
+            // THE REAL MUZZLE GEOMETRY, not a round 1.5 m. RT_AddMuzzleFlash
+            // builds its point as eye + forward * rt_mzlflsh_f + up *
+            // rt_mzlflsh_u, which at the shipping 3.0 / -0.9 is 3.1 m out --
+            // and rt_smoke_offset then births the puff at 0.7 of that, ~2.2 m.
+            //
+            // Autospawn used a flat 1.5 m, so the diagnostic put smoke at 1.05 m
+            // and the lab looked healthy while the game did not. A diagnostic
+            // that does not reproduce the geometry it is diagnosing is worse
+            // than none: it produces confident readings about a different case.
+            const FVector3 up{ 0, 0, 1 };
+            const FVector3 muzzleNow = eye + fwd * float{ cvar::rt_mzlflsh_f } +
+                                       up * float{ cvar::rt_mzlflsh_u };
+            RT_SpawnSmokePuffs( eye, muzzleNow, fwd, FVector3{ 0, 0, 0 }, ap );
 
             if( cvar::rt_smoke_debug )
             {

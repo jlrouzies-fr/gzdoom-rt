@@ -1521,7 +1521,7 @@
                                                 "~0.8 the smoke visibly lags a strafing player and reads as stuck to "
                                                 "the world; at 1 it is glued to the camera. This knob decides which of "
                                                 "those two wrong answers you get." )
-    RT_CVAR( rt_smoke_offset,           0.7f,   "where along the eye->muzzle segment a puff is born, as a FRACTION: 0 "
+    RT_CVAR( rt_smoke_offset,           0.9f,   "where along the eye->muzzle segment a puff is born, as a FRACTION: 0 "
                                                 "is at the eye, 1 at the muzzle flash itself. NOT a distance in metres, "
                                                 "and that is the whole point. RT_AddMuzzleFlash already TRACES that "
                                                 "segment against the level and pulls the flash back out of anything it "
@@ -1531,6 +1531,16 @@
                                                 "per-pixel volumetric sample never reaches it: the smoke is behind the "
                                                 "surface that terminates the ray. It looks exactly like smoke that was "
                                                 "never created." )
+    RT_CVAR( rt_smoke_muzzle_u,         0.5f,   "METRES to raise the SMOKE's birth point above the muzzle flash's, and "
+                                                "the reason it needs one: smoke is born at the flash's resolved "
+                                                "position so the light and the smoke it lights are one point by "
+                                                "construction -- but that position is chosen for LIGHTING. rt_mzlflsh_u "
+                                                "is -0.9, placing the flash low so it washes the room without blowing "
+                                                "out the gun sprite, and rt_smoke_offset 0.9 then births the puff about "
+                                                "0.8 m BELOW eye level, near knee height. It rises ~1 m over its life, "
+                                                "so it climbs straight up THROUGH the view from underneath, which reads "
+                                                "as smoke appearing above you rather than coming off a barrel. This "
+                                                "corrects the height for smoke only; the flash does not move." )
     RT_CVAR( rt_smoke_repeat,           5,      "minimum TICS between spawns while the trigger is still held. A shot is "
                                                 "detected as the rising edge of player->extralight, which the weapon's "
                                                 "Flash state raises with A_Light1/2 and clears with A_Light0 -- but a "
@@ -1580,7 +1590,7 @@
                                                 "barrel is the entire effect. Chosen PER FROXEL in RtVolumetric.rgen, so "
                                                 "fog cells keep rt_fog_light_near exactly and this cannot retune a "
                                                 "fogged map." )
-    RT_CVAR( rt_smoke_illum_blend,      0.2f,   "temporal blend for the all-lights estimate inside a puff. The stock "
+    RT_CVAR( rt_smoke_illum_blend,      0.45f,   "temporal blend for the all-lights estimate inside a puff. The stock "
                                                 "0.05 is right for fog, which changes only as fast as the player walks; "
                                                 "a muzzle flash lasts 2-3 frames, and at 0.05 the volume needs ~0.7 s to "
                                                 "respond and as long again to let go -- the smoke would light up AFTER "
