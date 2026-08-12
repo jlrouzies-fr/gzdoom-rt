@@ -2498,7 +2498,9 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .illumBlend     = std::clamp( float{ cvar::rt_smoke_illum_blend }, 0.f, 1.f ),
         .allLights      = bool{ cvar::rt_smoke_illum },
         .lightFarFade   = std::max( 0.f, float{ cvar::rt_smoke_light_far } ),
-        .samplesPerCell = uint32_t( std::clamp( int{ cvar::rt_smoke_spp }, 1, 16 ) ),
+        // 32, matching the clamp in RTGL's VulkanDevice.cpp -- the two have to
+        // agree or the engine silently asks for more than the shader will do.
+        .samplesPerCell = uint32_t( std::clamp( int{ cvar::rt_smoke_spp }, 1, 32 ) ),
         .maxLight       = std::max( 0.f, float{ cvar::rt_smoke_maxlight } ),
         .debugMode      = uint32_t( std::max( 0, int{ cvar::rt_smoke_debug } ) ),
         // Stylization. Inside smoke_evalAt rather than a screen-space filter, so
@@ -2541,9 +2543,18 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         // docs/rt-smoke.md section 5 exists to forbid. Fogged maps keep the
         // fog's history and the smoke on them keeps the smear; that is the
         // conservative half of the trade and it costs nine maps a little.
+        // rt_smoke_history is used DIRECTLY, not min()'d with rt_volume_history.
+        //
+        // The min was there because this knob was only ever meant to SHORTEN the
+        // window: the fog's 8 frames made a muzzle-lit puff smear, so smoke asked
+        // for 2. But it also silently capped the knob at 8 in the other direction,
+        // so "history 20" and "history 8" were the same setting and the cvar looked
+        // broken to anyone trying to use accumulation to denoise -- which is a real
+        // use for it, since the volume has no spatial denoiser worth the name.
+        // Shortening still works exactly as before; lengthening now does too, and
+        // the smear it buys back is the caller's choice to make.
         .maxHistoryLength        = ( smoke_live && !fog.on )
-                                       ? std::min( float{ cvar::rt_smoke_history },
-                                                   float{ cvar::rt_volume_history } )
+                                       ? float{ cvar::rt_smoke_history }
                                    : ( fog.on || cvar::rt_volume_type == 1 )
                                        ? float{ cvar::rt_volume_history }
                                        : 0.f,
