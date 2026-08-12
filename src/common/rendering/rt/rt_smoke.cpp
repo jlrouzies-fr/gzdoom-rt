@@ -427,7 +427,11 @@ static const ProjectileSmoke RT_PROJECTILE_SMOKE[] = {
     { "RBAL", nullptr, 2, 0.11f, 0.32f, 0.60f, 4, 0.28f, 0.5f, "mother ball -- as the tracer" },
     // 64FatShot, the mancubus. Fat and slow, so it can afford a wider trail --
     // and a wider one is what sells the difference from the tracer.
-    { "MANF", nullptr, 2, 0.16f, 0.40f, 0.70f, 5, 0.34f, 0.6f, "fat shot -- wider, slower" },
+    // Thinned twice over: it fires in VOLLEYS, so what matters is not how one
+    // fireball looks but how six of them look at once -- and the life is a
+    // multiplier on rt_smoke_life, which grew 1.6 -> 2.2 earlier and took this
+    // with it. 27 parcels alive per shot became ~11.
+    { "MANF", nullptr, 3, 0.16f, 0.30f, 0.45f, 3, 0.34f, 0.6f, "fat shot -- wider, slower" },
     // 64MotherFire. SHARES ITS SPRITE with 64BigFire, the ambient bonfire that
     // stands in 117 places across nine maps -- so this row is only ever reached
     // because the MF_MISSILE test below runs FIRST. A bonfire is not a
@@ -1273,8 +1277,13 @@ void RT_UpdateSmokePuffs()
                 p2.count = 1.f / std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
                 p2.radius = std::max( 0.01f, trailR ) /
                             std::max( 0.001f, float{ cvar::rt_smoke_radius } );
-                p2.density = isRocket ? 0.45f : row->trailDens;
-                p2.life    = isRocket ? 1.0f : row->trailLife;
+                // 1.0 was 77 parcels alive from ONE rocket -- the life
+                // multiplies rt_smoke_life, which went 1.6 -> 2.2 earlier, so
+                // this row silently grew 37% along with it. Against a 48-puff
+                // upload budget that meant a single rocket owned the whole
+                // frame and a second one evicted the first. 0.55 puts it at 21.
+                p2.density = isRocket ? 0.35f : row->trailDens;
+                p2.life    = isRocket ? 0.55f : row->trailLife;
                                     // a shorter trail is a SHORTER trail: the
                                     // length you see is life x flight speed, so
                                     // this is the knob that shortens the plume

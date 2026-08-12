@@ -1616,18 +1616,18 @@
                                                 "the projectile's flight and a burst where it dies. The launcher itself "
                                                 "makes none -- a backblast that hangs in front of you while the rocket "
                                                 "leaves is the wrong read, and it blocks the shot you just took." )
-    RT_CVAR( rt_smoke_rocket_every,     1,      "TICS between trail parcels dropped by a rocket in flight. A rocket covers "
+    RT_CVAR( rt_smoke_rocket_every,     2,      "TICS between trail parcels dropped by a rocket in flight. A rocket covers "
                                                 "about 0.6 m a tic, so every OTHER tic leaves 1.2 m gaps between parcels "
                                                 "9 cm across -- a dotted line of separate beads, which is exactly what it "
                                                 "looked like. Every tic, with a parcel wide enough to bridge the gap, is "
                                                 "what reads as a continuous trail." )
-    RT_CVAR( rt_smoke_rocket_radius,    0.16f,  "radius of a rocket trail parcel at birth, in METRES. It has to be at "
+    RT_CVAR( rt_smoke_rocket_radius,    0.22f,  "radius of a rocket trail parcel at birth, in METRES. It has to be at "
                                                 "least half the distance the rocket covers between drops or the trail is "
                                                 "beads rather than a line -- at 0.6 m a tic that means ~0.3 m of diameter, "
                                                 "which is what 0.16 gives. Reduce the trail with its LIFE (in "
                                                 "RT_UpdateSmokePuffs), not with this: a shorter-lived parcel makes a "
                                                 "shorter plume, a smaller one makes a dotted plume of the same length." )
-    RT_CVAR( rt_smoke_boom,             5,     "parcels in the burst when a rocket dies. This is the one place a fat "
+    RT_CVAR( rt_smoke_boom,             4,     "parcels in the burst when a rocket dies. This is the one place a fat "
                                                 "cloud is right, because the explosion is meant to obscure -- but ten of "
                                                 "them was the noisiest thing in the game, each an independent one-sample "
                                                 "estimate stacked on the others." )
