@@ -355,7 +355,21 @@ void RTRenderState::RT_AddFlashlight( const RgFloat3D& basePosition,
         aim = aim.Unit();
     }
 
-    auto target = gzvec3( basePosition ) + 20 * aim;
+    // AIM FROM THE LAMP, not from the eye. This built its target from
+    // basePosition while the beam originates at `pos`, which is offset down and
+    // to the left (rt_flsh_u -0.58, rt_flsh_r -0.3) -- so the beam converged on
+    // the eye's aim line at 20 m and near the player it sat 1.6 degrees HIGHER
+    // than the rt_flsh_pitch it was set to.
+    //
+    // That is small and it matters at the muzzle. Smoke is born ~2.4 m out and
+    // 0.7 m below eye level, which is 18.2 degrees off the beam axis against an
+    // outer cone of 21 -- right at the edge -- so a degree and a half of stray
+    // pitch decides whether the puff is lit or not. It was reported as the
+    // flashlight only catching the smoke just above the gun.
+    //
+    // Aiming from the origin makes the beam actually point where rt_flsh_pitch
+    // says, at every distance rather than only at 20 m.
+    auto target = pos + 20 * aim;
     auto dir    = ( target - pos ).Unit();
 
     const float intensity =
