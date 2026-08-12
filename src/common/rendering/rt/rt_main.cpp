@@ -2514,6 +2514,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .selfAmbient    = std::max( 0.f, float{ cvar::rt_smoke_ambient } ),
         .tintBias       = std::clamp( float{ cvar::rt_smoke_tint }, 0.f, 1.f ),
         .absorb         = std::max( 0.f, float{ cvar::rt_smoke_absorb } ),
+        .lightMult      = std::max( 0.f, float{ cvar::rt_smoke_lightmult } ),
     };
 
     auto volumetrics_params = RgDrawFrameVolumetricParams{

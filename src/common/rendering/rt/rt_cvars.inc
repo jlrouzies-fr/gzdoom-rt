@@ -1758,6 +1758,16 @@
                                                 "smoother, laggier smoke; it is clamped never to EXCEED that. Fogged "
                                                 "maps are deliberately excluded -- shortening the window there would "
                                                 "retune the fog on every shot." )
+    RT_CVAR( rt_smoke_lightmult,        4.f,    "brightness of the light SCATTERED inside smoke. This is the knob for "
+                                                "'the smoke is still too dark in a lit room', and the reason it has to "
+                                                "exist: the froxel volume computes SINGLE scattering, so a puff receives "
+                                                "exactly one bounce while the wall behind it receives full GI. A puff is "
+                                                "therefore structurally darker than a lit room however much light "
+                                                "reaches it -- raising rt_smoke_light_far, unclamping rt_smoke_maxlight "
+                                                "and lowering rt_smoke_absorb all failed to close that gap, because none "
+                                                "of them is what is missing. Real smoke is pale because of MULTIPLE "
+                                                "scattering, which this stands in for. Per froxel, so the fog's "
+                                                "rt_volume_lintensity on nine tuned maps is untouched." )
     RT_CVAR( rt_smoke_curl,             1.6f,   "lateral turbulence, m/s^2 at one second of age. A barrel wisp leaves the "
                                                 "muzzle LAMINAR -- a straight thread for the first fraction of a second "
                                                 "-- and only breaks into curls once it has risen, so this scales with the "
@@ -1850,7 +1860,7 @@
                                                 "Blurring costs almost nothing visually because scattering is "
                                                 "low-frequency; XY only, since Z is the integration axis. 0 = stock." )
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
-    RT_CVAR( rt_volume_far,             30.f,   "max distance of scattering volume (in meteres)" )
+    RT_CVAR( rt_volume_far,             60.f,   "max distance of the scattering volume, in metres, and therefore the RENDER DISTANCE OF SMOKE: the froxel grid is camera-fitted, so a puff past this plane is not represented at all. 30 -> 60 to double it. TWO COSTS, both real: the grid is 64 slices whatever the reach, so the slice thickness goes 0.47 -> 0.94 m and puffs get coarser and noisier; and the global medium (rt_volume_scatter) now reaches twice as far, so distant parts of an unfogged map are hazier than before. A FOGGED map is unaffected -- it uses rt_fog_far instead." )
     RT_CVAR( rt_volume_scatter,         1.f,    "density of media" )
     RT_CVAR( rt_volume_ambient,         0.2f,   "ambient term" )
     RT_CVAR( rt_volume_lintensity,      1.f,    "intensity of lights for scattering" )
