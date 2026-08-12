@@ -245,12 +245,13 @@
                                                 "delivered: far under the cap, so nothing is dropped and nothing is "
                                                 "patchy. Lower for finer placement at proportionally lower intensity; "
                                                 "the total energy does not change with this knob." )
-    RT_CVAR( rt_ceiling_bulb_gain,      4.f,    "brightness of a lamp ceiling's REAL lights, on top of the "
+    RT_CVAR( rt_ceiling_bulb_gain,      2.f,    "brightness of a lamp ceiling's REAL lights, on top of the "
                                                 "energy-conserving placement. 1 delivers what the old per-bulb table "
                                                 "asked for and the two decimations then deleted; higher makes the "
                                                 "ceiling genuinely light its room rather than merely glow. This is the "
                                                 "knob for 'the room looks bright but nothing catches the light', and it "
                                                 "is deliberately separate from rt_ceiling_edge_intensity so the "
+                                                "perimeter walk on non-bulb ceilings is not dragged along. THERE IS A CLIFF AT 3: measured room exposure goes 0.3% clipped pixels at gain 1 and 2, and 27.9% at 3 -- the walls and floor blow to white and the room stops looking like Doom 64 at all. 4 was shipped briefly on a metric that could not see saturation, and it was obviously wrong on screen. 2 is the most real light the room takes without clipping. "
                                                 "perimeter walk on non-bulb ceilings is not dragged along with it." )
     RT_CVAR( rt_ceiling_edge_lattice,   true,   "place SFLATAS/SFLATAQ lights ON their painted bulbs (a per-64-unit-tile lattice, "
                                                 "like rt_faux_lamps does for SFLATC) instead of around the sector perimeter. The "
