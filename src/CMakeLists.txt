@@ -786,6 +786,17 @@ endif()
 if (HAVE_RT)
 	set(RT_SOURCES
 		common/rendering/rt/rt_main.cpp
+		common/rendering/rt/rt_cvars.cpp
+		common/rendering/rt/rt_draw.cpp
+		common/rendering/rt/rt_weapon.cpp
+		common/rendering/rt/rt_lights_sector.cpp
+		common/rendering/rt/rt_lights_fixtures.cpp
+		common/rendering/rt/rt_lights_fx.cpp
+		common/rendering/rt/rt_smoke.cpp
+		common/rendering/rt/rt_presets.cpp
+		common/rendering/rt/rt_weather.cpp
+		common/rendering/rt/rt_export.cpp
+		common/rendering/rt/rt_titles.cpp
 		common/rendering/rt/rt_cutscene.cpp
 		common/rendering/rt/remix_launcher.cpp
 	)
