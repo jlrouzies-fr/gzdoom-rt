@@ -2506,6 +2506,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .stylize        = std::clamp( float{ cvar::rt_smoke_stylize }, 0.f, 1.f ),
         .stylizeSteps   = uint32_t( std::clamp( int{ cvar::rt_smoke_stylize_steps }, 1, 64 ) ),
         .stylizeGrid    = std::max( 0.f, float{ cvar::rt_smoke_stylize_grid } ),
+        // SMOKE'S OWN unlit floor, per froxel. Note this is the same cvar that
+        // feeds ambientColor below -- but that path only fires when smoke OWNS
+        // the volume (no fog, rt_volume_type 0), which the shipping config
+        // never is. So for years of this feature rt_smoke_ambient did nothing
+        // at all, and smoke was visible only while a light was on it.
+        .selfAmbient    = std::max( 0.f, float{ cvar::rt_smoke_ambient } ),
     };
 
     auto volumetrics_params = RgDrawFrameVolumetricParams{

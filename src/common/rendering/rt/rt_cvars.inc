@@ -1557,7 +1557,7 @@
                                                 "enough to resolve a puff -- where rt_volume_far's 30 gives 0.47 and a "
                                                 "puff reads as one slab. Short costs nothing here, because the base "
                                                 "density is 0 in smoke-only mode and the far slice is empty." )
-    RT_CVAR( rt_smoke_ambient,          0.08f,  "unlit floor for a smoke-only frame (no fog): what a puff scatters in a "
+    RT_CVAR( rt_smoke_ambient,          0.45f,  "unlit floor for a smoke-only frame (no fog): what a puff scatters in a "
                                                 "room with no light on it. Small on purpose -- smoke you can see in the "
                                                 "dark is smoke that is not being lit, which is the failure this feature "
                                                 "exists not to be. On a FOGGED map the fog's much larger rt_fog_ambient "
