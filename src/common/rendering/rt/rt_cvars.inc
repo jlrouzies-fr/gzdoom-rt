@@ -844,8 +844,8 @@
                                                 "same flux spread over it lands 0.687x as bright. At the old 90 the higher hold "
                                                 "would have made the pool DIMMER than before. See rt_flsh_u" )
     RT_CVAR( rt_flsh_radius,            0.02f,  "flashlight source disk radius in meters")
-    RT_CVAR( rt_flsh_angle,             42.f,   "flashlight width in degrees")
-    RT_CVAR( rt_flsh_pitch,             22.f,   "degrees to tip flashlight aim toward the ground" )
+    RT_CVAR( rt_flsh_angle,             46.f,   "flashlight width in degrees (the OUTER cone, so the edge is half this). 42 -> 46 to catch muzzle smoke: measured from the LAMP rather than the eye, a puff is born only 3.3 degrees below horizontal while the beam is tipped down for the floor wash, so it sat at 95% of the cone edge and fell out of the beam as it rose.")
+    RT_CVAR( rt_flsh_pitch,             20.f,   "degrees to tip flashlight aim toward the ground. 22 -> 20 alongside rt_flsh_angle: together they take muzzle smoke from 95% of the cone edge to 79%, which is inside it rather than clinging to it, while keeping the horror-lantern tilt. The pair is deliberately small -- this is a look that was tuned, not a free parameter." )
     RT_CVAR( rt_flsh_r,                 -0.3f,  "flashlight position offset - right (in meteres)")
     RT_CVAR( rt_flsh_u,                 -0.58f, "flashlight position offset - up (in meteres). Negative = held below the eye. "
                                                 "-0.58, raised from the -0.7 this shipped with: the low hold is deliberate "
