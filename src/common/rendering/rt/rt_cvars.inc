@@ -1470,15 +1470,23 @@
                                                 "with the light that reaches it. Warm grey by default -- powder smoke, "
                                                 "not steam. A dark value reads as soot and, being an albedo, dims the "
                                                 "puff as well as tinting it." )
-    RT_CVAR( rt_smoke_count,            3,      "puffs spawned per shot. Each is a sphere; three overlapping ones read "
-                                                "as one irregular cloud where one reads as a ball. Capped by "
-                                                "rt_smoke_budget across all live puffs." )
-    RT_CVAR( rt_smoke_budget,           24,     "maximum live puffs uploaded, of the 32 the uniform can carry "
+    RT_CVAR( rt_smoke_count,            4,      "puffs spawned per shot, as the per-weapon rows multiply it. Each is an "
+                                                "ellipsoid; several overlapping ones read as one irregular cloud where "
+                                                "one reads as a ball. Capped by rt_smoke_budget across all live puffs. "
+                                                "The ROCKET trail and the monster guns divide by this before "
+                                                "multiplying back, so they emit a fixed number of parcels and moving "
+                                                "this knob is purely a player-weapon change." )
+    RT_CVAR( rt_smoke_budget,           32,     "maximum live puffs uploaded, of the 32 the uniform can carry "
                                                 "(RG_MAX_SMOKE_PUFFS). When more exist the NEAREST survive, since the "
                                                 "whole point is the smoke in front of your face." )
-    RT_CVAR( rt_smoke_life,             1.6f,   "puff lifetime in seconds. Density falls off over it as (1 - age)^2, so "
+    RT_CVAR( rt_smoke_life,             2.2f,   "puff lifetime in seconds. Density falls off over it as (1 - age)^2, so "
                                                 "the last third is nearly gone -- this is where a puff VANISHES, not "
-                                                "where it stops being visible." )
+                                                "where it stops being visible. RAISE IT WITH rt_smoke_growth LOWERED BY "
+                                                "THE SAME FACTOR, or a longer-lived puff is simply a bigger one: it "
+                                                "keeps expanding at the shared rate for the whole extra time, and the "
+                                                "radius0/radius dilution then thins it back out. 1.6/0.7 and 2.2/0.5 "
+                                                "reach the same final size; the second holds its density most of a "
+                                                "second longer on the way there." )
     RT_CVAR( rt_smoke_radius,           0.35f,  "puff radius at spawn, in METRES. THE FLOOR IS THE FROXEL SLICE, and it "
                                                 "is bigger than it looks: the volume's 64 slices spread over its reach, "
                                                 "so at the shipping rt_volume_far 30 a slice is 0.47 m and a puff needs "
@@ -1486,9 +1494,12 @@
                                                 "is 0.77 of a cell across its whole DIAMETER, i.e. it lands inside a "
                                                 "single froxel and reads as a flicker. Smoke only gets rt_smoke_far's "
                                                 "finer slices when it owns the volume (no fog and rt_volume_type 0)." )
-    RT_CVAR( rt_smoke_growth,           0.7f,   "how fast a puff expands, metres per second. Expansion is what makes "
+    RT_CVAR( rt_smoke_growth,           0.5f,   "how fast a puff expands, metres per second. Expansion is what makes "
                                                 "smoke read as smoke rather than as a fading ball, and it thins the puff "
-                                                "at the same time because the density is not renormalized." )
+                                                "at the same time because the density is not renormalized. COUPLED TO "
+                                                "rt_smoke_life: the final radius is radius + growth x life, so these two "
+                                                "move in opposite directions to change how long smoke lasts without "
+                                                "changing how big it gets." )
     RT_CVAR( rt_smoke_speed,            1.8f,   "initial speed along the barrel, metres per second." )
     RT_CVAR( rt_smoke_spread,           0.55f,  "random lateral velocity at spawn, m/s, so the puffs of one shot "
                                                 "separate instead of travelling as a clump." )

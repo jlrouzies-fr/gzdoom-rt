@@ -50,12 +50,20 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     // it rises rather than travels. Long life because a wisp that vanishes in
     // half a second reads as a glitch; low density because at this radius a
     // thick one would be a bead.
-    { "Pistol",      0.34f, 0.07f, 0.90f, 1.5f, 0.25f, 0.06f, 1.5f, 14, 3, 0.10f,
+    //
+    // MORE SMOKE ON THIS GUN IS A LONGER TRAIL, never a bigger parcel and never
+    // a bigger burst. The wisp IS the trail -- 20 releases at 2-tic spacing is
+    // about 1.1 s of the barrel breathing, against 14 at 3 tics (0.8 s) -- so
+    // lengthening it thickens the thread along its own axis, which is the one
+    // direction a filament is allowed to grow.
+    { "Pistol",      0.34f, 0.07f, 0.90f, 1.5f, 0.25f, 0.06f, 1.5f, 20, 2, 0.10f,
       "thin wisp off the barrel" },
-    // The machine gun is the pistol: a thread, not a cloud. Slightly shorter and
-    // faster so a burst does not stack fourteen parcels per shot -- at a 4-tic
-    // fire rate that is what fills a screen.
-    { "Chaingun",    0.34f, 0.07f, 0.70f, 1.1f, 0.30f, 0.07f, 1.6f, 6, 3, 0.10f,
+    // The machine gun is the pistol: a thread, not a cloud. Shorter than the
+    // pistol's and left at 3-tic spacing on purpose: a held trigger re-arms this
+    // every rt_smoke_repeat (5) tics, so at 2 tics the emitter alone would run
+    // the pool to its 32-puff ceiling and the oldest parcels -- the tail you
+    // actually read as lingering -- would be culled to make room.
+    { "Chaingun",    0.34f, 0.07f, 0.70f, 1.1f, 0.30f, 0.07f, 1.6f, 9, 3, 0.10f,
       "small trail, like the pistol" },
     // Black powder from a wide bore: the fat one, and the reference for the rest.
     // SPARSE, not fat. A wide bore does make a cloud, but a cloud rendered as
@@ -63,9 +71,9 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     // view -- the froxel grid cannot give it internal structure, so it reads as
     // a grey wall rather than as smoke. Several small parcels, well separated,
     // read as a burst and leave gaps to see through.
-    { "Shotgun",     1.60f, 0.30f, 0.55f, 1.1f, 0.90f, 1.60f, 1.1f, 5, 4, 0.35f,
+    { "Shotgun",     1.60f, 0.30f, 0.55f, 1.1f, 0.90f, 1.60f, 1.1f, 8, 3, 0.35f,
       "a scatter of small parcels, not one ball" },
-    { "SuperShotgun",2.20f, 0.34f, 0.60f, 1.2f, 1.00f, 1.90f, 1.0f, 6, 4, 0.40f,
+    { "SuperShotgun",2.20f, 0.34f, 0.60f, 1.2f, 1.00f, 1.90f, 1.0f, 10, 3, 0.40f,
       "two barrels: wider scatter, same sparseness" },
     // Fast repeat: each burst must be SMALL or a held trigger fills the room.
     // The budget is what actually caps it, but small parcels read better than a
@@ -203,6 +211,11 @@ struct MonsterGun
 {
     const char*  sprite;   // full 4-character sprite name
     uint8_t      frame;    // 0 == 'A'; 5 == 'F', the fire frame on every row here
+    int          parcels;  // ABSOLUTE, not a multiplier on rt_smoke_count. That
+                           // cvar is the player's "more smoke" knob and has been
+                           // moved once already; a monster's shot should not get
+                           // bigger every time the shotgun does. The row's count
+                           // multiplier is derived from this at spawn.
     SmokeProfile prof;
 };
 
@@ -217,21 +230,21 @@ struct MonsterGun
 static constexpr MonsterGun RT_MONSTER_GUNS[] = {
     // 64ZombieMan / 64TargetRangeZombieMan -- a rifle. One small parcel, the
     // same read as the player's pistol minus the filament.
-    { "POSS", 5, { "zombieman rifle", 0.30f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
+    { "POSS", 5, 1, { "zombieman rifle", 0.f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
                    "one small parcel off the barrel" } },
     // 64ShotgunGuy -- a wide bore, so a SCATTER, for the reason the player's
     // shotgun is sparse: one fat parcel is a grey wall, several small ones read
     // as a burst and leave gaps to see through.
-    { "SPOS", 5, { "shotgun guy", 0.60f, 0.50f, 0.50f, 0.95f, 0.7f, 1.6f, 1.1f, 0, 0, 0.9f,
+    { "SPOS", 5, 2, { "shotgun guy", 0.f, 0.50f, 0.50f, 0.95f, 0.7f, 1.6f, 1.1f, 0, 0, 0.9f,
                    "a scatter, like the player's shotgun" } },
     // Not in Retribution (no 64ChaingunGuy), kept because the engine loads on
     // DOOM2.WAD and the actor is one -file away.
-    { "CPOS", 5, { "chaingun guy", 0.30f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
+    { "CPOS", 5, 1, { "chaingun guy", 0.f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
                    "thinner and shorter -- it fires again immediately" } },
     // 64MarineBot, which uses A_PosAttack on the player sprite.
-    { "PLAY", 5, { "marine bot", 0.30f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
+    { "PLAY", 5, 1, { "marine bot", 0.f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
                    "as the zombieman" } },
-    { "SSWV", 5, { "wolfenstein ss", 0.30f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
+    { "SSWV", 5, 1, { "wolfenstein ss", 0.f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
                    "as the chaingun guy" } },
 };
 
@@ -352,14 +365,24 @@ void rtx::RT_SpawnSmokePuffs( const FVector3& eye,
         g_smokeTrail.nextTic = primaryLevel->maptime + prof.trailEvery;
     }
 
-    // Round UP, so a 0.34 multiplier on the shipping 3 still gives one parcel
-    // rather than silently disabling smoke for that weapon.
-    // Round UP so a 0.34 multiplier still gives one parcel -- but a multiplier of
-    // exactly 0 means the weapon makes NO smoke, and must not round up to one.
+    // Round UP, so a 0.34 multiplier still gives one parcel rather than silently
+    // disabling smoke for that weapon -- but a multiplier of exactly 0 means the
+    // weapon makes NO smoke, and must not round up to one.
+    //
+    // THE EPSILON GUARDS THE N / rt_smoke_count ROUND TRIP. Every caller that
+    // wants an exact number of parcels states it that way -- the rocket trail,
+    // the muzzle trail, the monster rows, the explosion -- and float32 does not
+    // always give it back: over (count 1..32, parcels 1..16), twelve pairs land
+    // an ulp ABOVE the integer and ceil to one more parcel than was asked for
+    // (count 21, 3 parcels -> 3.000000238 -> 4). The shipping 4 is not one of
+    // them and neither was 3, so this is a trap laid for the next person who
+    // moves the cvar, not a bug being fixed. Nothing legitimately asks for a
+    // count within 1e-4 of an integer from below, so trimming it costs nothing.
     const int want =
         prof.count <= 0.f
             ? 0
-            : std::clamp( int( std::ceil( float( int{ cvar::rt_smoke_count } ) * prof.count ) ),
+            : std::clamp( int( std::ceil( float( int{ cvar::rt_smoke_count } ) * prof.count -
+                                          1e-4f ) ),
                           0,
                           RG_MAX_SMOKE_PUFFS );
 
@@ -523,7 +546,13 @@ static void RT_MonsterGunSmoke( AActor*         mo,
     // picture from one. It scales the parcel COUNT and the density together --
     // halving the count alone just makes the remaining parcels conspicuous.
     const float scale = std::max( 0.f, float{ cvar::rt_smoke_monster_scale } );
-    p.count   *= scale;
+
+    // Divide by rt_smoke_count so RT_SpawnSmokePuffs's ceil( count x cvar )
+    // multiplies straight back to gun->parcels. The row states an ABSOLUTE
+    // number of parcels: rt_smoke_count is the player's "more smoke" knob and
+    // moving it must not make every zombieman in the level smokier as well.
+    p.count = ( float( gun->parcels ) * scale ) /
+              std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
     p.density *= scale;
 
     // eye = a third of a metre behind the gun point, so rt_smoke_offset's 0.7
@@ -686,9 +715,12 @@ void RT_UpdateSmokePuffs()
 
                 SmokeProfile p2{};
                 p2.cls = "rocket-trail";
-                p2.count = 0.3f; // exactly one parcel per drop: ceil(3 * 0.3) == 1.
-                                 // 0.34 rounds to two, which empties the whole
-                                 // budget on a single rocket in under a second.
+                // EXACTLY one parcel per drop, whatever rt_smoke_count is.
+                // Spelling this as a bare 0.3 worked only while that cvar was 3;
+                // raising it to 4 turned ceil(4 x 0.3) into two, which empties
+                // the whole budget on a single rocket in under a second. The
+                // division is what makes the player's knob a player's knob.
+                p2.count = 1.f / std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
                 p2.radius = std::max( 0.01f, float{ cvar::rt_smoke_rocket_radius } ) /
                             std::max( 0.001f, float{ cvar::rt_smoke_radius } );
                 p2.density = 0.45f;
@@ -777,7 +809,13 @@ void RT_UpdateSmokePuffs()
     if( g_smokeTrail.left > 0 && tic >= g_smokeTrail.nextTic )
     {
         SmokeProfile p = g_smokeTrail.prof;
-        p.count        = 0.34f; // one parcel per release, whatever the weapon asks
+        // ONE parcel per release, whatever the weapon asks and whatever
+        // rt_smoke_count is. The literal 0.34 that used to be here meant one
+        // only while that cvar was 3 -- at 4 it is ceil( 1.36 ) = 2, and a
+        // filament made of PAIRS is a clump, which is the failure §8 of the doc
+        // exists to describe. The whole trail is a shape in time; releasing two
+        // at a time collapses it.
+        p.count = 1.f / std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
 
         // Rebuild the muzzle from where the player is looking NOW.
         const auto&    vp = r_viewpoint;
