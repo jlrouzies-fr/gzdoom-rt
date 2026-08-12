@@ -1758,16 +1758,6 @@
                                                 "smoother, laggier smoke; it is clamped never to EXCEED that. Fogged "
                                                 "maps are deliberately excluded -- shortening the window there would "
                                                 "retune the fog on every shot." )
-    RT_CVAR( rt_smoke_lightmult,        4.f,    "brightness of the light SCATTERED inside smoke. This is the knob for "
-                                                "'the smoke is still too dark in a lit room', and the reason it has to "
-                                                "exist: the froxel volume computes SINGLE scattering, so a puff receives "
-                                                "exactly one bounce while the wall behind it receives full GI. A puff is "
-                                                "therefore structurally darker than a lit room however much light "
-                                                "reaches it -- raising rt_smoke_light_far, unclamping rt_smoke_maxlight "
-                                                "and lowering rt_smoke_absorb all failed to close that gap, because none "
-                                                "of them is what is missing. Real smoke is pale because of MULTIPLE "
-                                                "scattering, which this stands in for. Per froxel, so the fog's "
-                                                "rt_volume_lintensity on nine tuned maps is untouched." )
     RT_CVAR( rt_smoke_curl,             1.6f,   "lateral turbulence, m/s^2 at one second of age. A barrel wisp leaves the "
                                                 "muzzle LAMINAR -- a straight thread for the first fraction of a second "
                                                 "-- and only breaks into curls once it has risen, so this scales with the "
