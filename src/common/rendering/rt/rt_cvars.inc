@@ -1531,7 +1531,7 @@
                                                 "per-pixel volumetric sample never reaches it: the smoke is behind the "
                                                 "surface that terminates the ray. It looks exactly like smoke that was "
                                                 "never created." )
-    RT_CVAR( rt_smoke_muzzle_u,         0.3f,   "METRES to raise the SMOKE's birth point above the muzzle flash's, and "
+    RT_CVAR( rt_smoke_muzzle_u,         0.f,     "METRES to raise the SMOKE's birth point above the muzzle flash's, and "
                                                 "the reason it needs one: smoke is born at the flash's resolved "
                                                 "position so the light and the smoke it lights are one point by "
                                                 "construction -- but that position is chosen for LIGHTING. rt_mzlflsh_u "
@@ -1540,7 +1540,15 @@
                                                 "0.8 m BELOW eye level, near knee height. It rises ~1 m over its life, "
                                                 "so it climbs straight up THROUGH the view from underneath, which reads "
                                                 "as smoke appearing above you rather than coming off a barrel. This "
-                                                "corrects the height for smoke only; the flash does not move." )
+                                                "corrects the height for smoke only; the flash does not move. "
+                                                "AND IT IS 0 NOW, i.e. the smoke is born exactly where the flash is. "
+                                                "The correction was added when a puff was climbing 1.42 m over an "
+                                                "over-long life and crossing the view from below; once that life bug "
+                                                "was fixed the lift became an overcorrection, and 0.3 put the smoke "
+                                                "9.9 degrees below the horizon where the pistol barrel sits at about "
+                                                "16.7 -- so it left the gun ABOVE the muzzle and read as coming off "
+                                                "the raised weapon of the firing animation. Negative values push it "
+                                                "lower still if a weapon needs it." )
     RT_CVAR( rt_smoke_repeat,           5,      "minimum TICS between spawns while the trigger is still held. A shot is "
                                                 "detected as the rising edge of player->extralight, which the weapon's "
                                                 "Flash state raises with A_Light1/2 and clears with A_Light0 -- but a "
