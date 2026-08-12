@@ -299,9 +299,21 @@ void RT_UploadGzDoomDynamicLights()
             ( light->lighttype == FlickerLight || light->lighttype == RandomFlickerLight ||
               light->lighttype == PulseLight ) )
         {
-            const float t     = std::clamp( ( mapRadius - lo ) / ( hi - lo ), 0.f, 1.f );
-            const float floor = std::clamp( float{ cvar::rt_dynlight_blink_floor }, 0.f, 1.f );
-            blink             = floor + ( 1.f - floor ) * t;
+            const float t = std::clamp( ( mapRadius - lo ) / ( hi - lo ), 0.f, 1.f );
+
+            // RandomFlicker (9804) gets its own floor. rt_dynlight_blink_floor is
+            // global to the whole class, so the 0.8 that settled the 199-panel SMON
+            // wall also forbids any ONE family from swinging harder -- and a screen
+            // showing static has to. Retribution ships no 9804 at all, so this split
+            // cannot move an existing fixture; the SMONBA readout panels are the only
+            // ones that take this branch. See rt_dynlight_rndflicker_floor.
+            const float floor = std::clamp(
+                light->lighttype == RandomFlickerLight
+                    ? float{ cvar::rt_dynlight_rndflicker_floor }
+                    : float{ cvar::rt_dynlight_blink_floor },
+                0.f,
+                1.f );
+            blink = floor + ( 1.f - floor ) * t;
         }
 
         // Flicker-only trim. rt_dynlight_intensity is GLOBAL to every FDynamicLight, so

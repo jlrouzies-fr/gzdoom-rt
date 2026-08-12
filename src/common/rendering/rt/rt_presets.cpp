@@ -83,33 +83,47 @@ struct MoonPreset
 };
 
 constexpr MoonPreset RT_MOON_PRESETS[] = {
-    // The three VOIDSKY maps. Their skybox room is a plain box with a flat dark
+    // The three VOIDSKY maps -- 25, 26, 31 -- and they are ONE FAMILY, not three
+    // decisions. Verified from the WAD rather than by eye, because the sky here
+    // is a skybox ROOM and every map's MAPINFO sky1 says `ISUCK`: the VOIDSKY
+    // texture appears in exactly these three TEXTMAPs of the main campaign, and
+    // all three carry the same authored fog, `fade "00 56 56"` at
+    // `fogdensity 200`. Identical inputs, so identical rows.
+    //
+    // The DISC goes because their skybox room is a plain box with a flat dark
     // teal on every surface -- no starfield, no cloud, no horizon, nothing that
     // implies a sky at all -- so a moon hanging in it is the one object on
-    // screen with no reason to be there. The DISC only: rt_sun stays on, because
-    // these maps still have F_SKY1 openings and taking their light away as well
-    // would flatten rooms that are lit through them.
-    { "map25", -1.f, -1.f, -1.f, false, 6.f,
-      "Disc off, aim inherited: negative azimuth/altitude/intensity mean `keep "
-      "the launcher's`, so this row says only the things it is for. Without that "
+    // screen with no reason to be there.
+    //
+    // The moon's LIGHT goes too (intensity 0) because all three are fogged
+    // (RT_FOG_PRESETS) and a directional light is the one thing that wrecks a
+    // fogged level. It rakes the froxel volume from a single bearing, so the fog
+    // reads as a lit slab with a hard edge to it instead of as the even medium
+    // the map was authored around; and none of these rooms have an opening the
+    // moon could honestly be arriving through in the first place, so under
+    // rt_sun_require_sky most of what it delivered was leak anyway. The fog's
+    // light comes from the level's own lamps and lava (rt_fog_illum), which is
+    // where it should have come from.
+    //
+    // The cost of taking the light away is real and was accepted knowingly: on a
+    // map with F_SKY1 openings, rooms lit through them flatten. Here the fog's
+    // own in-scattered floor (rt_fog_ambient 1) is what fills that space, which
+    // is why the two tables have to move together -- an intensity 0 row here
+    // WITHOUT a fog row there would leave a map genuinely darker, with nothing
+    // put back. That is the pairing to preserve if a fourth map is ever added.
+    { "map25", -1.f, -1.f, 0.f, false, 6.f,
+      "VOIDSKY, moon OFF entirely -- disc and light. Cat and Mouse; fogged, see "
+      "RT_FOG_PRESETS. Aim INHERITED: negative azimuth/altitude means `keep the "
+      "launcher's`, so this row says only the things it is for. Without that "
       "convention a row like this would have to restate an aim it does not care "
       "about, and the restated copy would go stale the moment the launcher's "
       "changed. sky 6 because VOIDSKY's flat teal is 186x the starfield's mean "
       "radiance -- at the global 25 the void would glow like a lightbox." },
-    // MAP26 goes further than MAP25/31: the moon's LIGHT is off too, not only
-    // its disc. The map is fogged (RT_FOG_PRESETS -- its MAPINFO asks for cyan
-    // `fade` at fogdensity 200) and a directional light is the one thing that
-    // wrecks a fogged level. It rakes the froxel volume from a single bearing,
-    // so the fog reads as a lit slab with a hard edge to it instead of as the
-    // even medium the map was authored around; and MAP26's rooms have no
-    // opening the moon could honestly be arriving through in the first place,
-    // so under rt_sun_require_sky most of what it delivered was leak anyway.
-    // The fog's light now comes from the level's own lamps and lava
-    // (rt_fog_illum), which is where it should have come from.
     { "map26", -1.f, -1.f, 0.f, false, 6.f,
-      "VOIDSKY, as MAP25, but moon OFF entirely -- disc and light. This map is "
-      "fogged; see RT_FOG_PRESETS." },
-    { "map31", -1.f, -1.f, -1.f, false, 6.f, "VOIDSKY, as MAP25." },
+      "VOIDSKY, as MAP25. Hardcore -- the map the fog was built for." },
+    { "map31", -1.f, -1.f, 0.f, false, 6.f,
+      "VOIDSKY, as MAP25. The secret map, and the last of the three: same "
+      "skybox, same `fade` 00 56 56 at fogdensity 200, so same row." },
 
     // The five fire-sky maps (FRSKYNRM on 22/24/28, FRSKYGRN on 23/32).
     //
@@ -611,11 +625,46 @@ struct FogPreset
     const char* note;
 };
 
+// The MAP26 medium, named because more than one map ships exactly it. A second
+// map that wants this look must not carry a SECOND COPY of the nine numbers --
+// that copy is the one that goes stale the first time the profile is retuned,
+// and the two maps then drift apart silently while both claim to match. A map
+// that wants a DIFFERENT look writes its own row out in full; this is only for
+// "the same medium", and it is a compile-time paste, so the `fog` CCMD still
+// prints a plain paste-ready row.
+#define RT_FOG_MEDIUM_MAP26 true, 0, 0.01f, 32.f, 1.f, 1, 10.f, 0, 2.4f
+
 constexpr FogPreset RT_FOG_PRESETS[] = {
+    // MAP25 -- Cat and Mouse. Same MAPINFO fog as MAP26 verbatim (`fade`
+    // 00 56 56 at fogdensity 200), same VOIDSKY skybox, and now the same moon
+    // treatment: disc AND light off (RT_MOON_PRESETS), which is what makes the
+    // shared medium legitimate rather than a coincidence of colour. Only the
+    // colour is inherited here, as on MAP26; the nine numbers come from the
+    // shared medium above.
+    { "map25", RT_FOG_MEDIUM_MAP26,
+      "Cat and Mouse. The MAP26 medium verbatim -- see that row for what each "
+      "number does and why. Legitimate because the two maps agree on everything "
+      "the profile depends on: the same authored `fade` 00 56 56 at fogdensity "
+      "200, the same flat-teal VOIDSKY, and (since this row) the same moon off "
+      "entirely, so ILLUM 1 is as load-bearing here as it is there. If MAP25 "
+      "ever wants a look of its own, replace RT_FOG_MEDIUM_MAP26 with its own "
+      "nine numbers rather than editing the shared one." },
+    // MAP31 -- the secret map, and the third and last VOIDSKY map. Everything
+    // said of MAP25 holds verbatim: same skybox, same authored `fade` 00 56 56
+    // at fogdensity 200, same moon off entirely. Checked from the WAD, not
+    // assumed -- see the RT_MOON_PRESETS comment for how the three were found.
+    { "map31", RT_FOG_MEDIUM_MAP26,
+      "The MAP26 medium verbatim, as MAP25 -- see that row. This completes the "
+      "VOIDSKY family: all three cyan-void maps now share one medium and one "
+      "moon treatment, which is the point of naming the medium rather than "
+      "pasting its nine numbers a third time. The maps still unlisted are the "
+      "WARM ones (MAP17 3C140A, MAP27 80 1E 00, and the bonus episodes' RTR03 "
+      "-- cyan but density 64 -- RTR04, ABS05, OUT10); none of them should be "
+      "given this medium without being looked at first." },
     // Clear air around the player, a wall of teal at corridor distance. That
     // shape is the whole look of the reference shot and it is what the ramp
     // exists for -- see the transmittance ladder in the note.
-    { "map26", true, 0, 0.01f, 32.f, 1.f, 1, 10.f, 0, 2.4f,
+    { "map26", RT_FOG_MEDIUM_MAP26,
       "Hardcore. The map this exists for, and the one with a reference shot "
       "(screen/doom64original_level26fog.png). "
       "The numbers are BAKED HERE, per map, the same way RT_MOON_PRESETS carries "
@@ -640,6 +689,8 @@ constexpr FogPreset RT_FOG_PRESETS[] = {
       "ILLUM 1 is not optional: MAP26's moon is off (RT_MOON_PRESETS), so the "
       "single-light path would leave this fog with no source at all." },
 };
+
+#undef RT_FOG_MEDIUM_MAP26
 
 // The launcher's values, captured once before any preset overwrites them, so a
 // map with no row gets the global back instead of inheriting the last fogged
