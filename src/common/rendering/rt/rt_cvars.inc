@@ -1671,7 +1671,7 @@
                                                 "torch two rooms away is a slot spent on something the froxel grid "
                                                 "cannot resolve. 0 disables the cull, which on a torch-lit map is how "
                                                 "you spend the entire budget in one frame." )
-    RT_CVAR( rt_smoke_stylize,          1.f,    "PIXEL-ART STYLIZATION of smoke, 0..1. The froxel volume gives a puff a "
+    RT_CVAR( rt_smoke_stylize,          0.f,    "PIXEL-ART STYLIZATION of smoke, 0..1. The froxel volume gives a puff a "
                                                 "smooth exponential falloff, which is physically right and reads as an "
                                                 "airbrushed blob against art that is entirely hard-edged pixels. This "
                                                 "posterizes the falloff into rt_smoke_stylize_steps bands, so the puff "
@@ -1685,7 +1685,7 @@
                                                 "outermost band is taken with CEIL rather than floor, so the silhouette "
                                                 "stays hard exactly at the puff's radius instead of the rim quantizing "
                                                 "to zero and going soft again." )
-    RT_CVAR( rt_smoke_stylize_grid,     0.14f,  "METRES of world-space voxel snapping applied to the puff field, 0 = "
+    RT_CVAR( rt_smoke_stylize_grid,     0.f,    "METRES of world-space voxel snapping applied to the puff field, 0 = "
                                                 "off. WORLD space, not screen: screen-space blocks are the obvious way "
                                                 "to get pixels and they CRAWL as the camera turns, which reads as noise "
                                                 "rather than as style. The sprites this imitates are pixel grids that "

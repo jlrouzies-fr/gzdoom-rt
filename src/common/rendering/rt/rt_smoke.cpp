@@ -51,6 +51,23 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     // half a second reads as a glitch; low density because at this radius a
     // thick one would be a bead.
     //
+    // THE 2.5 cm THREAD WAS UNRENDERABLE, and that is why this gun's smoke was
+    // invisible in a lit room while a barrel's was a big grey cloud.
+    //
+    // The packer pads a puff's ALONG-view radius up to half a froxel slice
+    // (23.4 cm at rt_volume_far 30) so the grid can resolve it, and divides the
+    // density by the same factor to keep the optical depth honest. At 0.07 the
+    // pistol's parcels were 2.5 cm and kept ONE TENTH of their density; the
+    // barrel's 40 cm burst keeps all of it. Effective density 1.3 against 11.2.
+    // And since smoke_blendTint weights colour by density, a puff that thin
+    // barely wins against the room's medium -- so it took the room's colour
+    // rather than showing its own grey, which is precisely how it was reported.
+    //
+    // 0.30 puts a parcel at 10.5 cm: still small, but only a 2.2x division
+    // instead of 9.5x. The THREAD is not lost, because a filament here is a
+    // shape in TIME -- 22 parcels rising in a column -- not a matter of each
+    // parcel being sub-centimetre. That was the mistaken premise.
+    //
     // MORE SMOKE ON THIS GUN IS A LONGER TRAIL -- MORE PARCELS, at the SAME
     // spacing and the SAME lifetime. Not a bigger parcel, not a bigger burst,
     // and above all not a longer-lived one.
@@ -77,7 +94,7 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     //
     // growth 0.10 -> 0.14 for the same reason in reverse: rt_smoke_growth fell
     // 0.7 -> 0.5, and this row wants the same final radius it always had.
-    { "Pistol",      0.34f, 0.07f, 0.90f, 1.1f, 0.25f, 0.06f, 1.5f, 22, 2, 0.14f,
+    { "Pistol",      0.34f, 0.30f, 0.90f, 1.1f, 0.25f, 0.06f, 1.5f, 22, 2, 0.14f,
       "thin wisp off the barrel" },
     // The machine gun is the pistol: a thread, not a cloud, and its lifetime is
     // pinned the same way (0.8 x 2.2 = 1.76 s, exactly what 1.1 x 1.6 gave).
@@ -85,7 +102,7 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     // rt_smoke_repeat (5) tics, so at 2 tics the emitter alone would run the
     // pool to its ceiling and the oldest parcels -- the tail you actually read
     // as lingering -- would be culled to make room.
-    { "Chaingun",    0.34f, 0.07f, 0.70f, 0.8f, 0.30f, 0.07f, 1.6f, 9, 3, 0.14f,
+    { "Chaingun",    0.34f, 0.26f, 0.70f, 0.8f, 0.30f, 0.07f, 1.6f, 9, 3, 0.14f,
       "small trail, like the pistol" },
     // Black powder from a wide bore: the fat one, and the reference for the rest.
     // SPARSE, not fat. A wide bore does make a cloud, but a cloud rendered as
