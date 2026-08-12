@@ -2405,8 +2405,22 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
             // it asked for and is as dense as it asked to be.
             const float thin = puff.radius / rAlong;
 
+            // The view direction to THIS puff, precomputed. The shader's
+            // ellipsoid test needs it to split the offset into along-view and
+            // across-view parts, and it used to derive it per froxel with a
+            // normalize() -- a square root inside a loop that runs over every
+            // uploaded puff for each of ~900k cells. It is constant per puff per
+            // frame, and smokeShape.yzw were already spare, so it is computed
+            // here exactly once instead.
+            FVector3 vdir = puff.pos - eye;
+            const float vlen = vdir.Length();
+            // A puff centred exactly on the eye has no view direction. Any unit
+            // vector is as good as another there -- every offset is "across" it
+            // -- and leaving it unnormalized would send a NaN into the volume.
+            vdir = vlen > 1e-4f ? vdir / vlen : FVector3{ 0.f, 0.f, 1.f };
+
             smoke_puffs[ i ]  = RgFloat4D{ puff.pos.X, puff.pos.Y, puff.pos.Z, rAlong };
-            smoke_shape[ i ]  = RgFloat4D{ rPerp, 0.f, 0.f, 0.f };
+            smoke_shape[ i ]  = RgFloat4D{ rPerp, vdir.X, vdir.Y, vdir.Z };
             smoke_albden[ i ] = RgFloat4D{
                 col.X, col.Y, col.Z,
                 puff.density * thin * dilute * sliceM / RT_VOLUME_CELL_COEFF * fade };

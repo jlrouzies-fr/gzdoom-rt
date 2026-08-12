@@ -149,7 +149,17 @@ struct SmokeProfile
                           // expanding at the shared rate, so a thin profile has
                           // to slow its expansion as well as start small.
     const char* note;
+    // Marks the puffs this profile spawns as ambient. TRAILING on purpose:
+    // every existing row is positionally initialised, so a field added at the
+    // end value-initialises to false and no row has to be touched.
+    bool        ambient;
 };
+
+// The GLDEFS offset that puts a flame light ON the flame rather than at the
+// actor's feet, for the sprites in RT_FLAME_KINDS. Ambient smoke has to rise
+// from the same point the light comes from, and a second copy of those offsets
+// would be a second thing to keep in sync. Defined in rt_lights_fx.cpp.
+bool         RT_FlameSpriteOffset( AActor* mo, float* upMapUnits );
 
 SmokeProfile RT_SmokeProfileFor( AActor* viewactor );
 void         RT_SpawnSmokePuffs( const FVector3&     eye,
@@ -161,6 +171,10 @@ void RT_ClearSmokePuffs();
 // The live puff count, so the `smoke` CCMD can report it without duplicating
 // any of the simulation's state.
 extern uint32_t g_smokePuffCount;
+// How many of those are AMBIENT (flame/torch) puffs. Bounded by
+// rt_smoke_ambient_budget so a room full of torches can never spend the pool
+// the player's own smoke needs -- see the eviction rule in RT_SpawnSmokePuffs.
+extern uint32_t g_smokeAmbientCount;
 
 
 enum
@@ -568,6 +582,14 @@ struct SmokePuff
     float    age;     // seconds
     float    life;    // seconds, captured at spawn so a cvar change mid-flight
                       // cannot make a live puff immortal or kill it instantly
+    // AMBIENT SMOKE MUST NEVER STARVE THE PLAYER'S, and this flag is how.
+    //
+    // Every other source is an EVENT -- a shot, an explosion, a projectile that
+    // ends. Torch smoke is continuous and there are dozens of torches, so left
+    // to the plain oldest-out overflow rule it would win every contest for a
+    // slot simply by never stopping. The pool evicts ambient puffs first, and
+    // rt_smoke_ambient_budget caps how many may be alive at once.
+    bool     ambient;
 };
 
 extern std::array< SmokePuff, RG_MAX_SMOKE_PUFFS > g_smokePuffs;

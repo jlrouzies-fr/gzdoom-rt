@@ -1476,9 +1476,18 @@
                                                 "The ROCKET trail and the monster guns divide by this before "
                                                 "multiplying back, so they emit a fixed number of parcels and moving "
                                                 "this knob is purely a player-weapon change." )
-    RT_CVAR( rt_smoke_budget,           32,     "maximum live puffs uploaded, of the 32 the uniform can carry "
+    RT_CVAR( rt_smoke_budget,           48,     "maximum live puffs UPLOADED, of the 128 the uniform can carry "
                                                 "(RG_MAX_SMOKE_PUFFS). When more exist the NEAREST survive, since the "
-                                                "whole point is the smoke in front of your face." )
+                                                "whole point is the smoke in front of your face. "
+                                                "THIS IS A SHADER-TIME KNOB, not a memory one, and the two limits are "
+                                                "different numbers: the CAP is uniform bytes (128 puffs = 8 KB, under "
+                                                "the 16 KB Vulkan guarantees), while the BUDGET costs a loop iteration "
+                                                "per uploaded puff in each of ~900k froxels. smoke_evalAt rejects a "
+                                                "puff with one dot product before any of the expensive math, so the "
+                                                "real cost tracks how many puffs are NEAR a cell rather than how many "
+                                                "exist -- which is what makes ambient torch smoke affordable at all. "
+                                                "Raise it if smoke pops out of existence in a crowded room; lower it "
+                                                "first if the volume gets expensive." )
     RT_CVAR( rt_smoke_life,             2.2f,   "puff lifetime in seconds. Density falls off over it as (1 - age)^2, so "
                                                 "the last third is nearly gone -- this is where a puff VANISHES, not "
                                                 "where it stops being visible. RAISE IT WITH rt_smoke_growth LOWERED BY "
@@ -1613,6 +1622,45 @@
                                                 "puffs, so a firefight across the map would quietly push the smoke off "
                                                 "your own barrel out of the array. Past the volume's reach a puff is "
                                                 "not represented at all anyway. 0 disables the cull." )
+    RT_CVAR( rt_smoke_projectile,       true,   "smoke on flying projectiles OTHER than the rocket: the revenant tracer "
+                                                "(TRCR), the Mother Demon's ball (RBAL) and fire (FIRE), and the "
+                                                "mancubus fireball (MANF). Same machinery as the rocket -- a trail along "
+                                                "the flight and a burst where MF_MISSILE clears -- but the per-projectile "
+                                                "numbers live in RT_PROJECTILE_SMOKE rather than in cvars, because five "
+                                                "of them is more than anyone will tune by hand. Separate from "
+                                                "rt_smoke_rocket because they are separate judgements: a rocket "
+                                                "obviously smokes, a fireball is a taste call." )
+    RT_CVAR( rt_smoke_barrel,           true,   "a smoke burst when an exploding barrel goes off. Triggered on the "
+                                                "sprite frame A_Explode sits on (BEXP frame E), NOT on the actor going "
+                                                "away -- 64ExplosiveBarrel lingers through a 1050-tic respawn timer, so "
+                                                "the disappearance rule the projectiles use would fire the smoke about "
+                                                "twenty seconds late." )
+    RT_CVAR( rt_smoke_barrel_scale,     1.f,    "how much of it, scaling the barrel burst's parcel count and density "
+                                                "together. This is the one explosion allowed to obscure -- unlike the "
+                                                "rocket's, it does not have to leave the shot you just took visible." )
+    RT_CVAR( rt_smoke_ambient_fx,       true,   "a thin column of smoke rising off every FLAME in the level: the twelve "
+                                                "torch and sconce sprites, the loose floor fires, 64BigFire's bonfire, "
+                                                "and the Lost Soul's burning head. See RT_AMBIENT_FLAMES in "
+                                                "rt_smoke.cpp. Note the name: rt_smoke_ambient is the unlit floor for "
+                                                "smoke-only frames and has nothing to do with this." )
+    RT_CVAR( rt_smoke_ambient_scale,    1.f,    "how much flame smoke, scaling its density. A flame's wisp is meant to "
+                                                "read as heat carrying soot upward, not as a puff -- a torch that "
+                                                "coughs like a shotgun looks like it is going out. 0 is the same as "
+                                                "rt_smoke_ambient_fx 0." )
+    RT_CVAR( rt_smoke_ambient_budget,   40,     "ceiling on how many AMBIENT puffs may be alive at once. This is the "
+                                                "knob that keeps flames from eating the feature: every other source is "
+                                                "an EVENT and stops on its own, but a torch never does, so ambient "
+                                                "smoke would win every contest for a pool slot simply by outlasting "
+                                                "everything else. Emission stops at this cap rather than pushing other "
+                                                "smoke out -- and separately, the pool evicts ambient puffs BEFORE any "
+                                                "other kind, so a shot always finds room even when flames are at their "
+                                                "cap. Must stay well under rt_smoke_budget." )
+    RT_CVAR( rt_smoke_ambient_far,      9.f,    "METRES beyond which a flame makes no smoke. Tighter than "
+                                                "rt_smoke_monster_far because a level holds far more flames than "
+                                                "gunmen -- 117 placements of 64BigFire alone across nine maps -- and a "
+                                                "torch two rooms away is a slot spent on something the froxel grid "
+                                                "cannot resolve. 0 disables the cull, which on a torch-lit map is how "
+                                                "you spend the entire budget in one frame." )
     RT_CVAR( rt_smoke_curl,             1.6f,   "lateral turbulence, m/s^2 at one second of age. A barrel wisp leaves the "
                                                 "muzzle LAMINAR -- a straight thread for the first fraction of a second "
                                                 "-- and only breaks into curls once it has risen, so this scales with the "

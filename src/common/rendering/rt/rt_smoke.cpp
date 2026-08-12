@@ -176,6 +176,11 @@ static SmokeTrail g_smokeTrail{};
 // trick worth remembering: DISAPPEARANCE is the death event, and it needs no
 // hook, no DECORATE edit and no ZScript -- which matters because the projectile
 // classes here are the WAD's (64Rocket), not ours.
+// Defined below, next to the table it indexes. A pointer to an incomplete
+// type is all RocketMark needs, and declaring it here keeps the projectile
+// table beside the rows it documents rather than hoisted above this struct.
+struct ProjectileSmoke;
+
 struct RocketMark
 {
     AActor*  mo;
@@ -183,6 +188,11 @@ struct RocketMark
     FVector3 dir;
     int      lastTic;
     int      nextTrail;
+    // The row matched when this projectile was FIRST seen, kept rather than
+    // re-derived at the burst -- because by then MF_MISSILE is gone and
+    // RT_ProjectileSmokeFor answers nullptr. The death event is precisely the
+    // moment the actor stops being matchable, so the match has to outlive it.
+    const ProjectileSmoke* row;
 };
 static std::vector< RocketMark > g_rockets;
 
@@ -210,12 +220,19 @@ static std::vector< RocketMark > g_rockets;
 struct MonsterGun
 {
     const char*  sprite;   // full 4-character sprite name
-    uint8_t      frame;    // 0 == 'A'; 5 == 'F', the fire frame on every row here
+    uint8_t      frame;    // 0 == 'A'; the fire frame. F on the soldiers, E on CYBR
     int          parcels;  // ABSOLUTE, not a multiplier on rt_smoke_count. That
                            // cvar is the player's "more smoke" knob and has been
                            // moved once already; a monster's shot should not get
                            // bigger every time the shotgun does. The row's count
                            // multiplier is derived from this at spawn.
+    // WHERE THE GUN IS, stated per row rather than assumed. The soldiers hold a
+    // weapon at chest height on the centre line; the Cyberdemon's arm cannon is
+    // neither -- its DECORATE says A_CustomMissile( "64CyberRocket", 81, -31 ),
+    // i.e. 81 units up and 31 to the side of a 160-tall actor. Guessing a
+    // fraction of the height would put its smoke in the middle of its chest.
+    float        zFrac;    // fraction of the actor's height
+    float        side;     // MAP UNITS across the facing direction; + is right
     SmokeProfile prof;
 };
 
@@ -230,22 +247,43 @@ struct MonsterGun
 static constexpr MonsterGun RT_MONSTER_GUNS[] = {
     // 64ZombieMan / 64TargetRangeZombieMan -- a rifle. One small parcel, the
     // same read as the player's pistol minus the filament.
-    { "POSS", 5, 1, { "zombieman rifle", 0.f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
+    { "POSS", 5, 1, 0.58f, 0.f, { "zombieman rifle", 0.f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
                    "one small parcel off the barrel" } },
     // 64ShotgunGuy -- a wide bore, so a SCATTER, for the reason the player's
     // shotgun is sparse: one fat parcel is a grey wall, several small ones read
     // as a burst and leave gaps to see through.
-    { "SPOS", 5, 2, { "shotgun guy", 0.f, 0.50f, 0.50f, 0.95f, 0.7f, 1.6f, 1.1f, 0, 0, 0.9f,
+    { "SPOS", 5, 2, 0.58f, 0.f, { "shotgun guy", 0.f, 0.50f, 0.50f, 0.95f, 0.7f, 1.6f, 1.1f, 0, 0, 0.9f,
                    "a scatter, like the player's shotgun" } },
     // Not in Retribution (no 64ChaingunGuy), kept because the engine loads on
     // DOOM2.WAD and the actor is one -file away.
-    { "CPOS", 5, 1, { "chaingun guy", 0.f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
+    { "CPOS", 5, 1, 0.58f, 0.f, { "chaingun guy", 0.f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
                    "thinner and shorter -- it fires again immediately" } },
     // 64MarineBot, which uses A_PosAttack on the player sprite.
-    { "PLAY", 5, 1, { "marine bot", 0.f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
+    { "PLAY", 5, 1, 0.58f, 0.f, { "marine bot", 0.f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
                    "as the zombieman" } },
-    { "SSWV", 5, 1, { "wolfenstein ss", 0.f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
+    { "SSWV", 5, 1, 0.58f, 0.f, { "wolfenstein ss", 0.f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
                    "as the chaingun guy" } },
+    // THE CYBERDEMON, and it is the odd row in three ways.
+    //
+    // Its fire frame is E, not F -- F is the one it faces you on. Its Missile
+    // state fires THREE times, and the edge test handles that for free because
+    // DECORATE returns to F between shots:
+    //
+    //     CYBR FF   4 A_FaceTarget
+    //     CYBR E    4 A_CustomMissile( "64CyberRocket", 81, -31, ... )   <- shot
+    //     CYBR EE   4 A_FaceTarget
+    //     CYBR FFFF 4 A_FaceTarget
+    //     CYBR E    4 A_CustomMissile( ... )                             <- shot
+    //
+    // And the gun is an arm cannon at 81 units up and 31 to the left of a
+    // 160-tall, 52-radius actor, so zFrac/side carry those rather than the
+    // soldiers' chest-height assumption.
+    //
+    // Its ROCKETS already smoke: 64CyberRocket matches the rocket row in
+    // RT_PROJECTILE_SMOKE by class name. This is only the muzzle -- a big dirty
+    // one, because it is a siege gun.
+    { "CYBR", 4, 4, 0.506f, -31.f, { "cyberdemon", 0.f, 1.30f, 0.65f, 1.20f, 0.7f, 2.2f, 0.9f, 0, 0, 1.0f,
+                   "arm cannon -- big and dirty" } },
 };
 
 static const MonsterGun* RT_MonsterGunFor( AActor* mo )
@@ -290,35 +328,119 @@ struct GunnerMark
 };
 static std::vector< GunnerMark > g_gunners;
 
-// The launcher's projectile, not the launcher. "Rocket" matches both, so the
-// weapon has to be excluded by name -- Retribution's classes are 64Rocket and
-// 64RocketLauncher.
-static bool RT_IsRocketProjectile( AActor* mo )
+// When each emitter is next due. Unlike the gunners this is not an edge test --
+// a flame is always burning -- so the state is a countdown rather than a bool.
+struct AmbientMark
 {
-    if( !mo || !mo->GetClass() )
+    AActor* mo;
+    int     nextTic;
+    int     lastTic;
+};
+static std::vector< AmbientMark > g_ambient;
+
+// How many ambient puffs are alive right now, maintained by the spawn and the
+// expiry rather than recounted. rt_smoke_ambient_budget bounds it.
+uint32_t rtx::g_smokeAmbientCount = 0;
+
+
+// SMOKING PROJECTILES. A trail along the flight and a burst where it dies.
+//
+// Keyed by SPRITE, not by class name, for the reason the monster guns are: the
+// sprite is what the art shows and it is stable across the WAD's class naming,
+// where "Rocket" needed two exclusions to stop matching the launcher and its own
+// smoke actor. The rocket rows keep a class match as well, because the rocket
+// family is genuinely named rather than sprited alike.
+//
+// The rows are ABSOLUTE numbers, not multipliers on the puff cvars: a rocket's
+// trail should not change because the player's shotgun got smokier.
+struct ProjectileSmoke
+{
+    const char* sprite;      // 4-character sprite name; nullptr = match by class
+    const char* cls;         // substring of the class name, when sprite is null
+    int         trailEvery;  // tics between trail parcels
+    float       trailRadius; // metres
+    float       trailDens;   // multiplier on rt_smoke_density
+    float       trailLife;   // multiplier on rt_smoke_life
+    int         boom;        // parcels in the death burst; 0 = no burst
+    float       boomRadius;  // metres
+    float       boomDens;
+    const char* note;
+};
+
+static const ProjectileSmoke RT_PROJECTILE_SMOKE[] = {
+    // The rocket keeps its cvars, because those are the ones already tuned in
+    // play and exposed to the player -- this row reads them rather than
+    // restating them. Matched by CLASS, since 64Rocket and 64CyberRocket share
+    // no sprite but are the same thing, and the launcher and 64RocketSmokeTrail
+    // have to be excluded by name.
+    { nullptr, "Rocket", 0, 0.f, 0.f, 0.f, 0, 0.f, 0.f, "rocket -- uses rt_smoke_rocket_*" },
+    // 64TracerMissile, the revenant's homing shot. It already trails its own
+    // sprite puffs; this is the medium those sprites only imply. Thin and
+    // short-lived, because it is FAST and a long trail on a seeker turns into a
+    // wall of smoke as it circles.
+    { "TRCR", nullptr, 2, 0.10f, 0.30f, 0.55f, 4, 0.26f, 0.5f, "tracer -- thin, fast, short" },
+    // 64MotherBall, the same actor family from the Mother Demon.
+    { "RBAL", nullptr, 2, 0.11f, 0.32f, 0.60f, 4, 0.28f, 0.5f, "mother ball -- as the tracer" },
+    // 64FatShot, the mancubus. Fat and slow, so it can afford a wider trail --
+    // and a wider one is what sells the difference from the tracer.
+    { "MANF", nullptr, 2, 0.16f, 0.40f, 0.70f, 5, 0.34f, 0.6f, "fat shot -- wider, slower" },
+    // 64MotherFire. SHARES ITS SPRITE with 64BigFire, the ambient bonfire that
+    // stands in 117 places across nine maps -- so this row is only ever reached
+    // because the MF_MISSILE test below runs FIRST. A bonfire is not a
+    // projectile; matching FIRE without that flag would have put a rocket trail
+    // on every torch in the game.
+    { "FIRE", nullptr, 2, 0.14f, 0.35f, 0.60f, 5, 0.32f, 0.6f, "mother fire -- burning, not powder" },
+};
+
+// MF_MISSILE IS THE TEST THAT MATTERS, and leaving it out was a real bug.
+//
+// P_ExplodeMissile clears MF_MISSILE but the actor LIVES ON, same class, through
+// its whole death animation. Matching on the name alone therefore kept seeing a
+// rocket that had already hit the wall -- stationary, still "alive" -- and kept
+// dropping trail parcels into it for as long as the explosion played. That is
+// the cluster of small puffs that sat against a wall and never faded: they were
+// not failing to expire, they were being continuously replaced.
+//
+// It also fixes WHEN the burst happens. Losing the flag is the explosion, so the
+// burst fires on that frame rather than whenever the actor finally leaves the
+// thinker list.
+//
+// And it is what keeps FIRE's two owners apart: see the row above.
+static const ProjectileSmoke* RT_ProjectileSmokeFor( AActor* mo )
+{
+    if( !mo || !mo->GetClass() || !( mo->flags & MF_MISSILE ) )
     {
-        return false;
-    }
-    // MF_MISSILE IS THE TEST THAT MATTERS, and leaving it out was a real bug.
-    //
-    // P_ExplodeMissile clears MF_MISSILE but the actor LIVES ON, same class,
-    // through its whole death animation. Matching on the class name alone
-    // therefore kept seeing a rocket that had already hit the wall -- stationary,
-    // still "alive" -- and kept dropping trail parcels into it for as long as the
-    // explosion played. That is the cluster of small puffs that sat against a
-    // wall and never faded: they were not failing to expire, they were being
-    // continuously replaced.
-    //
-    // It also fixes WHEN the burst happens. Losing the flag is the explosion, so
-    // the burst now fires on that frame instead of whenever the actor finally
-    // left the thinker list.
-    if( !( mo->flags & MF_MISSILE ) )
-    {
-        return false;
+        return nullptr;
     }
 
-    const char* c = mo->GetClass()->TypeName.GetChars();
-    return c && strstr( c, "Rocket" ) && !strstr( c, "Launcher" ) && !strstr( c, "Smoke" );
+    const char* c  = mo->GetClass()->TypeName.GetChars();
+    const char* sn = ( mo->sprite >= 0 && mo->sprite < int( sprites.Size() ) )
+                         ? sprites[ mo->sprite ].name
+                         : nullptr;
+
+    for( const ProjectileSmoke& p : RT_PROJECTILE_SMOKE )
+    {
+        if( p.sprite )
+        {
+            if( sn && strnicmp( sn, p.sprite, 4 ) == 0 )
+            {
+                return &p;
+            }
+        }
+        else if( p.cls && c && strstr( c, p.cls ) && !strstr( c, "Launcher" ) &&
+                 !strstr( c, "Smoke" ) )
+        {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+// The rocket row is the one whose numbers live in cvars, so it is identified
+// rather than special-cased at every use.
+static bool RT_IsRocketRow( const ProjectileSmoke* p )
+{
+    return p && p->sprite == nullptr;
 }
 
 void rtx::RT_ClearSmokePuffs()
@@ -332,6 +454,8 @@ void rtx::RT_ClearSmokePuffs()
     // Same for the gunners: a stale pointer here is worse than a wrong puff,
     // because the next tic would dereference it.
     g_gunners.clear();
+    g_ambient.clear();
+    g_smokeAmbientCount = 0;
 }
 
 // Called from RT_AddMuzzleFlash on the rising edge of a shot -- or on the
@@ -409,6 +533,14 @@ void rtx::RT_SpawnSmokePuffs( const FVector3& eye,
         // Oldest-out when full: the puff about to be overwritten is the one
         // closest to vanishing anyway, and a shot that silently produced no
         // smoke because the array was full would be the more confusing failure.
+        //
+        // AMBIENT FIRST, THOUGH. Torch smoke is continuous and a gunshot is not,
+        // so a plain oldest-out rule hands the pool to whichever source never
+        // stops -- and the smoke that matters, the one at the end of the gun you
+        // are holding, is exactly the one that would be pushed out. So the
+        // eviction looks for the oldest AMBIENT puff first and only falls back
+        // to the oldest of all when there is none. An ambient spawn arriving at
+        // a full pool therefore replaces ambient smoke, never yours.
         uint32_t slot;
         if( g_smokePuffCount < g_smokePuffs.size() )
         {
@@ -416,13 +548,27 @@ void rtx::RT_SpawnSmokePuffs( const FVector3& eye,
         }
         else
         {
-            slot = 0;
-            for( uint32_t j = 1; j < g_smokePuffCount; j++ )
+            slot                = UINT32_MAX;
+            uint32_t oldestAny  = 0;
+            for( uint32_t j = 0; j < g_smokePuffCount; j++ )
             {
-                if( g_smokePuffs[ j ].age > g_smokePuffs[ slot ].age )
+                if( g_smokePuffs[ j ].age > g_smokePuffs[ oldestAny ].age )
+                {
+                    oldestAny = j;
+                }
+                if( g_smokePuffs[ j ].ambient &&
+                    ( slot == UINT32_MAX || g_smokePuffs[ j ].age > g_smokePuffs[ slot ].age ) )
                 {
                     slot = j;
                 }
+            }
+            if( slot == UINT32_MAX )
+            {
+                slot = oldestAny;
+            }
+            if( g_smokePuffs[ slot ].ambient && g_smokeAmbientCount > 0 )
+            {
+                g_smokeAmbientCount--;
             }
         }
 
@@ -448,6 +594,11 @@ void rtx::RT_SpawnSmokePuffs( const FVector3& eye,
         puff.life    = std::max( 0.05f, float{ cvar::rt_smoke_life } * prof.life );
         puff.density = std::max( 0.f, float{ cvar::rt_smoke_density } * prof.density );
         puff.rise    = float{ cvar::rt_smoke_rise } * prof.rise;
+        puff.ambient = prof.ambient;
+        if( puff.ambient )
+        {
+            g_smokeAmbientCount++;
+        }
 
         if( cvar::rt_smoke_debug )
         {
@@ -519,15 +670,21 @@ static void RT_MonsterGunSmoke( AActor*         mo,
     const double   yaw = mo->Angles.Yaw.Radians();
     const FVector3 fwd{ float( std::cos( yaw ) ), float( std::sin( yaw ) ), 0.f };
 
-    // 0.58 of the actor's height, which is where these sprites hold the weapon,
-    // and a little past its own radius so the puff is not born inside the body.
-    // Derived from the actor rather than hardcoded because Retribution's monsters
-    // are 80 units tall where the stock ones are 56.
-    const double gz = mo->Z() + mo->Height * 0.58;
+    // Height as a FRACTION of the actor's own, and a little past its own radius
+    // so the puff is not born inside the body. Both derived from the actor
+    // rather than hardcoded, because Retribution's soldiers are 80 units tall
+    // where the stock ones are 56 -- and the Cyberdemon is 160.
+    const double gz = mo->Z() + mo->Height * double( gun->zFrac );
     const double gr = mo->radius + 6.0;
 
-    const FVector3 muzzle{ float( mo->X() + std::cos( yaw ) * gr ) * ONEGAMEUNIT_IN_METERS,
-                           float( mo->Y() + std::sin( yaw ) * gr ) * ONEGAMEUNIT_IN_METERS,
+    // The side offset is across the facing direction: (cos, sin) rotated by 90
+    // degrees is (-sin, cos). This is what puts the Cyberdemon's smoke on its
+    // arm cannon instead of in the middle of its chest.
+    const double sx = -std::sin( yaw ) * double( gun->side );
+    const double sy = std::cos( yaw ) * double( gun->side );
+
+    const FVector3 muzzle{ float( mo->X() + std::cos( yaw ) * gr + sx ) * ONEGAMEUNIT_IN_METERS,
+                           float( mo->Y() + std::sin( yaw ) * gr + sy ) * ONEGAMEUNIT_IN_METERS,
                            float( gz ) * ONEGAMEUNIT_IN_METERS };
 
     if( farMetres > 0.f && ( muzzle - camPos ).LengthSquared() > farMetres * farMetres )
@@ -572,6 +729,301 @@ static void RT_MonsterGunSmoke( AActor*         mo,
     }
 }
 
+// AMBIENT SMOKE: a thin column rising off every flame in the level.
+//
+// THIS IS A DIFFERENT KIND OF SOURCE FROM EVERYTHING ABOVE, and the difference
+// is what all the extra machinery here is for. A shot, an explosion and a
+// projectile are EVENTS: they happen, they emit, they are done, and the budget
+// question answers itself because the player can only fire so fast. A torch
+// never stops. There are twelve torch sprites, four loose-fire ones and 117
+// placements of 64BigFire alone across nine maps -- so ambient smoke would win
+// every contest for a slot simply by outlasting everything else, and the smoke
+// off your own barrel would be evicted by a sconce in the next room.
+//
+// Three things keep that from happening, and none of them is optional:
+//
+//   1. rt_smoke_ambient_far   -- a hard distance cull, tighter than the weapon
+//                                one, because a torch across the map is not
+//                                resolvable by the froxel grid anyway.
+//   2. rt_smoke_ambient_budget-- a ceiling on how many ambient puffs may be
+//                                ALIVE. Emission stops at the cap instead of
+//                                pushing other smoke out.
+//   3. the ambient flag       -- the pool evicts ambient puffs before any
+//                                other, so even at the cap a shot always finds
+//                                room. See RT_SpawnSmokePuffs.
+//
+// The offsets come from RT_FLAME_KINDS via RT_FlameSpriteOffset, so the smoke
+// leaves the flame from the same point the light does.
+struct AmbientFlame
+{
+    const char* sprite;
+    float       upFallback; // map units, used only when the sprite is not a
+                            // known flame kind -- SKUL is the case that needs it
+    int         every;      // tics between parcels
+    float       radius;     // metres
+    float       density;    // multiplier on rt_smoke_density
+    float       life;       // multiplier on rt_smoke_life
+    float       rise;       // multiplier on rt_smoke_rise
+    const char* note;
+};
+
+// A flame's smoke is THIN and SLOW, which is the opposite of a gunshot's. It has
+// to read as a heat shimmer carrying soot upward, not as a puff -- a torch that
+// coughs like a shotgun looks like it is about to go out. Low density, long
+// life, strong rise, and a spacing wide enough that one torch is a few parcels
+// rather than a column of them.
+static const AmbientFlame RT_AMBIENT_FLAMES[] = {
+    // Standing torches, the tallest flames in the game.
+    { "TLBL", 80.f, 14, 0.20f, 0.22f, 1.5f, 2.2f, "long torch" },
+    { "TLGR", 80.f, 14, 0.20f, 0.22f, 1.5f, 2.2f, "long torch" },
+    { "TLRD", 80.f, 14, 0.20f, 0.22f, 1.5f, 2.2f, "long torch" },
+    { "TLYL", 80.f, 14, 0.20f, 0.22f, 1.5f, 2.2f, "long torch" },
+    { "TSBL", 64.f, 14, 0.18f, 0.20f, 1.5f, 2.2f, "short torch" },
+    { "TSGR", 64.f, 14, 0.18f, 0.20f, 1.5f, 2.2f, "short torch" },
+    { "TSRD", 64.f, 14, 0.18f, 0.20f, 1.5f, 2.2f, "short torch" },
+    { "TSYL", 64.f, 14, 0.18f, 0.20f, 1.5f, 2.2f, "short torch" },
+    // Wall sconces: smaller flame, so a smaller and slower wisp.
+    { "A030", 24.f, 18, 0.15f, 0.18f, 1.4f, 2.0f, "wall sconce" },
+    { "A031", 24.f, 18, 0.15f, 0.18f, 1.4f, 2.0f, "wall sconce" },
+    { "A032", 24.f, 18, 0.15f, 0.18f, 1.4f, 2.0f, "wall sconce" },
+    { "GTCH", 24.f, 18, 0.15f, 0.18f, 1.4f, 2.0f, "wall sconce" },
+    // Loose fires burning on the floor.
+    { "BFLM", 8.f, 16, 0.17f, 0.20f, 1.4f, 2.0f, "floor fire" },
+    { "GFLM", 8.f, 16, 0.17f, 0.20f, 1.4f, 2.0f, "floor fire" },
+    { "RFLM", 8.f, 16, 0.17f, 0.20f, 1.4f, 2.0f, "floor fire" },
+    { "YFLM", 8.f, 16, 0.17f, 0.20f, 1.4f, 2.0f, "floor fire" },
+    // 64BigFire, the bonfire -- by far the most common flame in the game and the
+    // only one big enough to earn a real plume. Also the one to watch if ambient
+    // smoke ever looks like too much: 117 placements across nine maps.
+    //
+    // The row is only reached for the AMBIENT bonfire. 64MotherFire shares this
+    // sprite and is a projectile, and the walk hands anything with MF_MISSILE to
+    // RT_PROJECTILE_SMOKE before it gets here.
+    { "FIRE", 32.f, 10, 0.30f, 0.30f, 1.6f, 2.4f, "bonfire" },
+    // THE LOST SOUL, which is a flame that flies at you. Its head IS the fire,
+    // so the wisp comes off the sprite's middle rather than above it, and
+    // because the actor moves the parcels are left behind as a trail -- the one
+    // ambient emitter whose output reads as motion. SKUL is not in
+    // RT_FLAME_KINDS (its light rides on the sprite itself; see
+    // AGENTS.md), so upFallback is what places this one.
+    { "SKUL", 20.f, 5, 0.16f, 0.22f, 1.1f, 1.2f, "lost soul -- a burning head" },
+};
+
+static const AmbientFlame* RT_AmbientFlameFor( AActor* mo )
+{
+    if( !mo || mo->sprite < 0 || mo->sprite >= int( sprites.Size() ) )
+    {
+        return nullptr;
+    }
+    const char* sn = sprites[ mo->sprite ].name;
+    if( !sn )
+    {
+        return nullptr;
+    }
+    for( const AmbientFlame& f : RT_AMBIENT_FLAMES )
+    {
+        if( strnicmp( sn, f.sprite, 4 ) == 0 )
+        {
+            return &f;
+        }
+    }
+    return nullptr;
+}
+
+static void RT_AmbientFlameSmoke( AActor* mo, int tic, const FVector3& camPos, float farMetres )
+{
+    const AmbientFlame* fl = RT_AmbientFlameFor( mo );
+    if( !fl )
+    {
+        return;
+    }
+    // A dead Lost Soul is a corpse, not a flame. The other rows are props and
+    // have no health to speak of, so this only ever bites on SKUL -- which is
+    // the point: its fire goes out when it dies.
+    if( mo->health <= 0 && ( mo->flags3 & MF3_ISMONSTER ) )
+    {
+        return;
+    }
+
+    // The flame's own height above the origin, from the table the LIGHT uses,
+    // so the smoke and the glow leave the same point.
+    float up = fl->upFallback;
+    RT_FlameSpriteOffset( mo, &up );
+
+    const FVector3 at{ float( mo->X() ) * ONEGAMEUNIT_IN_METERS,
+                       float( mo->Y() ) * ONEGAMEUNIT_IN_METERS,
+                       float( mo->Z() + double( up ) ) * ONEGAMEUNIT_IN_METERS };
+
+    // CULL BEFORE TAKING A SLOT IN THE LIST. A level can hold a hundred of
+    // these and only the few in this room can matter.
+    if( farMetres > 0.f && ( at - camPos ).LengthSquared() > farMetres * farMetres )
+    {
+        return;
+    }
+
+    AmbientMark* mark = nullptr;
+    for( AmbientMark& a : g_ambient )
+    {
+        if( a.mo == mo )
+        {
+            mark = &a;
+            break;
+        }
+    }
+    if( !mark )
+    {
+        // Stagger the first release by the pointer's low bits. Without this
+        // every torch in a room that came into range together would breathe in
+        // perfect unison, which reads as a pulse rather than as fire.
+        const int jitter = int( ( uintptr_t( mo ) >> 4 ) % uintptr_t( std::max( 1, fl->every ) ) );
+        g_ambient.push_back( AmbientMark{ mo, tic + jitter, tic } );
+        mark = &g_ambient.back();
+    }
+    mark->lastTic = tic;
+
+    if( tic < mark->nextTic )
+    {
+        return;
+    }
+    mark->nextTic = tic + std::max( 1, fl->every );
+
+    // THE CAP, checked at the last moment so the schedule keeps running: an
+    // emitter held off by the budget resumes on its own cadence rather than
+    // catching up in a burst the instant a slot frees.
+    if( g_smokeAmbientCount >= uint32_t( std::max( 0, int{ cvar::rt_smoke_ambient_budget } ) ) )
+    {
+        return;
+    }
+
+    const float scale = std::max( 0.f, float{ cvar::rt_smoke_ambient_scale } );
+
+    SmokeProfile p{};
+    p.cls     = fl->note;
+    p.count   = 1.f / std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
+    p.radius  = std::max( 0.01f, fl->radius ) /
+                std::max( 0.001f, float{ cvar::rt_smoke_radius } );
+    p.density = fl->density * scale;
+    p.life    = fl->life;
+    p.speed   = 0.f;    // it rises, it does not travel: there is no barrel here
+    p.spread  = 0.12f;
+    p.rise    = fl->rise;
+    p.growth  = 0.35f;
+    p.trail      = 0;
+    p.trailEvery = 0;
+    p.note       = fl->note;
+    p.ambient    = true;
+
+    if( p.density <= 0.f )
+    {
+        return;
+    }
+
+    // Straight up. The parcels of a MOVING emitter (the Lost Soul) are left
+    // where they were born, so its trail comes from the actor travelling rather
+    // than from any velocity given here -- the same split the muzzle trail uses.
+    RT_SpawnSmokePuffs( at, at, FVector3{ 0, 0, 1 }, FVector3{ 0, 0, 0 }, p );
+}
+
+// AN EXPLODING BARREL, which is the sprite-frame trigger again on an actor that
+// is not a monster and never becomes a projectile.
+//
+// 64ExplosiveBarrel's death is a state, and A_Explode sits on a specific frame:
+//
+//     Death:
+//         BEXP ABC 5
+//         BEXP D   5 A_Scream
+//         BEXP E   0 A_SpawnItemEx( "64BarrelExplosion", ... )
+//         BEXP E   5 A_Explode                                  <- the bang
+//
+// So the burst goes on entering frame E (index 4), not on the actor's removal:
+// the barrel lingers for a full 1050-tic respawn timer afterwards, so
+// disappearance -- the rule the projectiles use -- would put the smoke somewhere
+// around twenty seconds late.
+//
+// The health test the gunner path uses is wrong here for the same reason. A
+// barrel in its death state HAS no health; that is the whole point.
+static void RT_BarrelSmoke( AActor* mo, int tic, const FVector3& camPos, float farMetres )
+{
+    if( !mo || mo->sprite < 0 || mo->sprite >= int( sprites.Size() ) )
+    {
+        return;
+    }
+    const char* sn = sprites[ mo->sprite ].name;
+    if( !sn || strnicmp( sn, "BEXP", 4 ) != 0 )
+    {
+        return;
+    }
+
+    // Shares the gunner marks: it is the same rising-edge question, and one
+    // list means one sweep and one place a stale pointer can be dropped.
+    GunnerMark* mark = nullptr;
+    for( GunnerMark& g : g_gunners )
+    {
+        if( g.mo == mo )
+        {
+            mark = &g;
+            break;
+        }
+    }
+    if( !mark )
+    {
+        g_gunners.push_back( GunnerMark{ mo, tic, false } );
+        mark = &g_gunners.back();
+    }
+    mark->lastTic = tic;
+
+    const bool blowing = ( mo->frame == 4 );   // 'E'
+    const bool edge    = blowing && !mark->firing;
+    mark->firing       = blowing;
+
+    if( !edge )
+    {
+        return;
+    }
+
+    const FVector3 at{ float( mo->X() ) * ONEGAMEUNIT_IN_METERS,
+                       float( mo->Y() ) * ONEGAMEUNIT_IN_METERS,
+                       float( mo->Z() + mo->Height * 0.5 ) * ONEGAMEUNIT_IN_METERS };
+
+    if( farMetres > 0.f && ( at - camPos ).LengthSquared() > farMetres * farMetres )
+    {
+        return;
+    }
+
+    // The fat one. An explosion is the one case where a cloud that obscures is
+    // correct, and unlike the rocket's this one does not have to leave the shot
+    // you just took visible.
+    const float scale = std::max( 0.f, float{ cvar::rt_smoke_barrel_scale } );
+
+    SmokeProfile b{};
+    b.cls   = "barrel";
+    b.count = ( 6.f * scale ) / std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
+    b.radius  = 0.40f / std::max( 0.001f, float{ cvar::rt_smoke_radius } );
+    b.density = 0.8f * scale;
+    b.life    = 2.0f;
+    b.speed   = 0.f;
+    b.spread  = 4.5f;   // thrown outward: a barrel goes off in every direction,
+                        // where a rocket's burst still has the flight in it
+    b.rise    = 2.0f;
+    b.growth  = 1.2f;
+    b.trail      = 0;
+    b.trailEvery = 0;
+
+    if( b.count <= 0.f )
+    {
+        return;
+    }
+
+    // Straight up, because a barrel has no facing that means anything -- the
+    // spread is what shapes this, not the direction.
+    RT_SpawnSmokePuffs( at, at, FVector3{ 0, 0, 1 }, FVector3{ 0, 0, 0 }, b );
+
+    if( cvar::rt_smoke_debug )
+    {
+        Printf( "rt_smoke BARREL: burst at %.2f %.2f %.2f (tic %d)\n", at.X, at.Y, at.Z, tic );
+    }
+}
+
 // Advance the puffs. Driven by maptime rather than wall clock so a paused game
 // freezes the smoke -- the same reason RT_UploadFlameLights uses it for the
 // flicker phase. At 35 tics/s the step is coarse, but smoke is slow and the
@@ -586,8 +1038,9 @@ void RT_UpdateSmokePuffs()
 
     if( !cvar::rt_smoke )
     {
-        g_smokePuffCount = 0;
-        g_smokeLastTic   = primaryLevel->maptime;
+        g_smokePuffCount    = 0;
+        g_smokeAmbientCount = 0;
+        g_smokeLastTic      = primaryLevel->maptime;
         return;
     }
 
@@ -646,10 +1099,13 @@ void RT_UpdateSmokePuffs()
     // read every frame (the trail self-gates on nextTrail); monster gunners only
     // when the map clock actually moved, because the edge they are tested for is
     // a tic-long state change and re-testing it at 200 fps buys nothing.
-    const bool wantRocket  = bool{ cvar::rt_smoke_rocket };
-    const bool wantMonster = bool{ cvar::rt_smoke_monster } && steps > 0;
+    const bool wantRocket     = bool{ cvar::rt_smoke_rocket };
+    const bool wantProjectile = bool{ cvar::rt_smoke_projectile };
+    const bool wantMonster    = bool{ cvar::rt_smoke_monster } && steps > 0;
+    const bool wantBarrel     = bool{ cvar::rt_smoke_barrel } && steps > 0;
+    const bool wantAmbient    = bool{ cvar::rt_smoke_ambient_fx } && steps > 0;
 
-    if( wantRocket || wantMonster )
+    if( wantRocket || wantProjectile || wantMonster || wantBarrel || wantAmbient )
     {
         // The camera, for the monster distance cull below. A puff further away
         // than this is not merely small, it is a puff the froxel volume cannot
@@ -660,19 +1116,40 @@ void RT_UpdateSmokePuffs()
                                float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
                                float( vp.Pos.Z ) * ONEGAMEUNIT_IN_METERS };
         const float    monFar = std::max( 0.f, float{ cvar::rt_smoke_monster_far } );
+        // Tighter than the weapon cull on purpose: there are far more flames in
+        // a level than there are gunmen, and a torch two rooms away is a slot
+        // spent on something the froxel grid cannot resolve anyway.
+        const float    ambFar = std::max( 0.f, float{ cvar::rt_smoke_ambient_far } );
 
         auto it = primaryLevel->GetThinkerIterator< AActor >();
         while( AActor* mo = it.Next() )
         {
-            if( !RT_IsRocketProjectile( mo ) )
+            const ProjectileSmoke* row = RT_ProjectileSmokeFor( mo );
+            if( !row )
             {
+                // Not in flight. The two sprite-frame sources look at it
+                // instead -- a firing soldier and a barrel mid-explosion are
+                // both ordinary actors, which is exactly why neither could be
+                // found the way a projectile is.
                 if( wantMonster )
                 {
                     RT_MonsterGunSmoke( mo, tic, camPos, monFar );
                 }
+                if( wantBarrel )
+                {
+                    RT_BarrelSmoke( mo, tic, camPos, monFar );
+                }
+                if( wantAmbient )
+                {
+                    RT_AmbientFlameSmoke( mo, tic, camPos, ambFar );
+                }
                 continue;
             }
-            if( !wantRocket )
+            // rt_smoke_rocket gates the rocket rows, rt_smoke_projectile
+            // everything else that flies. Two switches because they are two
+            // different judgements: a rocket obviously smokes, a mancubus
+            // fireball is a taste call.
+            if( RT_IsRocketRow( row ) ? !wantRocket : !wantProjectile )
             {
                 continue;
             }
@@ -692,12 +1169,12 @@ void RT_UpdateSmokePuffs()
             }
             if( !mark )
             {
-                g_rockets.push_back( RocketMark{ mo, p, FVector3{ 0, 0, 1 }, tic, tic } );
+                g_rockets.push_back( RocketMark{ mo, p, FVector3{ 0, 0, 1 }, tic, tic, row } );
                 mark = &g_rockets.back();
                 if( cvar::rt_smoke_debug )
                 {
-                    Printf( "rt_smoke ROCKET: tracking %s at %.2f %.2f %.2f (tic %d)\n",
-                            mo->GetClass()->TypeName.GetChars(), p.X, p.Y, p.Z, tic );
+                    Printf( "rt_smoke PROJECTILE: tracking %s (%s) at %.2f %.2f %.2f (tic %d)\n",
+                            mo->GetClass()->TypeName.GetChars(), row->note, p.X, p.Y, p.Z, tic );
                 }
             }
 
@@ -709,22 +1186,32 @@ void RT_UpdateSmokePuffs()
             mark->lastPos = p;
             mark->lastTic = tic;
 
+            // The rocket's numbers are cvars because they are the ones tuned
+            // in play and exposed to the player; every other projectile carries
+            // its own, because nobody is going to tune five of them by hand.
+            const bool  isRocket = RT_IsRocketRow( row );
+            const int   every    = isRocket ? std::max( 1, int{ cvar::rt_smoke_rocket_every } )
+                                            : std::max( 1, row->trailEvery );
+            const float trailR   = isRocket ? float{ cvar::rt_smoke_rocket_radius }
+                                            : row->trailRadius;
+
             if( tic >= mark->nextTrail )
             {
-                mark->nextTrail = tic + std::max( 1, int{ cvar::rt_smoke_rocket_every } );
+                mark->nextTrail = tic + every;
 
                 SmokeProfile p2{};
-                p2.cls = "rocket-trail";
+                p2.cls = row->note;
                 // EXACTLY one parcel per drop, whatever rt_smoke_count is.
                 // Spelling this as a bare 0.3 worked only while that cvar was 3;
                 // raising it to 4 turned ceil(4 x 0.3) into two, which empties
                 // the whole budget on a single rocket in under a second. The
                 // division is what makes the player's knob a player's knob.
                 p2.count = 1.f / std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
-                p2.radius = std::max( 0.01f, float{ cvar::rt_smoke_rocket_radius } ) /
+                p2.radius = std::max( 0.01f, trailR ) /
                             std::max( 0.001f, float{ cvar::rt_smoke_radius } );
-                p2.density = 0.45f;
-                p2.life    = 1.0f;  // a shorter trail is a SHORTER trail: the
+                p2.density = isRocket ? 0.45f : row->trailDens;
+                p2.life    = isRocket ? 1.0f : row->trailLife;
+                                    // a shorter trail is a SHORTER trail: the
                                     // length you see is life x flight speed, so
                                     // this is the knob that shortens the plume
                                     // without thinning the parcels themselves
@@ -739,22 +1226,26 @@ void RT_UpdateSmokePuffs()
         }
 
         // Anything not seen this tic has exploded: burst, then forget it.
-        for( size_t i = 0; wantRocket && i < g_rockets.size(); )
+        for( size_t i = 0; i < g_rockets.size(); )
         {
             if( g_rockets[ i ].lastTic < tic )
             {
+                const ProjectileSmoke* r  = g_rockets[ i ].row;
+                const bool             rk = RT_IsRocketRow( r );
+
                 SmokeProfile b{};
-                b.cls = "rocket-boom";
-                b.count = float( std::max( 0, int{ cvar::rt_smoke_boom } ) ) /
+                b.cls   = "boom";
+                b.count = float( std::max( 0, rk ? int{ cvar::rt_smoke_boom } : r->boom ) ) /
                           std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
-                b.radius = std::max( 0.02f, float{ cvar::rt_smoke_boom_radius } ) /
+                b.radius = std::max( 0.02f, rk ? float{ cvar::rt_smoke_boom_radius }
+                                               : r->boomRadius ) /
                            std::max( 0.001f, float{ cvar::rt_smoke_radius } );
                 // A burst of ten dense parcels was the noisiest thing in the
                 // game by construction: each is an independent one-sample
                 // estimate stacked on the others. Fewer and thinner, which is
                 // the same lesson the shotgun taught -- less smoke reads better
                 // AND is cheaper to light.
-                b.density = 0.7f;
+                b.density = rk ? 0.7f : r->boomDens;
                 b.life    = 1.8f;
                 b.speed   = 0.f;
                 b.spread  = 4.0f;   // thrown outward, which is what makes it a burst
@@ -764,18 +1255,22 @@ void RT_UpdateSmokePuffs()
                 b.trailEvery = 0;
                 if( cvar::rt_smoke_debug )
                 {
-                    Printf( "rt_smoke ROCKET: burst at %.2f %.2f %.2f (tic %d) -- "
+                    Printf( "rt_smoke PROJECTILE: burst (%s) at %.2f %.2f %.2f (tic %d) -- "
                             "MF_MISSILE cleared or actor gone\n",
+                            r->note,
                             g_rockets[ i ].lastPos.X,
                             g_rockets[ i ].lastPos.Y,
                             g_rockets[ i ].lastPos.Z,
                             tic );
                 }
-                RT_SpawnSmokePuffs( g_rockets[ i ].lastPos - g_rockets[ i ].dir,
-                                    g_rockets[ i ].lastPos,
-                                    g_rockets[ i ].dir,
-                                    FVector3{ 0, 0, 0 },
-                                    b );
+                if( b.count > 0.f )
+                {
+                    RT_SpawnSmokePuffs( g_rockets[ i ].lastPos - g_rockets[ i ].dir,
+                                        g_rockets[ i ].lastPos,
+                                        g_rockets[ i ].dir,
+                                        FVector3{ 0, 0, 0 },
+                                        b );
+                }
                 g_rockets[ i ] = g_rockets.back();
                 g_rockets.pop_back();
                 continue;
@@ -788,7 +1283,7 @@ void RT_UpdateSmokePuffs()
         // behind for the next tic to dereference -- and re-entering the list
         // later is harmless, because a fresh mark starts !firing, which is the
         // state that arms the edge.
-        if( wantMonster )
+        if( wantMonster || wantBarrel )
         {
             for( size_t i = 0; i < g_gunners.size(); )
             {
@@ -796,6 +1291,24 @@ void RT_UpdateSmokePuffs()
                 {
                     g_gunners[ i ] = g_gunners.back();
                     g_gunners.pop_back();
+                    continue;
+                }
+                i++;
+            }
+        }
+
+        // The same sweep for the flame emitters. It matters more here: this
+        // list gains an entry for every torch that comes into range, so without
+        // it a long level would accumulate a mark per flame ever visited, all
+        // of them holding pointers to actors that may since have been removed.
+        if( wantAmbient )
+        {
+            for( size_t i = 0; i < g_ambient.size(); )
+            {
+                if( g_ambient[ i ].lastTic < tic )
+                {
+                    g_ambient[ i ] = g_ambient.back();
+                    g_ambient.pop_back();
                     continue;
                 }
                 i++;
@@ -905,6 +1418,10 @@ void RT_UpdateSmokePuffs()
 
             if( puff.age >= puff.life )
             {
+                if( puff.ambient && g_smokeAmbientCount > 0 )
+                {
+                    g_smokeAmbientCount--;
+                }
                 g_smokePuffs[ i ] = g_smokePuffs[ --g_smokePuffCount ];
                 continue;
             }
@@ -934,9 +1451,16 @@ CCMD( smoke )
     }
 
     const int m = int{ cvar::rt_smoke_debug };
-    Printf( "smoke: rt_smoke %d, %u puff(s) live, probe mode %d -- %s\n",
+    // The ambient split is the number worth having here. "48 live" says nothing
+    // about whether a room full of torches has spent the pool; "48 live, 40 of
+    // them ambient" says it outright -- and 40 IS rt_smoke_ambient_budget, so a
+    // reading sitting at the cap tells you the flames are being held back on
+    // purpose rather than that something is broken.
+    Printf( "smoke: rt_smoke %d, %u puff(s) live (%u ambient, cap %d), probe mode %d -- %s\n",
             int{ cvar::rt_smoke },
             g_smokePuffCount,
+            g_smokeAmbientCount,
+            int{ cvar::rt_smoke_ambient_budget },
             m,
             m == 0   ? "off"
             : m == 1 ? "logging only"

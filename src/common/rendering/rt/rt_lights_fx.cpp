@@ -94,6 +94,26 @@ static const RtFlameKind* RT_FlameKindOf( AActor* mo )
     return nullptr;
 }
 
+// The flame offset, for rt_smoke.cpp's ambient emitters.
+//
+// Smoke must rise from where the FLAME is, and the flame is not at the actor's
+// origin: a long torch's fire sits 80 map units up, a wall sconce's 24, a floor
+// fire's 8. Those numbers are GLDEFS's and they are already right here, so smoke
+// asks rather than keeping a second copy -- the light and the smoke coming off
+// one point is the same property the muzzle flash and its smoke have.
+bool rtx::RT_FlameSpriteOffset( AActor* mo, float* upMapUnits )
+{
+    if( const RtFlameKind* k = RT_FlameKindOf( mo ) )
+    {
+        if( upMapUnits )
+        {
+            *upMapUnits = k->up;
+        }
+        return true;
+    }
+    return false;
+}
+
 // A thrown switch changes its own texture (ANIMDEFS: CMPSW##A -> ON -> CMPSW##B) and the
 // new art has lit eyes or a lit gem. Nothing else needs to happen for this to be correct
 // across a save, a level reset or a switch thrown back off: the walk reads
