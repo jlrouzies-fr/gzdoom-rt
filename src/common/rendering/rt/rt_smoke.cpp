@@ -1,10 +1,20 @@
-// Localised smoke: the puff volumes emitted at the muzzle and behind rockets.
+// Localised smoke: the puff volumes emitted at the muzzle, behind rockets, and
+// off a monster's gun.
 //
-// The spawn is triggered from RT_AddMuzzleFlash over in rt_main.cpp so that the
-// light and the smoke it lights come from one resolved muzzle position rather
-// than two -- hence the declarations in rt_internal.h. See docs/rt-smoke.md.
+// THREE SOURCES, THREE DIFFERENT TRIGGERS, and none of them is a game hook:
 //
-// Split out of rt_main.cpp. Behaviour unchanged; this is a move.
+//   player weapon   RT_AddMuzzleFlash calls in (rt_weapon.cpp), so the light and
+//                   the smoke it lights come from ONE resolved muzzle position
+//                   rather than two calculations that can drift apart -- hence
+//                   the declarations in rt_internal.h.
+//   rocket          tracked by pointer; DISAPPEARANCE (MF_MISSILE cleared) is
+//                   the explosion.
+//   monster gun     the SPRITE FRAME. See RT_MONSTER_GUNS.
+//
+// All three are that way for one reason: the actor classes are the WAD's, not
+// ours, so nothing here may require a DECORATE edit or a ZScript.
+//
+// See docs/rt-smoke.md.
 
 #include "rt_internal.h"
 
@@ -168,6 +178,105 @@ struct RocketMark
 };
 static std::vector< RocketMark > g_rockets;
 
+// MONSTERS WITH GUNS, which until now were the one obvious hole: the player's
+// pistol breathed a wisp and the zombieman shooting back at him did not.
+//
+// THE TRIGGER IS THE SPRITE FRAME, not a code hook. A monster's attack is a
+// DECORATE state and there is nothing in the renderer that sees it fire --
+// A_PosAttack is called by the playsim and leaves no trace we can read. What is
+// readable, every frame, for free, is which sprite frame the actor is drawing:
+//
+//     Missile:
+//         POSS E 10 A_FaceTarget     <- the aim frame. No smoke.
+//         POSS F  8                  <- THE SHOT. This is the edge we want.
+//         POSS E  8
+//
+// So the test is (sprite, frame) and the event is ENTERING that frame, exactly
+// the way `gen_fx_emissives.py` decides which frames get a muzzle emissive --
+// same sprites, same "…F fires, …E stays dark" rule, so the light on the sprite
+// and the smoke off the barrel agree by construction. It needs no DECORATE edit
+// and no ZScript, which matters for the same reason it did for the rocket: these
+// classes are the WAD's, not ours.
+//
+// Frame F is unambiguous on all five: See is A-D, Pain is G, death is H and up.
+struct MonsterGun
+{
+    const char*  sprite;   // full 4-character sprite name
+    uint8_t      frame;    // 0 == 'A'; 5 == 'F', the fire frame on every row here
+    SmokeProfile prof;
+};
+
+// Multipliers on the rt_smoke_* cvars, like RT_SMOKE_PROFILES.
+//
+// ALL OF THEM CARRY trail = 0, and that is a constraint rather than a taste: the
+// trail emitter rebuilds its release point from the PLAYER's viewpoint every few
+// tics (see g_smokeTrail), because it exists to keep a filament coming off the
+// gun you are holding while you turn. Handing a monster a trail would hang its
+// smoke off the camera. A monster shot is therefore one or two parcels and done,
+// which is also what the budget wants when six of them are shooting at once.
+static constexpr MonsterGun RT_MONSTER_GUNS[] = {
+    // 64ZombieMan / 64TargetRangeZombieMan -- a rifle. One small parcel, the
+    // same read as the player's pistol minus the filament.
+    { "POSS", 5, { "zombieman rifle", 0.30f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
+                   "one small parcel off the barrel" } },
+    // 64ShotgunGuy -- a wide bore, so a SCATTER, for the reason the player's
+    // shotgun is sparse: one fat parcel is a grey wall, several small ones read
+    // as a burst and leave gaps to see through.
+    { "SPOS", 5, { "shotgun guy", 0.60f, 0.50f, 0.50f, 0.95f, 0.7f, 1.6f, 1.1f, 0, 0, 0.9f,
+                   "a scatter, like the player's shotgun" } },
+    // Not in Retribution (no 64ChaingunGuy), kept because the engine loads on
+    // DOOM2.WAD and the actor is one -file away.
+    { "CPOS", 5, { "chaingun guy", 0.30f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
+                   "thinner and shorter -- it fires again immediately" } },
+    // 64MarineBot, which uses A_PosAttack on the player sprite.
+    { "PLAY", 5, { "marine bot", 0.30f, 0.35f, 0.55f, 0.85f, 0.8f, 0.5f, 1.2f, 0, 0, 0.7f,
+                   "as the zombieman" } },
+    { "SSWV", 5, { "wolfenstein ss", 0.30f, 0.32f, 0.45f, 0.70f, 0.8f, 0.6f, 1.2f, 0, 0, 0.7f,
+                   "as the chaingun guy" } },
+};
+
+static const MonsterGun* RT_MonsterGunFor( AActor* mo )
+{
+    if( !mo || mo->sprite < 0 || mo->sprite >= int( sprites.Size() ) )
+    {
+        return nullptr;
+    }
+    const char* sn = sprites[ mo->sprite ].name;
+    if( !sn )
+    {
+        return nullptr;
+    }
+    for( const MonsterGun& g : RT_MONSTER_GUNS )
+    {
+        // Full four characters, never a prefix: POSS and SPOS differ in one
+        // position, and prefix matching on four-character sprite names is how
+        // RT_FlameKindOf already handed three torches the same colour once.
+        //
+        // Matched on the SPRITE only. The frame decides whether this actor is
+        // firing right now, and that is the caller's business -- a mark has to
+        // be kept for a gunner standing in its aim frame too, or the rising edge
+        // has nothing to rise from.
+        if( strnicmp( sn, g.sprite, 4 ) == 0 )
+        {
+            return &g;
+        }
+    }
+    return nullptr;
+}
+
+// Which gunners are CURRENTLY in their fire frame, so the spawn happens on the
+// edge rather than once per tic for the eight or ten the frame lasts. Pointer
+// identity is enough for the same reason it is for a rocket, and the sweep at
+// the end of the walk drops anything not seen this tic -- including an actor
+// that died mid-frame, whose pointer must not be dereferenced next tic.
+struct GunnerMark
+{
+    AActor* mo;
+    int     lastTic;
+    bool    firing;
+};
+static std::vector< GunnerMark > g_gunners;
+
 // The launcher's projectile, not the launcher. "Rocket" matches both, so the
 // weapon has to be excluded by name -- Retribution's classes are 64Rocket and
 // 64RocketLauncher.
@@ -207,6 +316,9 @@ void rtx::RT_ClearSmokePuffs()
     // Rocket pointers do not survive a level change, and a stale one would be
     // read as "exploded" and burst somewhere in the new map.
     g_rockets.clear();
+    // Same for the gunners: a stale pointer here is worse than a wrong puff,
+    // because the next tic would dereference it.
+    g_gunners.clear();
 }
 
 // Called from RT_AddMuzzleFlash on the rising edge of a shot -- or on the
@@ -331,6 +443,106 @@ void rtx::RT_SpawnSmokePuffs( const FVector3& eye,
     }
 }
 
+// One gunner, one tic. Called for every actor in the walk, so it has to be cheap
+// on the rejection path: the sprite lookup is five strnicmp and everything else
+// is behind it.
+static void RT_MonsterGunSmoke( AActor*         mo,
+                                int             tic,
+                                const FVector3& camPos,
+                                float           farMetres )
+{
+    // A networked player's body draws PLAY F too, and the local player's shot
+    // already went through RT_AddMuzzleFlash with a real weapon profile and a
+    // traced muzzle position. Let the weapon path own every player.
+    if( !mo || mo->player || mo->health <= 0 )
+    {
+        return;
+    }
+
+    const MonsterGun* gun = RT_MonsterGunFor( mo );
+    if( !gun )
+    {
+        return;
+    }
+
+    GunnerMark* mark = nullptr;
+    for( GunnerMark& g : g_gunners )
+    {
+        if( g.mo == mo )
+        {
+            mark = &g;
+            break;
+        }
+    }
+    if( !mark )
+    {
+        g_gunners.push_back( GunnerMark{ mo, tic, false } );
+        mark = &g_gunners.back();
+    }
+    mark->lastTic = tic;
+
+    const bool firing = ( mo->frame == gun->frame );
+    const bool edge   = firing && !mark->firing;
+    mark->firing      = firing;
+
+    if( !edge )
+    {
+        return;
+    }
+
+    // The gun point: out of the chest along the way the actor is FACING. Monsters
+    // aim with A_FaceTarget, which is yaw only, and the sprite is billboarded, so
+    // there is no pitch to follow here even when the shot itself has slope.
+    const double   yaw = mo->Angles.Yaw.Radians();
+    const FVector3 fwd{ float( std::cos( yaw ) ), float( std::sin( yaw ) ), 0.f };
+
+    // 0.58 of the actor's height, which is where these sprites hold the weapon,
+    // and a little past its own radius so the puff is not born inside the body.
+    // Derived from the actor rather than hardcoded because Retribution's monsters
+    // are 80 units tall where the stock ones are 56.
+    const double gz = mo->Z() + mo->Height * 0.58;
+    const double gr = mo->radius + 6.0;
+
+    const FVector3 muzzle{ float( mo->X() + std::cos( yaw ) * gr ) * ONEGAMEUNIT_IN_METERS,
+                           float( mo->Y() + std::sin( yaw ) * gr ) * ONEGAMEUNIT_IN_METERS,
+                           float( gz ) * ONEGAMEUNIT_IN_METERS };
+
+    if( farMetres > 0.f && ( muzzle - camPos ).LengthSquared() > farMetres * farMetres )
+    {
+        // Beyond this the puff is smaller than a froxel AND it would evict a
+        // near one: the pool overflows oldest-out while the upload keeps the
+        // nearest, so a firefight across the map would push the smoke off your
+        // own barrel out of the array. See rt_smoke_monster_far.
+        return;
+    }
+
+    SmokeProfile p = gun->prof;
+
+    // One amount knob for the whole family, because the honest answer to "how
+    // much" is a matter of taste and six of them shooting at once is a different
+    // picture from one. It scales the parcel COUNT and the density together --
+    // halving the count alone just makes the remaining parcels conspicuous.
+    const float scale = std::max( 0.f, float{ cvar::rt_smoke_monster_scale } );
+    p.count   *= scale;
+    p.density *= scale;
+
+    // eye = a third of a metre behind the gun point, so rt_smoke_offset's 0.7
+    // lands the parcel just off the muzzle rather than somewhere along a segment
+    // that has no meaning for a monster. Same shape as the rocket trail's call.
+    RT_SpawnSmokePuffs( muzzle - fwd * 0.33f, muzzle, fwd, FVector3{ 0, 0, 0 }, p );
+
+    if( cvar::rt_smoke_debug )
+    {
+        Printf( "rt_smoke MONSTER: %s (%s) fired at %.2f %.2f %.2f (tic %d)\n",
+                mo->GetClass() ? mo->GetClass()->TypeName.GetChars() : "?",
+                gun->prof.note,
+                muzzle.X,
+                muzzle.Y,
+                muzzle.Z,
+                tic );
+    }
+}
+
 // Advance the puffs. Driven by maptime rather than wall clock so a paused game
 // freezes the smoke -- the same reason RT_UploadFlameLights uses it for the
 // flicker phase. At 35 tics/s the step is coarse, but smoke is slow and the
@@ -401,13 +613,37 @@ void RT_UpdateSmokePuffs()
         }
     }
 
-    // Rockets: a parcel per tic of flight, and a burst where one stops existing.
-    if( cvar::rt_smoke && cvar::rt_smoke_rocket )
+    // ONE walk of the thinker list for both actor-driven sources. Rockets are
+    // read every frame (the trail self-gates on nextTrail); monster gunners only
+    // when the map clock actually moved, because the edge they are tested for is
+    // a tic-long state change and re-testing it at 200 fps buys nothing.
+    const bool wantRocket  = bool{ cvar::rt_smoke_rocket };
+    const bool wantMonster = bool{ cvar::rt_smoke_monster } && steps > 0;
+
+    if( wantRocket || wantMonster )
     {
+        // The camera, for the monster distance cull below. A puff further away
+        // than this is not merely small, it is a puff the froxel volume cannot
+        // resolve at all -- and worse, it would EVICT a near one, because the
+        // pool's overflow rule is oldest-out while the upload picks nearest.
+        const auto&    vp = r_viewpoint;
+        const FVector3 camPos{ float( vp.Pos.X ) * ONEGAMEUNIT_IN_METERS,
+                               float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
+                               float( vp.Pos.Z ) * ONEGAMEUNIT_IN_METERS };
+        const float    monFar = std::max( 0.f, float{ cvar::rt_smoke_monster_far } );
+
         auto it = primaryLevel->GetThinkerIterator< AActor >();
         while( AActor* mo = it.Next() )
         {
             if( !RT_IsRocketProjectile( mo ) )
+            {
+                if( wantMonster )
+                {
+                    RT_MonsterGunSmoke( mo, tic, camPos, monFar );
+                }
+                continue;
+            }
+            if( !wantRocket )
             {
                 continue;
             }
@@ -455,8 +691,11 @@ void RT_UpdateSmokePuffs()
                                  // budget on a single rocket in under a second.
                 p2.radius = std::max( 0.01f, float{ cvar::rt_smoke_rocket_radius } ) /
                             std::max( 0.001f, float{ cvar::rt_smoke_radius } );
-                p2.density = 0.55f;
-                p2.life    = 1.2f;
+                p2.density = 0.45f;
+                p2.life    = 1.0f;  // a shorter trail is a SHORTER trail: the
+                                    // length you see is life x flight speed, so
+                                    // this is the knob that shortens the plume
+                                    // without thinning the parcels themselves
                 p2.speed   = 0.f;   // it must HANG where it was dropped, not fly on
                 p2.spread  = 0.15f;
                 p2.rise    = 0.5f;
@@ -468,7 +707,7 @@ void RT_UpdateSmokePuffs()
         }
 
         // Anything not seen this tic has exploded: burst, then forget it.
-        for( size_t i = 0; i < g_rockets.size(); )
+        for( size_t i = 0; wantRocket && i < g_rockets.size(); )
         {
             if( g_rockets[ i ].lastTic < tic )
             {
@@ -510,6 +749,25 @@ void RT_UpdateSmokePuffs()
                 continue;
             }
             i++;
+        }
+
+        // Drop every gunner not seen in this walk. A monster that died, was
+        // removed or simply left the thinker list must not leave a pointer
+        // behind for the next tic to dereference -- and re-entering the list
+        // later is harmless, because a fresh mark starts !firing, which is the
+        // state that arms the edge.
+        if( wantMonster )
+        {
+            for( size_t i = 0; i < g_gunners.size(); )
+            {
+                if( g_gunners[ i ].lastTic < tic )
+                {
+                    g_gunners[ i ] = g_gunners.back();
+                    g_gunners.pop_back();
+                    continue;
+                }
+                i++;
+            }
         }
     }
 

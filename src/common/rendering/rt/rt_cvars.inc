@@ -1575,13 +1575,33 @@
                                                 "9 cm across -- a dotted line of separate beads, which is exactly what it "
                                                 "looked like. Every tic, with a parcel wide enough to bridge the gap, is "
                                                 "what reads as a continuous trail." )
-    RT_CVAR( rt_smoke_rocket_radius,    0.12f,  "radius of a rocket trail parcel at birth, in METRES. It has to be at "
+    RT_CVAR( rt_smoke_rocket_radius,    0.16f,  "radius of a rocket trail parcel at birth, in METRES. It has to be at "
                                                 "least half the distance the rocket covers between drops or the trail is "
                                                 "beads rather than a line -- at 0.6 m a tic that means ~0.3 m of diameter, "
-                                                "which is what 0.16 gives." )
+                                                "which is what 0.16 gives. Reduce the trail with its LIFE (in "
+                                                "RT_UpdateSmokePuffs), not with this: a shorter-lived parcel makes a "
+                                                "shorter plume, a smaller one makes a dotted plume of the same length." )
     RT_CVAR( rt_smoke_boom,             5,     "parcels in the burst when a rocket dies. This is the one place a fat "
-                                                "cloud is right, because the explosion is meant to obscure." )
+                                                "cloud is right, because the explosion is meant to obscure -- but ten of "
+                                                "them was the noisiest thing in the game, each an independent one-sample "
+                                                "estimate stacked on the others." )
     RT_CVAR( rt_smoke_boom_radius,      0.34f,  "radius of an explosion parcel at birth, in METRES." )
+    RT_CVAR( rt_smoke_monster,          true,   "smoke off a MONSTER's gun as well as the player's -- the zombieman's "
+                                                "rifle and the shotgun guy's wide bore. There is no code hook to hang "
+                                                "this on: a monster's attack is a DECORATE state, so the trigger is the "
+                                                "SPRITE FRAME (POSS/SPOS/CPOS/PLAY/SSWV frame F, the same frames "
+                                                "gen_fx_emissives.py puts a muzzle emissive on), read on the tic it is "
+                                                "entered. See RT_MONSTER_GUNS in rt_smoke.cpp." )
+    RT_CVAR( rt_smoke_monster_scale,    1.f,    "how much monster gun smoke, as a multiplier on both the parcel COUNT and "
+                                                "the density of the RT_MONSTER_GUNS rows. Both together on purpose: "
+                                                "halving the count alone only makes the survivors conspicuous. 0 is the "
+                                                "same as rt_smoke_monster 0, and the A/B for whether it is worth the "
+                                                "budget at all when six of them are shooting at once." )
+    RT_CVAR( rt_smoke_monster_far,      18.f,   "METRES beyond which a monster's shot makes no smoke. Not a cosmetic cull: "
+                                                "the puff pool overflows OLDEST-OUT while the upload keeps the NEAREST "
+                                                "puffs, so a firefight across the map would quietly push the smoke off "
+                                                "your own barrel out of the array. Past the volume's reach a puff is "
+                                                "not represented at all anyway. 0 disables the cull." )
     RT_CVAR( rt_smoke_curl,             1.6f,   "lateral turbulence, m/s^2 at one second of age. A barrel wisp leaves the "
                                                 "muzzle LAMINAR -- a straight thread for the first fraction of a second "
                                                 "-- and only breaks into curls once it has risen, so this scales with the "
