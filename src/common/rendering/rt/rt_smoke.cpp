@@ -77,7 +77,7 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     //
     // growth 0.10 -> 0.14 for the same reason in reverse: rt_smoke_growth fell
     // 0.7 -> 0.5, and this row wants the same final radius it always had.
-    { "Pistol",      0.34f, 0.07f, 0.90f, 1.1f, 0.25f, 0.06f, 1.5f, 18, 3, 0.14f,
+    { "Pistol",      0.34f, 0.07f, 0.90f, 1.1f, 0.25f, 0.06f, 1.5f, 22, 2, 0.14f,
       "thin wisp off the barrel" },
     // The machine gun is the pistol: a thread, not a cloud, and its lifetime is
     // pinned the same way (0.8 x 2.2 = 1.76 s, exactly what 1.1 x 1.6 gave).
@@ -1102,11 +1102,19 @@ void RT_UpdateSmokePuffs()
                                 float( std::sin( yaw ) * std::cos( pitch ) ),
                                 float( -std::sin( pitch ) ) };
 
-            RT_SpawnSmokePuffs( eye,
-                                eye + fwd * 1.5f,
-                                fwd,
-                                FVector3{ 0, 0, 0 },
-                                RT_SmokeProfileFor( vp.camera ) );
+            // A NAMED PROFILE, or the identity if none was asked for. Autospawn
+            // runs with no ready weapon, so RT_SmokeProfileFor answers the
+            // identity row -- which has trail 0, i.e. the autospawn diagnostic
+            // could never show the filament the pistol row exists to make. That
+            // is why judging the wisp needed a rig rather than this cvar alone.
+            const int    wi = int{ cvar::rt_smoke_autoweapon };
+            SmokeProfile ap = RT_SmokeProfileFor( vp.camera );
+            if( wi > 0 && wi <= int( std::size( RT_SMOKE_PROFILES ) ) )
+            {
+                ap = RT_SMOKE_PROFILES[ wi - 1 ];
+            }
+
+            RT_SpawnSmokePuffs( eye, eye + fwd * 1.5f, fwd, FVector3{ 0, 0, 0 }, ap );
 
             if( cvar::rt_smoke_debug )
             {

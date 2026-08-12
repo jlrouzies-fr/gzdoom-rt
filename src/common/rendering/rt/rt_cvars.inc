@@ -1460,7 +1460,7 @@
                                                 "NOTE rt_mzlflsh 0 also disables it: the puff is spawned at the muzzle "
                                                 "flash's resolved position so the light and the smoke it lights are "
                                                 "one point, which makes the flash the trigger for both." )
-    RT_CVAR( rt_smoke_density,          6.f,    "optical depth per METRE at a puff's core. Unlike rt_fog_density this is "
+    RT_CVAR( rt_smoke_density,          14.f,    "optical depth per METRE at a puff's core. Unlike rt_fog_density this is "
                                                 "NOT per froxel cell: the engine scales it by the volume's slice "
                                                 "thickness before upload, so a puff reads the same whatever rt_smoke_far "
                                                 "-- or a fogged map's rt_fog_far -- does to the grid. Raise it until the "
@@ -1688,6 +1688,14 @@
                                                 "combustion. The rows are MULTIPLIERS on the rt_smoke_* cvars, so tuning "
                                                 "a cvar still moves every weapon together and a row only states how that "
                                                 "weapon differs. 0 gives every gun the same profile, which is the A/B." )
+    RT_CVAR_NOARCH( rt_smoke_autoweapon, 0,     "DIAGNOSTIC: which RT_SMOKE_PROFILES row rt_smoke_autospawn should use, "
+                                                "by index. 0 = the identity profile (what it always did), 1 = Pistol, "
+                                                "2 = Chaingun, 3 = Shotgun, 4 = SuperShotgun. Without this, autospawn "
+                                                "fires with NO ready weapon, so it gets the identity profile and arms "
+                                                "no trail at all -- which makes it useless for judging the one thing "
+                                                "the per-weapon rows exist to shape. It drives the same "
+                                                "RT_SpawnSmokePuffs call a real shot does, trail included; what it does "
+                                                "NOT exercise is the extralight edge that decides WHEN to fire." )
     RT_CVAR_NOARCH( rt_smoke_autospawn, 0,      "DIAGNOSTIC: spawn a puff directly in front of the camera every this "
                                                 "many TICS, with no weapon and no trigger involved. 0 = off. This "
                                                 "exists so the RENDER path can be tested without the input path: if "
