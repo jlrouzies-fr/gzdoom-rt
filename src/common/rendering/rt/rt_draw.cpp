@@ -888,27 +888,28 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         return RG_MESH_PRIMITIVE_LAVA;
     };
 
-    // Put out the painted glow on a lamp PANE, because the bulb lattice now lights that
-    // room for real and the texture would otherwise light it a second time. The flat test
-    // is what keeps MAP02's wall strips -- same texture, no lattice -- still glowing;
-    // see RT_IsLampBulbFlat.
-    auto l_noemisflag = [ & ]() -> RgMeshPrimitiveFlags {
-        if( isUI || !texname || !cvar::rt_ceiling_bulb_noemis )
+    // A lamp pane that got real bulb lights keeps only a RESIDUE of its painted glow:
+    // enough for the bulbs to read as lit and to bloom, not enough to light the room a
+    // second time. Full suppression was tried and the bulbs went dead flat -- correct
+    // arithmetic, wrong picture, because a real lamp IS a bright thing to look at.
+    //
+    // The flag is what makes the number survive: TextureMeta overwrites the primitive's
+    // emissive with the material's a moment later unless it is told not to.
+    auto l_lampglow = [ & ]() -> std::pair< RgMeshPrimitiveFlags, float > {
+        if( isUI || !cvar::rt_ceiling_bulb_noemis || !rtstate.is< RtPrim::LatticeLitFlat >() )
         {
-            return RgMeshPrimitiveFlags( 0 );
+            return { RgMeshPrimitiveFlags( 0 ), l_worldemissive() };
         }
-        if( !rtstate.is< RtPrim::LatticeLitFlat >() )
-        {
-            return RgMeshPrimitiveFlags( 0 );
-        }
-        return RG_MESH_PRIMITIVE_NO_EMISSIVE;
+        return { RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE,
+                 std::max( 0.f, float{ cvar::rt_ceiling_bulb_emis } ) };
     };
+    const auto [ lampGlowFlag, lampGlowEmis ] = l_lampglow();
 
     auto prim = RgMeshPrimitiveInfo{
         .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
         .pNext = isUI ? &ui : nullptr,
         .flags = makePrimFlags( isUI ) | l_waterflag() | l_nocausticsflag() | l_lavaflag() |
-                 l_noemisflag() |
+                 lampGlowFlag |
                  RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
                  ( rtstate.is< RtPrim::ExportInvertNormals >()
                        ? RG_MESH_PRIMITIVE_EXPORT_INVERT_NORMALS
@@ -921,7 +922,7 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         .pTextureName         = texname,
         .textureFrame         = 0,
         .color        = primColor,
-        .emissive     = l_worldemissive(),
+        .emissive     = lampGlowEmis,
         .classicLight = lightlevel_to_classic( isUI, mLightParms[ 3 ] ),
     };
 

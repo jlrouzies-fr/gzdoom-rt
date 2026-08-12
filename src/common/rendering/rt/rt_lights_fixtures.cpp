@@ -1363,8 +1363,23 @@ void RT_UploadCeilingEdgeLamps()
             // intensity does too. This is the whole trick: fewer lights, same
             // total energy, and rt_ceiling_bulb_gain is then a single honest
             // brightness knob on top.
+            // PER-TEXTURE TRIM, on top of the shared gain.
+            //
+            // SFLATAQ packs 4x4 bulbs into the same 64-unit tile SFLATAS fills with
+            // 2x2. One light per painted bulb therefore puts FOUR TIMES as many
+            // lights over the same area of SFLATAQ, and since each carries the same
+            // peak, an SFLATAQ pane comes out four times brighter than an SFLATAS one
+            // of the same size -- for no reason other than how finely its art is
+            // drawn. The two are not meant to be different fixtures; they are the
+            // same lamp at two densities.
+            const float texScale =
+                ( strncmp( ftname, "SFLATAQ", 7 ) == 0 )
+                    ? std::max( 0.f, float{ cvar::rt_ceiling_bulb_aq_scale } )
+                    : 1.f;
+
             const float bulbPeak = peak * float( spaceN * spaceN ) *
-                                   std::max( 0.f, float{ cvar::rt_ceiling_bulb_gain } );
+                                   std::max( 0.f, float{ cvar::rt_ceiling_bulb_gain } ) *
+                                   texScale;
 
             addLattice( sector,
                         i,
