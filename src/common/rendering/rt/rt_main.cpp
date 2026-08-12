@@ -2522,7 +2522,28 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .enable                  = fog.on || cvar::rt_volume_type != 0 || smoke_count > 0,
         // Smoke-only frames drop the history: it is tuned for fog, which moves
         // no faster than the player, and it smears a puff that does.
-        .maxHistoryLength        = smoke_owns ? 0.f
+        // THE SECOND TEMPORAL FILTER, and the one that made smoke stay bright
+        // after its muzzle flash had gone.
+        //
+        // The froxel's own blend (rt_smoke_illum_blend) decays in a handful of
+        // frames. THIS is a per-pixel accumulation on top of it, 8 frames deep
+        // and tuned for fog -- which moves no faster than the player. A muzzle
+        // flash lasts 2-3 frames, so the puff it lit goes on glowing through the
+        // whole window after the light is gone.
+        //
+        // The `smoke_owns ? 0` above was meant to prevent exactly that, and
+        // never fired: smoke_owns needs rt_volume_type 0 and the shipping pin is
+        // 1, the same dead gate that made rt_smoke_ambient a no-op. So the
+        // shortened history is chosen on SMOKE BEING LIVE instead.
+        //
+        // NOT on a fogged map. Shortening the window there would retune the fog
+        // every time the player pulled the trigger, which is the per-frame trap
+        // docs/rt-smoke.md section 5 exists to forbid. Fogged maps keep the
+        // fog's history and the smoke on them keeps the smear; that is the
+        // conservative half of the trade and it costs nine maps a little.
+        .maxHistoryLength        = ( smoke_live && !fog.on )
+                                       ? std::min( float{ cvar::rt_smoke_history },
+                                                   float{ cvar::rt_volume_history } )
                                    : ( fog.on || cvar::rt_volume_type == 1 )
                                        ? float{ cvar::rt_volume_history }
                                        : 0.f,
