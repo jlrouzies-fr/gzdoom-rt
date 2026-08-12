@@ -1466,7 +1466,7 @@
                                                 "-- or a fogged map's rt_fog_far -- does to the grid. Raise it until the "
                                                 "puff occludes; the fog is a luminous veil and does not, which is the "
                                                 "whole difference between the two media sharing this volume." )
-    RT_CVAR_COLOR( rt_smoke_color,    0x9E9689, "smoke colour (hex): the puff's scattering albedo, i.e. what it does "
+    RT_CVAR_COLOR( rt_smoke_color,    0xAEAEAE, "smoke colour (hex): the puff's scattering albedo, i.e. what it does "
                                                 "with the light that reaches it. Warm grey by default -- powder smoke, "
                                                 "not steam. A dark value reads as soot and, being an albedo, dims the "
                                                 "puff as well as tinting it." )
@@ -1699,6 +1699,29 @@
                                                 "shipping 1 / 2 they read as chunky rather than crisp. Turn those "
                                                 "down for a harder look -- they belong to the whole volume, so that "
                                                 "is a fog decision too." )
+    RT_CVAR( rt_smoke_tint,             0.8f,   "how hard a smoke cell keeps its OWN colour (rt_smoke_color) against the "
+                                                "medium it is mixed into, 0..1. The blend is density-WEIGHTED, which is "
+                                                "honest and loses the smoke: a thin puff contributes little, so the cell "
+                                                "comes out mostly the room's medium colour -- powder smoke goes beige in "
+                                                "a beige room and blue in a blue one, and stops reading as smoke at all. "
+                                                "A barrel's fat burst carries enough density to win that average and "
+                                                "stays grey, which is why the two looked so different in the same room. "
+                                                "0 is the plain weighted average, 1 makes a puff its own colour however "
+                                                "thin it is. This is the knob for 'smoke should look grey', and it fixes "
+                                                "that WITHOUT making the parcels bigger." )
+    RT_CVAR( rt_smoke_absorb,           3.f,     "how much smoke ABSORBS, as a multiple of its scattering. THIS is the "
+                                                "knob for 'I cannot see the smoke in a lit room'. The froxel volume "
+                                                "stores in-scattered light and EXTINCTION, and absorption was hardcoded "
+                                                "to zero since it was written -- so the medium is purely SCATTERING, "
+                                                "which gives back exactly as much light as it takes away. In a dark "
+                                                "room that addition is the whole effect and smoke looks fine; under an "
+                                                "even ceiling wash the two cancel and a thin puff has no contrast in "
+                                                "either direction, which is why a gun's wisp vanished in a bright beige "
+                                                "room while a barrel's 8x denser burst still read as grey. Real powder "
+                                                "smoke is sooty and absorbs. Raising this darkens what is BEHIND a puff "
+                                                "without adding light, which is the only way smoke can show against a "
+                                                "background brighter than itself. Fog is untouched -- this is scaled by "
+                                                "the smoke density, so a cell with no smoke stores what it always did." )
     RT_CVAR( rt_smoke_curl,             1.6f,   "lateral turbulence, m/s^2 at one second of age. A barrel wisp leaves the "
                                                 "muzzle LAMINAR -- a straight thread for the first fraction of a second "
                                                 "-- and only breaks into curls once it has risen, so this scales with the "
