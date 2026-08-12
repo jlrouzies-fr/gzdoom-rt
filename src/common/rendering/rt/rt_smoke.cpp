@@ -51,19 +51,41 @@ static constexpr SmokeProfile RT_SMOKE_PROFILES[] = {
     // half a second reads as a glitch; low density because at this radius a
     // thick one would be a bead.
     //
-    // MORE SMOKE ON THIS GUN IS A LONGER TRAIL, never a bigger parcel and never
-    // a bigger burst. The wisp IS the trail -- 20 releases at 2-tic spacing is
-    // about 1.1 s of the barrel breathing, against 14 at 3 tics (0.8 s) -- so
-    // lengthening it thickens the thread along its own axis, which is the one
-    // direction a filament is allowed to grow.
-    { "Pistol",      0.34f, 0.07f, 0.90f, 1.5f, 0.25f, 0.06f, 1.5f, 20, 2, 0.10f,
+    // MORE SMOKE ON THIS GUN IS A LONGER TRAIL -- MORE PARCELS, at the SAME
+    // spacing and the SAME lifetime. Not a bigger parcel, not a bigger burst,
+    // and above all not a longer-lived one.
+    //
+    // THE LIFE MULTIPLIER HOLDS THIS PROFILE'S ABSOLUTE LIFETIME FIXED, and
+    // that is the whole reason it moved from 1.5 to 1.1 when rt_smoke_life went
+    // 1.6 -> 2.2. Both give ~2.4 s. Pairing life with growth keeps a puff's
+    // SIZE constant, which is what that pairing was for -- but a filament's
+    // SHAPE depends on absolute life twice more, and neither is size:
+    //
+    //   RISE integrates over time. At 0.5 m/s terminal climb, 2.4 s puts the
+    //   top of the plume ~0.96 m above the barrel; 3.3 s puts it at ~1.42 m,
+    //   which is above the player's head. The smoke stops reading as coming off
+    //   the gun and starts reading as hanging over you.
+    //
+    //   CURL GOES AS AGE SQUARED (rt_smoke_curl, deliberately, so a wisp leaves
+    //   laminar and only breaks up once it has risen). So a 37% longer life is
+    //   an 89% stronger lateral push at the end of it. The thread sprays out
+    //   instead of staying a thread.
+    //
+    // Both were measured after the fact, from a report that the pistol "appears
+    // above me and is too sprayed out". A profile whose read depends on absolute
+    // time has to restate it whenever the shared cvar moves.
+    //
+    // growth 0.10 -> 0.14 for the same reason in reverse: rt_smoke_growth fell
+    // 0.7 -> 0.5, and this row wants the same final radius it always had.
+    { "Pistol",      0.34f, 0.07f, 0.90f, 1.1f, 0.25f, 0.06f, 1.5f, 18, 3, 0.14f,
       "thin wisp off the barrel" },
-    // The machine gun is the pistol: a thread, not a cloud. Shorter than the
-    // pistol's and left at 3-tic spacing on purpose: a held trigger re-arms this
-    // every rt_smoke_repeat (5) tics, so at 2 tics the emitter alone would run
-    // the pool to its 32-puff ceiling and the oldest parcels -- the tail you
-    // actually read as lingering -- would be culled to make room.
-    { "Chaingun",    0.34f, 0.07f, 0.70f, 1.1f, 0.30f, 0.07f, 1.6f, 9, 3, 0.10f,
+    // The machine gun is the pistol: a thread, not a cloud, and its lifetime is
+    // pinned the same way (0.8 x 2.2 = 1.76 s, exactly what 1.1 x 1.6 gave).
+    // Left at 3-tic spacing on purpose: a held trigger re-arms this every
+    // rt_smoke_repeat (5) tics, so at 2 tics the emitter alone would run the
+    // pool to its ceiling and the oldest parcels -- the tail you actually read
+    // as lingering -- would be culled to make room.
+    { "Chaingun",    0.34f, 0.07f, 0.70f, 0.8f, 0.30f, 0.07f, 1.6f, 9, 3, 0.14f,
       "small trail, like the pistol" },
     // Black powder from a wide bore: the fat one, and the reference for the rest.
     // SPARSE, not fat. A wide bore does make a cloud, but a cloud rendered as
