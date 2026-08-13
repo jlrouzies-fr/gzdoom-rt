@@ -330,6 +330,13 @@ bool singletics = false;	// debug flag to cancel adaptiveness
 FString startmap;
 bool autostart;
 bool advancedemo;
+
+// RT_BOOT instrumentation. The window between V_Init2 returning and the first
+// presented frame is the black gap at startup: V_Init2 hides the Win32 startup
+// log (ShowGameView) and creates the RTGL1 device, and nothing reaches the
+// screen until D_Display presents. Set once, read once; zero means V_Init2 has
+// not returned yet. Remove with the prints.
+uint64_t g_rtboot_vinit2_end = 0;
 FILE *debugfile;
 gamestate_t wipegamestate = GS_DEMOSCREEN;	// can be -1 to force a wipe
 bool PageBlank;
@@ -1314,6 +1321,15 @@ void D_DoomLoop ()
 			I_StartTic ();
 			D_ProcessEvents();
 			D_Display ();
+			// RT_BOOT: closes the black gap. Everything between V_Init2 and this
+			// first present is a dead window with nothing on screen.
+			if (g_rtboot_vinit2_end != 0)
+			{
+				Printf("RT_BOOT: first frame presented %llu ms after V_Init2 returned "
+					"(total black gap = V_Init2 + this)\n",
+					(unsigned long long)(I_msTime() - g_rtboot_vinit2_end));
+				g_rtboot_vinit2_end = 0;
+			}
 			S_UpdateMusic();
 			if (wantToRestart)
 			{
@@ -1613,7 +1629,9 @@ void D_DoAdvanceDemo (void)
 
 	if (P_CheckMapData("TITLEMAP"))
 	{
+		uint64_t t0 = I_msTime();
 		G_InitNew ("TITLEMAP", true);
+		Printf("RT_BOOT: TITLEMAP load took %llu ms\n", (unsigned long long)(I_msTime() - t0));
 		return;
 	}
 
@@ -3461,7 +3479,11 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<std::string>& allw
 
 		if (StartScreen != nullptr)
 		{
+			uint64_t t0 = I_msTime();
 			V_Init2();
+			g_rtboot_vinit2_end = I_msTime();
+			Printf("RT_BOOT: V_Init2 (EARLY, under start screen) took %llu ms\n",
+				(unsigned long long)(g_rtboot_vinit2_end - t0));
 			StartScreen->Render();
 		}
 
@@ -3700,7 +3722,15 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<std::string>& allw
 			return 1337; // special exit
 		}
 
-		if (StartScreen == nullptr) V_Init2();
+		if (StartScreen == nullptr)
+		{
+			uint64_t t0 = I_msTime();
+			V_Init2();
+			g_rtboot_vinit2_end = I_msTime();
+			Printf("RT_BOOT: V_Init2 (LATE, no start screen) took %llu ms  "
+				"<- RTGL1 device + pipeline creation, nothing on screen\n",
+				(unsigned long long)(g_rtboot_vinit2_end - t0));
+		}
 		if (StartScreen)
 		{
 			StartScreen->Progress(max_progress);	// advance progress bar to the end.
