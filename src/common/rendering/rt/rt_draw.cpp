@@ -887,7 +887,8 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             static std::unordered_set< std::string > s_seen;
             if( s_seen.insert( texname ).second )
             {
-                Printf( "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER, "
+                Printf( RT_DiagPrintLevel(),
+                        "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER, "
                         "liquid %d (%s)\n",
                         texname,
                         m.id,
@@ -930,7 +931,8 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         static std::unordered_set< std::string > s_seenLava;
         if( s_seenLava.insert( texname ).second )
         {
-            Printf( "RT lava: tagging \"%s\" as RG_MESH_PRIMITIVE_LAVA "
+            Printf( RT_DiagPrintLevel(),
+                    "RT lava: tagging \"%s\" as RG_MESH_PRIMITIVE_LAVA "
                     "(rt_lava_emis %.1f)\n",
                     texname,
                     float{ cvar::rt_lava_emis } );
@@ -1427,7 +1429,35 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         const float fade     = std::clamp( 1.f - above / fadeover, 0.f, 1.f );
 
         const float strength = std::clamp( float{ cvar::rt_sprite_ao_strength }, 0.f, 1.f );
-        const float alpha    = strength * fade;
+
+        // A STANDING BODY GETS A FAINTER BLOB THAN A THING LYING ON THE FLOOR.
+        //
+        // Reported 2026-08-13: the shotgun reads right, the soldier is about 30%
+        // too visible. Size alone does not explain that and rt_sprite_ao_sizefall
+        // cannot fix it -- after the size falloff the two footprints are within a
+        // few centimetres of each other. What actually differs is that the
+        // shotgun's is a thin ellipse and the soldier's is a full circle, so the
+        // soldier's covers roughly three times the area at the same strength.
+        //
+        // And there is a real reason it should be fainter, which is what makes
+        // this a class rule rather than a fudge: a dropped weapon is IN CONTACT
+        // with the floor across its whole footprint, so the occlusion under it is
+        // strong and tight. A standing body touches the floor only at its feet --
+        // everything above the ankles is far enough up that the floor still sees
+        // most of the sky. Real contact occlusion under a standing figure IS
+        // weaker and broader than under something lying flat.
+        //
+        // Keyed on m_lastthingupright, which already separates exactly these two
+        // cases: the soldier passes (h 56 >= 1.5*r 20), the shotgun pickup fails
+        // on the absolute height floor (h 20 < 24). Nothing new has to be
+        // classified, and corpses correctly fall on the lying-down side the moment
+        // gzdoom quarters their Height.
+        const float uprightmul =
+            rtstate.m_lastthingupright
+                ? std::clamp( float{ cvar::rt_sprite_ao_upright }, 0.f, 1.f )
+                : 1.f;
+
+        const float alpha = strength * fade * uprightmul;
 
         // Distance cap, in metres, against the actor's own position. Matches the
         // proxies' cull in form so the two read the same way.
@@ -1545,6 +1575,46 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                 }
             }
 
+            // SIZE FALLOFF -- the bigger the sprite, the less blob it gets.
+            //
+            // Both sizing paths above are LINEAR in the object: the circle is a
+            // multiple of the collision radius, the ellipse a multiple of the
+            // sprite's own width. So a soldier ends up with a visibly larger
+            // footprint than a shotgun lying next to him, in the same proportion
+            // as their bodies -- and that reads wrong, because contact occlusion
+            // is not a scale model of the object. It is the gap between the object
+            // and the floor, and that gap does NOT grow with the object: a
+            // soldier's boots meet the floor on about as much area as a shotgun's
+            // receiver does.
+            //
+            // So the footprint is pulled toward a reference size by an exponent:
+            //
+            //     f = (ref / size) ^ sizefall
+            //
+            // sizefall 0 leaves the linear behaviour untouched, 1 makes every blob
+            // exactly ref across whatever its owner's size, and the default sits
+            // between -- big things still read bigger, just far less than linearly.
+            // An exponent rather than a clamp because it has no discontinuity: no
+            // actor size is a special case, and nothing pops as a thing grows or
+            // shrinks (gzdoom quarters Height on death, so this happens in play).
+            //
+            // ref is fixed at one metre -- 32 map units, a Doom actor of ordinary
+            // size -- rather than being a cvar of its own. Moving the pivot point
+            // is what rt_sprite_ao_radius and rt_sprite_ao_fit already do; this
+            // knob only decides how much SPREAD there is around it.
+            {
+                const float sizefall = std::clamp( float{ cvar::rt_sprite_ao_sizefall }, 0.f, 1.f );
+                const float size     = std::max( rada, radb );
+
+                if( sizefall > 0.f && size > 1e-4f )
+                {
+                    constexpr float AoRefSize = 1.f; // metres
+                    const float     f         = std::pow( AoRefSize / size, sizefall );
+                    rada *= f;
+                    radb *= f;
+                }
+            }
+
             const float rad = std::max( rada, radb );
 
             if( rada > 1e-4f && radb > 1e-4f )
@@ -1601,10 +1671,30 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                     .color        = cCentre,
                 } );
 
-                // The rim, swept as an ELLIPSE on the two world-horizontal axes:
-                // (axu, axv) is the along-axis, and its perpendicular (-axv, axu)
-                // is the across-axis. For the circle case rada == radb and the
-                // axes cancel out, so one loop serves both shapes.
+                // A SINGLE FAN: one centre vertex at full alpha, one rim ring
+                // at zero, every triangle sharing the centre.
+                //
+                // This topology is the reason the blob is smooth, and it was
+                // briefly replaced by a core-plateau plus a banded penumbra --
+                // which put TRIANGLES around every blob (reported 2026-08-13).
+                // The cause is structural, so do not reintroduce a high-alpha
+                // ring expecting more segments to save it:
+                //
+                //   a ring quad carries alpha A at both INNER corners and 0 at
+                //   both OUTER ones. Split into (i0,o0,o1) and (i0,o1,i1), the
+                //   first interpolates as A*L(i0) -- iso-lines parallel to the
+                //   outer edge -- and the second as A*(L(i0)+L(i1)) -- iso-lines
+                //   parallel to the inner edge. Two gradient directions meeting
+                //   at the diagonal is a crease, in every segment at once.
+                //
+                // A fan has no such quad. Every triangle's alpha is A*L(centre),
+                // so the gradients agree, and the only polygonal boundary is the
+                // rim, which sits at alpha 0 where a crease cannot be seen.
+                //
+                // Swept as an ELLIPSE on the two world-horizontal axes: (axu,axv)
+                // is the along-axis and its perpendicular (-axv,axu) the across.
+                // For the circle case rada == radb and the axes cancel out, so one
+                // loop serves both shapes.
                 for( int k = 0; k < segs; k++ )
                 {
                     const float a  = ( 2.f * 3.14159265f * float( k ) ) / float( segs );

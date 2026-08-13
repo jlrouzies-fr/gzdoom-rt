@@ -483,7 +483,8 @@ void RT_InjectTitleIntoDoomMap( const char* mapname )
                            stricmp( mapname, "map21" ) == 0;
     if( candidate )
     {
-        Printf( "RT_Title: %s from wad \"%s\" (%s) -> %s\n",
+        Printf( RT_DiagPrintLevel(),
+                "RT_Title: %s from wad \"%s\" (%s) -> %s\n",
                 mapname,
                 wad_of_map.GetChars(),
                 ispwadmap ? "mod" : "stock doom2",

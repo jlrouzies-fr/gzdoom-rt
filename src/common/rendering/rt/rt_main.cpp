@@ -301,7 +301,15 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
         // the console and the logfile unconditionally -- muting them by
         // default is what hid the compiled-out-RR bug for an entire
         // investigation.
-        Printf( "%s\n", pMessage );
+        //
+        // RT_DiagPrintLevel() adds PRINT_NONOTIFY under `rt_verbose 0` (the
+        // release default), which takes these off the on-screen notify overlay
+        // WITHOUT taking them out of the console buffer or the logfile -- so
+        // the reasoning above still holds, while a release build stops painting
+        // "Denoiser path: ...", "ReSTIR: initialSamples=..." and friends across
+        // the picture on every level load. One line, and it covers every
+        // message RTGL1 emits.
+        Printf( RT_DiagPrintLevel(), "%s\n", pMessage );
     }
     else if( flags & RG_MESSAGE_SEVERITY_INFO )
     {
@@ -1098,7 +1106,8 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
             s_have = true;
             s_prev = state;
 
-            Printf( "RT upscale/RR decision: DLSS2=%s DLSS3FG=%s nvDlss=%d "
+            Printf( RT_DiagPrintLevel(),
+                    "RT upscale/RR decision: DLSS2=%s DLSS3FG=%s nvDlss=%d "
                     "wantNativeRr=%s -> rayReconstruction=%s\n",
                     cvar::rt_available_dlss2 ? "yes" : "NO",
                     cvar::rt_available_dlss3fg ? "yes" : "NO",
@@ -1108,7 +1117,8 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
 
             if( !cvar::rt_available_dlss2 && cvar::rt_failreason_dlss2 )
             {
-                Printf( "  DLSS2 unavailable, reason: %s\n",
+                Printf( RT_DiagPrintLevel(),
+                        "  DLSS2 unavailable, reason: %s\n",
                         static_cast< const char* >( cvar::rt_failreason_dlss2 ) );
             }
         }

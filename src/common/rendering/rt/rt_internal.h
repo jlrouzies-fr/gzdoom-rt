@@ -66,6 +66,20 @@
 
 extern RgInterface rt;
 
+// Print level for RT/RTGL1 *diagnostics* -- boot timings, the denoiser path,
+// ReSTIR settings, per-level banners. Under `rt_verbose 0` (the release
+// default) these carry PRINT_NONOTIFY, which keeps every line in the console
+// buffer AND the logfile but stops it painting over the game on the notify
+// overlay. Nothing is lost: `~` and rt-console.log still have it all.
+//
+// Use it for anything the renderer says on its own initiative. Do NOT use it
+// for the reply to a CCMD the user typed (`whatsthat`, `moon`, `rt_dump_*`) --
+// an answer to a question has to be visible where the question was asked.
+inline int RT_DiagPrintLevel()
+{
+    return bool{ cvar::rt_verbose } ? PRINT_HIGH : ( PRINT_HIGH | PRINT_NONOTIFY );
+}
+
 // The map name the RT side keys everything on -- presets, scenes, titles. Not
 // always primaryLevel's: a cutscene and the first-start scene each answer with
 // their own name. Defined in rt_main.cpp.

@@ -812,3 +812,18 @@ void RTRenderState::RT_AddWeaponGlow( AActor*          camera,
     RG_CHECK( r );
 }
 
+
+// `toggle rt_flsh` -- what the flashlight key used to be bound to -- prints
+// "rt_flsh" = "true" across the notify overlay on every single press, because
+// CCMD(toggle) in c_cvars.cpp reports unconditionally and a toggle *message*
+// would only replace one on-screen line with another. Flipping the cvar here
+// instead keeps the key silent in a release build, while `rt_verbose 1` still
+// gets the confirmation for A/B work.
+//
+// Bound by d64r-rt-flashlight.pk3's KEYCONF (alias d64rt_flashlight).
+CCMD( rt_flsh_toggle )
+{
+    const bool on = !bool{ cvar::rt_flsh };
+    cvar::rt_flsh = on;
+    Printf( RT_DiagPrintLevel(), "rt_flsh: %s\n", on ? "on" : "off" );
+}

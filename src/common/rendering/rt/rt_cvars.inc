@@ -1152,6 +1152,45 @@
                                                 "which is the same trap rt_sprite_shadow_width exists for.\n"
                                                 "Above 1 on purpose -- occlusion reaches past the silhouette, and a blob "
                                                 "cut exactly at the body reads as a sticker." )
+    RT_CVAR( rt_sprite_ao_upright,      0.7f,   "strength multiplier for things that are STANDING UP [0..1]. Things "
+                                                "lying on the floor are unaffected.\n"
+                                                "It exists because size alone did not explain what was wrong: with "
+                                                "rt_sprite_ao_sizefall applied, a soldier and a dropped shotgun end up "
+                                                "with footprints within a few centimetres of each other, and the "
+                                                "soldier still read about 30% too heavy. What differs is that the "
+                                                "shotgun's is a thin ellipse and the soldier's a full circle -- roughly "
+                                                "three times the area at the same strength.\n"
+                                                "And it SHOULD be fainter, which is what makes this a class rule and "
+                                                "not a fudge. A dropped weapon is in contact with the floor across its "
+                                                "whole footprint, so the occlusion under it is strong and tight. A "
+                                                "standing body touches the floor only at its feet; everything above the "
+                                                "ankles is far enough up that the floor still sees most of the sky. "
+                                                "Real contact occlusion under a standing figure is weaker and broader "
+                                                "than under something lying flat.\n"
+                                                "Keyed on the same upright test rt_sprite_shadow uses, so the soldier "
+                                                "passes (h 56 >= 1.5*r 20) and the shotgun pickup fails on the absolute "
+                                                "height floor (h 20 < 24) -- nothing new is classified, and a corpse "
+                                                "moves to the lying-down side the moment gzdoom quarters its Height. "
+                                                "Lower it further if monsters still read heavy; this is the knob for "
+                                                "that, NOT rt_sprite_ao_strength, which would take the props with it." )
+    RT_CVAR( rt_sprite_ao_sizefall,     0.6f,   "how much SMALLER, relative to its owner, a blob gets as the sprite "
+                                                "grows [0..1]. 0 = footprint strictly proportional to the object; "
+                                                "1 = every blob the same size whatever its owner.\n"
+                                                "Both sizing paths are otherwise LINEAR in the object -- the circle is "
+                                                "a multiple of the collision radius, the ellipse a multiple of the "
+                                                "sprite's own width -- so a soldier got a visibly bigger footprint "
+                                                "than a shotgun lying beside him, in the same proportion as their "
+                                                "bodies. That reads wrong, because contact occlusion is NOT a scale "
+                                                "model of the object: it is the gap between the object and the floor, "
+                                                "and that gap does not grow with the object. A soldier's boots meet "
+                                                "the floor on about as much area as a shotgun's receiver does.\n"
+                                                "Applied as f = (ref/size)^sizefall against a fixed 1 metre (32 map "
+                                                "units) reference -- an exponent rather than a clamp so there is no "
+                                                "discontinuity, no actor size is a special case, and nothing pops when "
+                                                "a thing changes size in play (gzdoom quarters Height on death).\n"
+                                                "The reference is deliberately not a cvar: moving the pivot is what "
+                                                "rt_sprite_ao_radius and rt_sprite_ao_fit already do, and this knob "
+                                                "only sets how much SPREAD there is around it." )
     RT_CVAR( rt_sprite_ao_shape,        1,      "the FOOTPRINT'S SHAPE. 0 = always a circle at the collision radius; "
                                                 "1 = circle for upright things, an ellipse fitted to the SPRITE for "
                                                 "things lying down (shipping); 2 = fitted ellipse for everything.\n"
@@ -1200,9 +1239,10 @@
                                                 "blob is what keeps its feet on the floor in that frame. The two do "
                                                 "overlap where both are present, which is why the default strength is "
                                                 "well under half." )
-    RT_CVAR( rt_sprite_ao_segments,     14,     "triangles in the blob's fan [3..64]. The falloff is vertex-interpolated, "
-                                                "so this is how round the disc is; below ~10 the polygon shows on a "
-                                                "large actor." )
+    RT_CVAR( rt_sprite_ao_segments,     32,     "ANGULAR resolution of the blob [3..64] -- how round it is. The falloff "
+                                                "is vertex-interpolated from one centre vertex, so the rim is the only "
+                                                "polygonal boundary and it sits at alpha 0, where a facet cannot be "
+                                                "seen; this only controls the silhouette." )
     RT_CVAR( rt_sprite_ao_dist,         30.f,   "skip blobs further than this from the camera, in METRES (0 = no limit). "
                                                 "Tighter than rt_sprite_shadow_dist because a contact blob is a few "
                                                 "pixels well before a cast shadow is: it is only ever as big as the "
@@ -2399,6 +2439,12 @@
                                                 "This option is needed to fix illumination motion artifacts on lifts / crashers" )
 
     RT_CVAR( hack_initialframesskip,    true,   "skip initial a couple of frames on game launch; if not skipped, there might be a distracting flashing of the main window" )
+
+    RT_CVAR( rt_verbose,                false,  "print RT/RTGL1 diagnostics to the ON-SCREEN notify area as well as the "
+                                                "console. Off (release default) still writes every line to the console "
+                                                "buffer and the logfile -- it only stops boot banners, the denoiser path, "
+                                                "ReSTIR settings and per-level chatter from painting over the game. "
+                                                "Game messages (pickups, level names) are never affected either way" )
 
     RT_CVAR( _rt_showexportable,        false,  "internal variable; only in debug" )
 

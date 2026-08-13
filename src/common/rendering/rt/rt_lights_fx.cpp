@@ -703,7 +703,8 @@ void RT_UploadLavaLights()
         static std::unordered_set< const void* > s_warned;
         if( s_warned.insert( primaryLevel ).second )
         {
-            Printf( "RT lava: %d lava sector(s) found, but NO light placed. "
+            Printf( RT_DiagPrintLevel(),
+                    "RT lava: %d lava sector(s) found, but NO light placed. "
                     "Grid points inside a sector: %d (spacing %.0f, cull %.0f). "
                     "If grid points is 0 the sectors are smaller than the spacing "
                     "or further than the cull radius.\n",

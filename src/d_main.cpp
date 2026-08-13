@@ -337,6 +337,15 @@ bool advancedemo;
 // screen until D_Display presents. Set once, read once; zero means V_Init2 has
 // not returned yet. Remove with the prints.
 uint64_t g_rtboot_vinit2_end = 0;
+
+// Mirrors RT_DiagPrintLevel() in rendering/rt/rt_internal.h, which d_main.cpp
+// must not include (it is private to the RT translation units). Under
+// `rt_verbose 0` these timings stay in the console buffer and the logfile but
+// keep off the on-screen notify overlay.
+static int RT_BootPrintLevel()
+{
+	return bool{ cvar::rt_verbose } ? PRINT_HIGH : (PRINT_HIGH | PRINT_NONOTIFY);
+}
 FILE *debugfile;
 gamestate_t wipegamestate = GS_DEMOSCREEN;	// can be -1 to force a wipe
 bool PageBlank;
@@ -1325,7 +1334,7 @@ void D_DoomLoop ()
 			// first present is a dead window with nothing on screen.
 			if (g_rtboot_vinit2_end != 0)
 			{
-				Printf("RT_BOOT: first frame presented %llu ms after V_Init2 returned "
+				Printf(RT_BootPrintLevel(), "RT_BOOT: first frame presented %llu ms after V_Init2 returned "
 					"(total black gap = V_Init2 + this)\n",
 					(unsigned long long)(I_msTime() - g_rtboot_vinit2_end));
 				g_rtboot_vinit2_end = 0;
@@ -1631,7 +1640,7 @@ void D_DoAdvanceDemo (void)
 	{
 		uint64_t t0 = I_msTime();
 		G_InitNew ("TITLEMAP", true);
-		Printf("RT_BOOT: TITLEMAP load took %llu ms\n", (unsigned long long)(I_msTime() - t0));
+		Printf(RT_BootPrintLevel(), "RT_BOOT: TITLEMAP load took %llu ms\n", (unsigned long long)(I_msTime() - t0));
 		return;
 	}
 
@@ -3482,7 +3491,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<std::string>& allw
 			uint64_t t0 = I_msTime();
 			V_Init2();
 			g_rtboot_vinit2_end = I_msTime();
-			Printf("RT_BOOT: V_Init2 (EARLY, under start screen) took %llu ms\n",
+			Printf(RT_BootPrintLevel(), "RT_BOOT: V_Init2 (EARLY, under start screen) took %llu ms\n",
 				(unsigned long long)(g_rtboot_vinit2_end - t0));
 			StartScreen->Render();
 		}
@@ -3727,7 +3736,7 @@ static int D_InitGame(const FIWADInfo* iwad_info, std::vector<std::string>& allw
 			uint64_t t0 = I_msTime();
 			V_Init2();
 			g_rtboot_vinit2_end = I_msTime();
-			Printf("RT_BOOT: V_Init2 (LATE, no start screen) took %llu ms  "
+			Printf(RT_BootPrintLevel(), "RT_BOOT: V_Init2 (LATE, no start screen) took %llu ms  "
 				"<- RTGL1 device + pipeline creation, nothing on screen\n",
 				(unsigned long long)(g_rtboot_vinit2_end - t0));
 		}
