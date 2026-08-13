@@ -2230,6 +2230,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         // intensity across so red and blue read at the same strength the moon does.
         .sunLeakDebugMul    = std::max( 1.f, float{ cvar::rt_sun_intensity } ),
         .sunSkyProbeMaxDist = std::max( 0.f, float{ cvar::rt_sun_skyprobe_dist } ),
+        .sunSplit           = bool{ cvar::rt_sun_split } ? 1.f : 0.f,
     };
 
     // Doom64-RT: the map's own fog, if it has any. A fogged map REPLACES the
@@ -2281,6 +2282,34 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     const float smoke_far = fog.on       ? fog.far_m
                             : smoke_owns ? float{ cvar::rt_smoke_far }
                                          : float{ cvar::rt_volume_far };
+
+    // ...and the same coupling, applied to the GLOBAL medium's own density.
+    //
+    // RtVolumetric.rgen multiplies its coefficient per CELL and the grid is 64
+    // slices whatever the reach, so rt_volume_far is a density knob as much as a
+    // reach one: raising it 30 -> 60 for smoke's render distance doubled the
+    // slice thickness, which halved how many cells a shaft crosses, which halved
+    // the light scattered out of it. Reported from play as the moon's shafts
+    // going weak on MAP01 after the smoke work, and visible from IN FRONT of the
+    // opening only -- looking up along the beam the phase function's ~11x
+    // forward bias still carried it, which is what made the report read as a
+    // contradiction rather than as a dimming.
+    //
+    // So rt_volume_scatter is normalised into a per-METRE density here, against
+    // the 30 m reach it was tuned at. Same reasoning, and the same arithmetic,
+    // as the slice thickness smoke already pays a few lines below -- smoke was
+    // immune to this precisely because it pays it, which is why the moon was the
+    // only thing that changed.
+    //
+    // FOG IS NOT NORMALISED, deliberately. It has its own tuned pair
+    // (rt_fog_far / rt_fog_density) on nine maps, RT_FOG_PRESETS is stated in
+    // those units, and rt-fog.md S6 documents the coupling as part of the
+    // contract. Touching it would retune every fogged map for a MAP01 report;
+    // ab-smoke.cmd fogsafe asserts it did not.
+    constexpr float RT_VOLUME_REF_FAR = 30.f;
+
+    const float volume_dens = float{ cvar::rt_volume_scatter } *
+                              ( std::max( 0.001f, smoke_far ) / RT_VOLUME_REF_FAR );
 
     if( smoke_live )
     {
@@ -2581,7 +2610,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         // and the far slice past rt_smoke_far is empty rather than a wall.
         .scaterring              = fog.on ? fog.density
                                    : smoke_owns ? 0.f
-                                                : float{ cvar::rt_volume_scatter },
+                                                : volume_dens,
         .assymetry               = cvar::rt_volume_lassymetry,
         .useIlluminationVolume   = cvar::rt_illum_volume && cvar::rt_volume_type != 0,
         .fallbackSourceColor     = { 0, 0, 0 },
@@ -2608,7 +2637,15 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         // this costs one mix() per cell and nothing else.
         .mediaColorFar           = fog.on ? RgFloat3D{ fog.rf, fog.gf, fog.bf }
                                           : RgFloat3D{ 1.f, 1.f, 1.f },
-        .farScattering           = fog.on ? fog.density_far : float{ cvar::rt_volume_scatter },
+        // Same normalisation as .scaterring: the near and far ends are one
+        // medium, so they have to be in the same units or the ramp bends with
+        // the reach. And the smoke_owns case has to state its zero here too --
+        // near 0 with a non-zero far is a ramp from clear air into haze, which
+        // is the opposite of the "far slice is empty rather than a wall" that
+        // zero base density is for.
+        .farScattering           = fog.on ? fog.density_far
+                                   : smoke_owns ? 0.f
+                                                : volume_dens,
         .densityCurve            = fog.on ? fog.curve : 1.f,
         .occludeEmission = bool{ cvar::rt_volume_occlude_emis },
         .ditherRadius  = std::max( 0.f, float{ cvar::rt_volume_dither } ),

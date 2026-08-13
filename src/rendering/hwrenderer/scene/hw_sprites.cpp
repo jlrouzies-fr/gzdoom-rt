@@ -143,6 +143,39 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 	if (actor)
 	{
 		rtstate.m_lastthingposition = FVector3{ actor->InterpolatedPosition(di->Viewpoint.TicFrac) };
+		rtstate.m_lastthingradius = float(actor->radius);
+
+		// Doom64-RT: does a VERTICAL shadow proxy make sense for this thing?
+		// See rt_sprite_shadow and m_lastthingupright.
+		//
+		// Three tests, because one is not enough:
+		//   MF_CORPSE     -- the direct answer where the playsim gives one.
+		//   H >= 1.5 * R  -- shape. gzdoom quarters Height on death, so a corpse
+		//                    lands near 0.7 while every standing monster is 1.8+
+		//                    (demon 30/56) and a barrel is 4.2. It also catches
+		//                    pickups, which are short and wide without ever
+		//                    being corpses (shotgun 20/16 = 0.8).
+		//   H >= 24       -- absolute floor, for small radii where the ratio
+		//                    alone would pass something knee-high.
+		const double r = actor->radius;
+		const double h = actor->Height;
+		rtstate.m_lastthingupright =
+			!(actor->flags & MF_CORPSE) && h >= 24.0 && h >= r * 1.5;
+
+		// A LIVE MONSTER. health > 0 as well as the corpse tests above, because
+		// the two are not the same instant: an actor is dead the moment its
+		// health reaches 0 and plays a death animation for several tics before
+		// MF_CORPSE is set and its Height is quartered. Without the health test
+		// a dying enemy keeps full-height vertical proxies through exactly the
+		// frames where it is folding onto the floor.
+		rtstate.m_lastthinglivemonster =
+			rtstate.m_lastthingupright && (actor->flags3 & MF3_ISMONSTER) && actor->health > 0;
+	}
+	else
+	{
+		rtstate.m_lastthingradius = 0.f;
+		rtstate.m_lastthingupright = false;
+		rtstate.m_lastthinglivemonster = false;
 	}
 #endif
 

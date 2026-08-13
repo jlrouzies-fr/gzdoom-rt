@@ -1034,6 +1034,109 @@
                                                 "Overrides rt_sun_require_sky when set." )
     RT_CVAR( rt_sun_skyprobe_dist,      0.f,    "max length of the sky probe ray in METERS (0 = RTGL's full ray "
                                                 "length). Lower it only if the probe shows up in a profile." )
+    RT_CVAR( rt_sprite_shadow,          true,   "give SPRITES a shadow that does not depend on where you are standing. "
+                                                "A sprite is a camera-facing quad with no thickness, so its shadow is "
+                                                "the projection of a PLANE: when the light lies in that plane the "
+                                                "shadow collapses to a line and the actor reads as pasted onto the "
+                                                "floor, and because the quad turns to face the viewer, the shadow's "
+                                                "shape changes as you rotate -- which nothing physical does.\n"
+                                                "With this on, each visible actor also submits invisible quads at "
+                                                "FIXED WORLD ANGLES, flagged RG_MESH_PRIMITIVE_SHADOW_ONLY: they are "
+                                                "in the acceleration structure and block shadow rays, but no primary, "
+                                                "reflection, refraction or indirect ray can see them (they sit on "
+                                                "INSTANCE_MASK_RESERVED_0, which only rayCullMaskWorld_Shadow "
+                                                "includes). At 90 degrees to each other no light direction is "
+                                                "degenerate -- as one plane goes edge-on the other is face-on.\n"
+                                                "The alpha test rides along, so the shadow is the sprite's SILHOUETTE "
+                                                "rather than a rectangle. Translucent sprites are skipped: RTGL1 "
+                                                "rasterizes those, so they are not in the AS and cast nothing today -- "
+                                                "giving a spectre a solid shadow would be a change in look, not a fix. "
+                                                "Costs rt_sprite_shadow_planes extra alpha-tested primitives per "
+                                                "visible actor per frame, bounded by rt_sprite_shadow_dist." )
+    RT_CVAR( rt_sprite_shadow_planes,   4,      "how many shadow-proxy planes per sprite [1..4], spread evenly over "
+                                                "180 degrees (k*pi/n -- a plane's orientation is modulo pi, since a "
+                                                "quad and its 180-degree twin are the same occluder).\n"
+                                                "2 is the minimum with no fully degenerate direction; 4 is the "
+                                                "shipping value because how WIDE a shadow an actor casts still varies "
+                                                "with the light's bearing, and more planes narrow that swing: worst "
+                                                "case against best is 0.71x at n=2 and 0.92x at n=4.\n"
+                                                "The spread used to be a fixed table {0, pi/2, pi/6, pi/3}, which for "
+                                                "n=3 and n=4 packed every plane into ONE QUADRANT (0/30/60/90) and "
+                                                "left the 90-180 half uncovered -- so an actor's shadow got thin at "
+                                                "particular compass bearings and nowhere else, which is the kind of "
+                                                "thing that gets blamed on the art. It is derived now.\n"
+                                                "1 is a single fixed plane, kept only to see the failure this feature "
+                                                "is about." )
+    RT_CVAR( rt_sprite_shadow_hidecaster, true, "stop the VISIBLE billboard casting once the proxies do it "
+                                                "(RG_MESH_PRIMITIVE_NO_SHADOW on the sprite itself). Otherwise the "
+                                                "umbra is the union of the camera-facing quad and the world-fixed "
+                                                "ones: fatter than the actor, and still changing shape as you turn, so "
+                                                "the artefact survives in diluted form. 0 keeps both, which is worth "
+                                                "one look to see why this is on." )
+    RT_CVAR( rt_sprite_shadow_scope,    1,      "WHICH sprites get shadow proxies. 1 = LIVE MONSTERS ONLY (shipping), "
+                                                "0 = anything standing upright, which also covers barrels, torches and "
+                                                "other tall props.\n"
+                                                "This is the knob that decides whether the feature is honest, because "
+                                                "a proxy is an assumption about SHAPE and a vertical cross only fits "
+                                                "something standing up. Through a corpse, a gib or a dropped weapon it "
+                                                "becomes four cards lying on the ground throwing radiating spokes "
+                                                "(screen/shadowissue.png). Neither scope includes those: they keep the "
+                                                "stock billboard shadow they had before this feature existed.\n"
+                                                "Scope 0 tests SHAPE -- not MF_CORPSE, Height >= 24 and Height >= "
+                                                "1.5*radius. gzdoom quarters an actor's Height on death, so a corpse "
+                                                "lands near H/R 0.7 while a standing monster is 1.8+ (demon 30/56) and "
+                                                "a barrel 4.2; pickups are short without ever being corpses (shotgun "
+                                                "20/16 = 0.8).\n"
+                                                "Scope 1 adds MF3_ISMONSTER and health > 0. The health test is not "
+                                                "redundant: an actor is dead the moment health hits 0 and plays a "
+                                                "death animation for several tics before MF_CORPSE is set and its "
+                                                "height quartered, so without it a dying enemy keeps full-height "
+                                                "vertical proxies through exactly the frames where it is folding onto "
+                                                "the floor." )
+    RT_CVAR( rt_sprite_shadow_width,    1.f,    "how wide a shadow proxy is, as a multiple of the ACTOR'S COLLISION "
+                                                "RADIUS. 1 = the actor's own radius; 0 = keep the sprite quad's full "
+                                                "width, which is what this did before and is wrong.\n"
+                                                "A sprite quad is the ART'S CANVAS, not the body: a marine is drawn on "
+                                                "~64 units of quad around a radius of 17. A proxy at the quad's width "
+                                                "therefore reaches about twice as far toward the viewer as the actor "
+                                                "physically does, and the flashlight -- a light at your eye, tipped "
+                                                "down at the floor -- throws that overhang onto the ground IN FRONT of "
+                                                "the sprite, where a real body could never cast one.\n"
+                                                "Only ever NARROWS (a proxy wider than its own art would cast a shadow "
+                                                "the sprite cannot account for). The alpha mask is untouched, so the "
+                                                "shadow keeps the sprite's outline, squeezed to body width. Raise "
+                                                "above 1 for a heavier shadow at the cost of the same overhang coming "
+                                                "back." )
+    RT_CVAR( rt_sprite_shadow_dist,     40.f,   "skip shadow proxies further than this from the camera, in METRES "
+                                                "(0 = no limit). The cost is per visible actor per frame and a shadow "
+                                                "at 40 m is a few pixels. 40 m is 1280 map units." )
+    RT_CVAR( rt_sun_split,              false,  "shade the MOON SEPARATELY from ReSTIR instead of letting it compete "
+                                                "in the per-pixel light draw. RTGL1 builds one reservoir for the "
+                                                "regular lights and one for the directional light, then merges them "
+                                                "STOCHASTICALLY -- so exactly one light wins per pixel. That is proper "
+                                                "importance sampling and it has a specific consequence for a light "
+                                                "that is huge but weak: at rt_sun_intensity 90, against a level's own "
+                                                "lamps and rt_sector_emis surfaces, the moon wins on a minority of "
+                                                "pixels, so its shadows are resolved on a sparse random subset of the "
+                                                "image and the denoiser flattens what survives. Measured symptom: 21 "
+                                                "sprites casting NO moon shadow while the same sprites shadow "
+                                                "perfectly from a muzzle flash -- which wins the draw nearly always, "
+                                                "because it dominates every pixel it touches "
+                                                "(screen/moon_shadow_limit.png, 2026-08-13).\n"
+                                                "rt_shadow_samples cannot fix it: that averages visibility for the "
+                                                "light ALREADY CHOSEN, so it only sharpens the moon on pixels that "
+                                                "picked the moon -- which is why raising it to 8 recovered 'a bit' and "
+                                                "no more.\n"
+                                                "With this on, every pixel facing the moon traces ONE sun shadow ray, "
+                                                "added to the ReSTIR estimate over all the other lights. Unbiased: the "
+                                                "sun is removed from the candidate set rather than counted twice, so "
+                                                "sunlit surfaces are the same BRIGHTNESS either way and only the noise "
+                                                "changes. Direct lighting only -- indirect bounce and the volumetric "
+                                                "fog shafts keep the stock path and are bit-identical.\n"
+                                                "Costs one shadow ray per sun-facing pixel. Compare against "
+                                                "rt_spp_direct 4, which was the brute-force version of the same fix "
+                                                "and multiplies rays for EVERY light to repair one. "
+                                                "A/B: .\\tools\\ab.cmd title-split menu" )
     RT_CVAR( rt_sun_angdiam,            0.5f,   "apparent diameter of the sun/moon disc in degrees, and the global "
                                                 "size gate for sky leaks. 0.5 is the real moon and makes this a POINT "
                                                 "light: one shadow ray, so a crack delivers as much light as a "
@@ -1323,7 +1426,7 @@
                                                 "alike (RR guide 3.5 requires decorrelated reservoirs). Judge with the "
                                                 "Dev 'Unfiltered diffuse direct' view, not the final image." )
 
-    RT_CVAR_NOARCH( rt_shadow_samples,            1,   "Shadow rays per pixel for DIRECT lighting [1..8]. Direct illumination "
+    RT_CVAR( rt_shadow_samples,            1,   "Shadow rays per pixel for DIRECT lighting [1..8]. Direct illumination "
                                                 "multiplies by a single binary visibility ray, so at 1 spp a pixel is "
                                                 "fully lit or fully black — that 0/1 term dominates the raw noise and is "
                                                 "untouched by ReSTIR or by any denoiser tuning. Averaging N points on the "
@@ -1366,26 +1469,26 @@
                                                 "Shipping RR integrations all provide it." )
 
     // --- Samples per pixel ---------------------------------------------------
-    RT_CVAR_NOARCH( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "
+    RT_CVAR( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "
                                                 "only converges via temporal accumulation, which camera motion destroys — "
                                                 "so the raw signal is what you see while moving. N independent estimates "
                                                 "averaged cut that noise ~1/sqrt(N) at the SOURCE, which is upstream of the "
                                                 "denoiser and so helps A-SVGF and DLSS-RR equally. Costs 1 extra shadow ray "
                                                 "per extra sample. 1 = stock (bit-identical)." )
-    RT_CVAR_NOARCH( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
+    RT_CVAR( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
                                                 "into the initial reservoir. Costs ~4 extra rays per extra sample — the "
                                                 "expensive one. 1 = stock (bit-identical)." )
 
     // --- ReSTIR quality (previously hardcoded) -------------------------------
-    RT_CVAR_NOARCH( rt_restir_initial,            8,   "ReSTIR RIS candidate lights per pixel [1..32] (was hardcoded 8). Traces "
+    RT_CVAR( rt_restir_initial,           32,   "ReSTIR RIS candidate lights per pixel [1..32] (was hardcoded 8). Traces "
                                                 "NO rays — pure light importance-sampling quality, so this is close to "
                                                 "free. Raise before reaching for rt_spp_direct." )
-    RT_CVAR_NOARCH( rt_restir_spatial,            8,   "ReSTIR spatial reuse taps in the direct pass [0..16] (was hardcoded 8). "
+    RT_CVAR( rt_restir_spatial,            8,   "ReSTIR spatial reuse taps in the direct pass [0..16] (was hardcoded 8). "
                                                 "Image reads, no rays." )
     RT_CVAR_NOARCH( rt_restir_spatial_radius,  30.f,   "Radius in pixels of the ReSTIR spatial reuse taps [1..64] (was hardcoded "
                                                 "30). Wider samples a broader neighbourhood but gets more taps rejected by "
                                                 "the depth/normal reuse test." )
-    RT_CVAR_NOARCH( rt_restir_mcap,              20,   "Cap on accumulated ReSTIR temporal M, as a multiple of the initial "
+    RT_CVAR( rt_restir_mcap,              20,   "Cap on accumulated ReSTIR temporal M, as a multiple of the initial "
                                                 "reservoir's M [1..64] (was hardcoded 20). Higher = longer history = "
                                                 "smoother when still, slower to react to change. Watch it with "
                                                 "rt_debug_restir_m 1." )
@@ -1994,8 +2097,8 @@
                                                 "Blurring costs almost nothing visually because scattering is "
                                                 "low-frequency; XY only, since Z is the integration axis. 0 = stock." )
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
-    RT_CVAR( rt_volume_far,             60.f,   "max distance of the scattering volume, in metres, and therefore the RENDER DISTANCE OF SMOKE: the froxel grid is camera-fitted, so a puff past this plane is not represented at all. 30 -> 60 to double it. TWO COSTS, both real: the grid is 64 slices whatever the reach, so the slice thickness goes 0.47 -> 0.94 m and puffs get coarser and noisier; and the global medium (rt_volume_scatter) now reaches twice as far, so distant parts of an unfogged map are hazier than before. A FOGGED map is unaffected -- it uses rt_fog_far instead." )
-    RT_CVAR( rt_volume_scatter,         1.f,    "density of media" )
+    RT_CVAR( rt_volume_far,             60.f,   "max distance of the scattering volume, in metres, and therefore the RENDER DISTANCE OF SMOKE: the froxel grid is camera-fitted, so a puff past this plane is not represented at all. 30 -> 60 to double it. THE COST IS RESOLUTION: the grid is 64 slices whatever the reach, so the slice thickness goes 0.47 -> 0.94 m and puffs get coarser and noisier. It is NO LONGER A DENSITY KNOB -- it was one, silently, because the shader applies scattering per CELL: 30 -> 60 halved how many cells a given metre of air occupies and so halved the medium, which is what took the moon's shafts down on MAP01 after the smoke work. rt_main.cpp now normalises rt_volume_scatter per METRE against a 30 m reference, so a value means the same thing at any reach and only the far haze extends. A FOGGED map is unaffected either way -- it uses rt_fog_far / rt_fog_density, which keep the per-cell contract RT_FOG_PRESETS is tuned in." )
+    RT_CVAR( rt_volume_scatter,         1.f,    "density of the global medium, PER METRE -- rt_main.cpp scales it by rt_volume_far/30 before upload, so it does not change meaning when the reach moves (see rt_volume_far). Unfogged maps only: a fogged map takes rt_fog_density instead. This is the medium the moon's light shafts are scattered out of, so it is the first knob for shafts that read too weak -- rt_volume_lintensity is the second, and brightens the lit shaft without thickening the haze around it. tools/arms/moon-*.cfg are the A/B." )
     RT_CVAR( rt_volume_ambient,         0.2f,   "ambient term" )
     RT_CVAR( rt_volume_lintensity,      1.f,    "intensity of lights for scattering" )
     RT_CVAR( rt_volume_lassymetry,      0.5f,   "scaterring phase function assymetry" )

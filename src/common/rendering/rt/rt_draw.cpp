@@ -5,10 +5,44 @@
 // edits are the RTRenderState:: qualification and one level of de-indentation.
 
 #include "rt_renderstate.h"
+#include "r_utility.h" // r_viewpoint, for the shadow-proxy distance cap
 
 // The shared internals come in unqualified, exactly as when this code lived
 // inside rt_main.cpp's anonymous namespace.
 using namespace rtx;
+
+namespace
+{
+// Doom64-RT: sprite shadow proxies -- see rt_sprite_shadow.
+//
+// Added to the sprite's own uniqueObjectID (an ACTOR POINTER) to name the proxy
+// meshes. It has to be beyond any pointer the game can produce or a proxy would
+// collide with a real object and RTGL1 would drop one of the two with "Trying to
+// upload but a primitive with the same ID already exists" -- silently, and it is
+// the proxy that would lose. Windows x64 user-space pointers stop at
+// 0x00007FFF'FFFFFFFF, so bit 62 is unreachable by construction.
+constexpr uint64_t RT_SPRITE_SHADOW_ID_BASE = 0x4000000000000000ull;
+
+// Fixed WORLD yaw for proxy plane k of n, spread evenly over 180 degrees.
+// World-fixed rather than camera-relative is the entire point: the visible
+// billboard turns to face the viewer, so the shadow it casts changes shape as
+// the player rotates, which nothing physical does.
+//
+// 180 and not 360 because a plane's orientation is modulo pi -- a quad and its
+// 180-degree twin are the same occluder. So the spacing is k*pi/n, DERIVED, not
+// a table.
+//
+// It was a fixed table {0, pi/2, pi/6, pi/3} and that was wrong for n=3 and n=4:
+// it packed every plane into a single quadrant (0/30/60/90) and left the
+// 90-180 half uncovered, so how wide a shadow an actor cast depended on the
+// LIGHT'S BEARING. Worst case fell to 0.71x the actor's width against 0.97x at
+// the best -- a 27% swing with compass direction, which is the kind of thing
+// that gets blamed on the art. n=2 was correct by luck (0/90) and is unchanged.
+inline float RT_SpriteShadowYaw( int k, int n )
+{
+    return ( 3.14159265f * float( k ) ) / float( std::max( n, 1 ) );
+}
+} // namespace
 
 void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                                   std::span< const uint32_t >          indices,
@@ -112,6 +146,13 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         m_fb->RT_MarkWasSky();
     }
 
+    // Doom64-RT: true = this draw is an ACTOR BILLBOARD whose camera-facing
+    // rotation has been factored into `transform`, leaving `verts` un-rotated in
+    // the sprite's own space. That is exactly the input a shadow proxy needs --
+    // the same verts under a different rotation -- so it is recorded here rather
+    // than re-derived at the bottom of the function.
+    bool isSpriteBillboard = false;
+
     RgTransform transform;
     if( rtstate.is< RtPrim::FirstPerson >() )
     {
@@ -169,6 +210,7 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     else if( RequiresTrueTransform() )
     {
         std::tie( transform, verts ) = CalculateTrueTransformAndItsVerts( verts );
+        isSpriteBillboard            = true;
     }
     else
     {
@@ -905,11 +947,81 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     };
     const auto [ lampGlowFlag, lampGlowEmis ] = l_lampglow();
 
+    // Doom64-RT: does this draw get shadow proxies? ONE decision, used twice --
+    // here to silence the visible billboard, and at the bottom to emit them.
+    // They must agree: hiding the caster for a sprite that then gets no proxy
+    // deletes its shadow outright, which is how a feature meant to ADD shadows
+    // ends up removing them.
+    const bool emitShadowProxies = [ & ]() -> bool {
+        if( !cvar::rt_sprite_shadow || isUI || !isSpriteBillboard || verts.empty() )
+        {
+            return false;
+        }
+        // Not the player's own body -- see the note at the emission site.
+        if( rtstate.is< RtPrim::FirstPerson >() || rtstate.is< RtPrim::FirstPersonViewer >() )
+        {
+            return false;
+        }
+        // WHICH THINGS GET A PROXY AT ALL -- rt_sprite_shadow_scope.
+        //
+        // A proxy is an assumption about SHAPE, and a vertical cross only fits
+        // something standing up. Through a corpse, a gib or a dropped weapon it
+        // becomes four cards on the ground throwing radiating spokes
+        // (screen/shadowissue.png), so those keep their stock billboard shadow,
+        // exactly as before this feature existed.
+        //
+        // scope 1 goes further and asks for a LIVE MONSTER: everything the
+        // proxies were built for is there, and every class the assumption fits
+        // badly is outside it by construction.
+        if( cvar::rt_sprite_shadow_scope >= 1 ? !rtstate.m_lastthinglivemonster
+                                              : !rtstate.m_lastthingupright )
+        {
+            return false;
+        }
+        // A translucent sprite is RASTERIZED by RTGL1 -- never in the
+        // acceleration structure, so it casts nothing today and giving it a
+        // solid shadow would be a change in look, not a fix. That is the
+        // spectre, the nightmare imp and every additive fire/muzzle sprite.
+        if( makePrimFlags( isUI ) & RG_MESH_PRIMITIVE_TRANSLUCENT )
+        {
+            return false;
+        }
+        // Distance cap. The cost is per visible actor per frame, and a shadow
+        // 40 m away is a few pixels. Metres, to match the pivot.
+        const float maxdist = std::max( 0.f, float{ cvar::rt_sprite_shadow_dist } );
+        if( maxdist > 0.f )
+        {
+            const float dx =
+                transform.matrix[ 0 ][ 3 ] - float( r_viewpoint.Pos.X ) * ONEGAMEUNIT_IN_METERS;
+            const float dy =
+                transform.matrix[ 1 ][ 3 ] - float( r_viewpoint.Pos.Y ) * ONEGAMEUNIT_IN_METERS;
+            const float dz =
+                transform.matrix[ 2 ][ 3 ] - float( r_viewpoint.Pos.Z ) * ONEGAMEUNIT_IN_METERS;
+            if( std::sqrt( dx * dx + dy * dy + dz * dz ) > maxdist )
+            {
+                return false;
+            }
+        }
+        return true;
+    }();
+
+    // When proxies do the occluding, the visible billboard must stop, or the
+    // umbra is the UNION of the camera-facing quad and the world-fixed ones:
+    // fatter than the sprite and still changing shape as the player turns, i.e.
+    // the artefact the proxies exist to remove, merely diluted.
+    auto l_spriteshadowcaster = [ & ]() -> RgMeshPrimitiveFlags {
+        if( emitShadowProxies && cvar::rt_sprite_shadow_hidecaster )
+        {
+            return RG_MESH_PRIMITIVE_NO_SHADOW;
+        }
+        return RgMeshPrimitiveFlags( 0 );
+    };
+
     auto prim = RgMeshPrimitiveInfo{
         .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
         .pNext = isUI ? &ui : nullptr,
         .flags = makePrimFlags( isUI ) | l_waterflag() | l_nocausticsflag() | l_lavaflag() |
-                 lampGlowFlag |
+                 lampGlowFlag | l_spriteshadowcaster() |
                  RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
                  ( rtstate.is< RtPrim::ExportInvertNormals >()
                        ? RG_MESH_PRIMITIVE_EXPORT_INVERT_NORMALS
@@ -992,4 +1104,261 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
 
     RgResult r = rt.rgUploadMeshPrimitive( &mesh, &prim );
     RG_CHECK( r );
+
+    // ---------------------------------------------------------------------
+    // Doom64-RT: SPRITE SHADOW PROXIES (rt_sprite_shadow).
+    //
+    // A sprite is a camera-facing quad with no thickness, so its shadow is the
+    // projection of a plane: when the light lies IN that plane the shadow
+    // collapses to a line, and because the quad turns to face the viewer, the
+    // shadow's shape changes as the player rotates. Both are visible in play --
+    // an enemy lit from the side casts nothing, and turning on the spot makes a
+    // shadow breathe.
+    //
+    // The fix is invisible crossed quads at FIXED WORLD ANGLES, flagged
+    // RG_MESH_PRIMITIVE_SHADOW_ONLY so they occlude shadow rays and nothing
+    // else. With two planes at 90 degrees no light direction is degenerate: as
+    // one goes edge-on the other is face-on. Being world-fixed, they also stop
+    // the shadow changing with the camera.
+    //
+    // This is cheap here only because CalculateTrueTransformAndItsVerts has
+    // already factored the billboard into (rotation, pivot) + un-rotated local
+    // verts -- so a proxy is the SAME vertices under a different transform, with
+    // no vertex maths, no second copy of the geometry and no texture work. The
+    // alpha test comes along in the flags, so the shadow keeps the sprite's
+    // silhouette rather than being a rectangle.
+    // NOT the player's own body. It is a FirstPersonViewer sprite that is ALSO an
+    // ExportInstance, so it takes the true-transform path like any actor and
+    // isSpriteBillboard is true for it -- but the proxy is submitted with cleared
+    // mesh flags, which drops RG_MESH_FIRST_PERSON_VIEWER and turns it into an
+    // ordinary WORLD occluder standing at the camera. The flashlight is a light
+    // at ~0 m from that point, so it lit the proxies edge-on and threw swinging
+    // corner shadows across the whole beam (reported 2026-08-13).
+    //
+    // Keeping the viewer flag instead would not work: PV_FIRST_PERSON_VIEWER is
+    // tested BEFORE PV_SHADOW_ONLY when the instance mask is chosen, so the proxy
+    // would become visible geometry hanging in front of the camera. The player
+    // already casts through its own viewer sprite, so there is nothing to regain.
+    if( emitShadowProxies )
+    {
+        const float px = transform.matrix[ 0 ][ 3 ];
+        const float py = transform.matrix[ 1 ][ 3 ];
+        const float pz = transform.matrix[ 2 ][ 3 ];
+
+        {
+            const int planes = std::clamp( int{ cvar::rt_sprite_shadow_planes }, 1, 4 );
+
+            // Narrow the proxies to the ACTOR, not to the sprite's canvas.
+            //
+            // A sprite quad is the art's bounding box: a marine is drawn on ~64
+            // units of quad around a body radius of 17. A proxy built at the
+            // quad's width therefore reaches about twice as far toward the
+            // viewer as the actor physically does -- and the flashlight, which
+            // sits at the eye and is tipped down, throws that overhang onto the
+            // floor IN FRONT of the sprite, where a real body's shadow could
+            // never fall (reported 2026-08-13). Scaling the horizontal axis to
+            // the collision radius puts the occluder back inside the actor.
+            //
+            // Local Y is the sprite's width axis: CalculateTrueTransformAndItsVerts
+            // leaves local X as the facing normal and Z as up, so scaling Y alone
+            // narrows the silhouette without touching its height or its footing
+            // on the floor. The alpha mask is untouched, so the shadow stays the
+            // sprite's outline, merely squeezed to body width.
+            // CANONICALISE THE QUAD FIRST, and this is the correction that makes
+            // everything below mean what it says.
+            //
+            // The local verts are NOT axis-aligned. hw_sprites.cpp hands
+            // push_apply_spriterotation the ACTOR'S OWN yaw (rtangles.Yaw), so
+            // CalculateTrueTransformAndItsVerts un-rotates by the actor's
+            // facing, not by the billboard's -- and the quad keeps its
+            // camera-facing orientation baked in, offset by
+            // (camera_yaw - actor_yaw).
+            //
+            // Everything that followed inherited that error: a proxy sat at
+            // yaw_k + that offset, so the "world-fixed" planes ROTATED WITH THE
+            // CAMERA; local Y was not the width axis, so rt_sprite_shadow_width
+            // scaled the wrong one; and the mirror test's normal was off by the
+            // same angle -- worst when the actor is side-on to the viewer, which
+            // is exactly where the mirrored shadow survived (2026-08-13).
+            //
+            // So derive the quad's own frame from its vertices rather than
+            // assuming one: take its normal, rotate the verts about local Z
+            // until that normal is +X, and the quad is then canonical -- normal
+            // +X, width along Y, upright along Z. A rigid rotation cannot mirror
+            // it, so the texture's handedness relative to the normal survives.
+            const auto l_localnormal = [ & ]() -> FVector3 {
+                if( verts.size() < 3 )
+                {
+                    return {};
+                }
+                const FVector3 p0{ verts[ 0 ].position[ 0 ],
+                                   verts[ 0 ].position[ 1 ],
+                                   verts[ 0 ].position[ 2 ] };
+                const FVector3 p1{ verts[ 1 ].position[ 0 ],
+                                   verts[ 1 ].position[ 1 ],
+                                   verts[ 1 ].position[ 2 ] };
+                const FVector3 p2{ verts[ 2 ].position[ 0 ],
+                                   verts[ 2 ].position[ 1 ],
+                                   verts[ 2 ].position[ 2 ] };
+                return ( p1 - p0 ) ^ ( p2 - p0 );
+            };
+
+            FVector3 nloc = l_localnormal();
+
+            // Winding is not guaranteed, so pick the side the CAMERA is on --
+            // the billboard faces the viewer, so that is its textured face.
+            // transform's 3x3 takes local to world.
+            const float nw_x = transform.matrix[ 0 ][ 0 ] * nloc.X +
+                               transform.matrix[ 0 ][ 1 ] * nloc.Y +
+                               transform.matrix[ 0 ][ 2 ] * nloc.Z;
+            const float nw_y = transform.matrix[ 1 ][ 0 ] * nloc.X +
+                               transform.matrix[ 1 ][ 1 ] * nloc.Y +
+                               transform.matrix[ 1 ][ 2 ] * nloc.Z;
+            if( nw_x * ( float( r_viewpoint.Pos.X ) * ONEGAMEUNIT_IN_METERS - px ) +
+                    nw_y * ( float( r_viewpoint.Pos.Y ) * ONEGAMEUNIT_IN_METERS - py ) <
+                0.f )
+            {
+                nloc = -nloc;
+            }
+
+            const float nlen = std::sqrt( nloc.X * nloc.X + nloc.Y * nloc.Y );
+            if( nlen < 1e-6f )
+            {
+                // A quad with no horizontal facing at all -- nothing sane to
+                // build a vertical proxy from. Leave it on its billboard.
+                return;
+            }
+
+            // Rotate local Z by -atan2(n) so the normal lands on +X.
+            const float ca = nloc.X / nlen;
+            const float sa = -nloc.Y / nlen;
+
+            float halfw = 0.f;
+            {
+                for( const auto& v : verts )
+                {
+                    const float y = v.position[ 0 ] * sa + v.position[ 1 ] * ca;
+                    halfw         = std::max( halfw, std::fabs( y ) );
+                }
+            }
+
+            const float wantHalf = rtstate.m_lastthingradius * ONEGAMEUNIT_IN_METERS *
+                                   std::max( 0.f, float{ cvar::rt_sprite_shadow_width } );
+
+            // Only ever narrows: a proxy wider than its own art would cast a
+            // shadow the sprite cannot account for. 0 (or an unknown radius)
+            // means "keep the quad", which is the pre-2026-08-13 behaviour.
+            const float wscale = ( halfw > 1e-5f && wantHalf > 1e-5f )
+                                     ? std::min( 1.f, wantHalf / halfw )
+                                     : 1.f;
+
+            // Scratch buffers. Static because InternalDraw is on the render
+            // thread and this runs per visible actor per frame; reallocating a
+            // vector there is the kind of thing that shows up in a profile as
+            // "the shadow feature is expensive" when it is not.
+            static std::vector< RgPrimitiveVertex > s_basev;      // narrowed
+            static std::vector< RgPrimitiveVertex > s_proxyverts; // + per-plane flip
+
+            s_basev.assign( verts.begin(), verts.end() );
+            for( auto& v : s_basev )
+            {
+                // canonicalise (normal -> +X, width -> Y), then narrow the width
+                const float x = v.position[ 0 ] * ca - v.position[ 1 ] * sa;
+                const float y = v.position[ 0 ] * sa + v.position[ 1 ] * ca;
+
+                v.position[ 0 ] = x;
+                v.position[ 1 ] = y * wscale;
+            }
+
+            // The U span, for mirroring below. Taken from the verts rather than
+            // assumed to be 0..1: a sprite's quad is a page of an atlas.
+            float umin = s_basev[ 0 ].texCoord[ 0 ];
+            float umax = umin;
+            for( const auto& v : s_basev )
+            {
+                umin = std::min( umin, v.texCoord[ 0 ] );
+                umax = std::max( umax, v.texCoord[ 0 ] );
+            }
+
+            // Which way is the camera, horizontally? Used to decide each plane's
+            // texture handedness, below.
+            const float tocam_x = float( r_viewpoint.Pos.X ) * ONEGAMEUNIT_IN_METERS - px;
+            const float tocam_y = float( r_viewpoint.Pos.Y ) * ONEGAMEUNIT_IN_METERS - py;
+
+            for( int k = 0; k < planes; k++ )
+            {
+                const float yaw = RT_SpriteShadowYaw( k, planes );
+                const float c   = std::cos( yaw );
+                const float s   = std::sin( yaw );
+
+                // Yaw about the world up axis (index 2 -- map Z), pitch dropped
+                // on purpose: a shadow caster should stand upright, and the
+                // billboard's pitch exists only to face the camera.
+                auto proxymesh      = mesh;
+                proxymesh.transform = RgTransform{ {
+                    { c, -s, 0, px },
+                    { s, c, 0, py },
+                    { 0, 0, 1, pz },
+                } };
+
+                // Its own object, and it must never be mistaken for the actor:
+                // no export, no mesh name -- a name would make RTGL1 look for a
+                // gltf replacement and could substitute a model for a shadow.
+                proxymesh.uniqueObjectID = mesh.uniqueObjectID + RT_SPRITE_SHADOW_ID_BASE +
+                                           uint64_t( k );
+                proxymesh.isExportable = false;
+                proxymesh.pMeshName    = nullptr;
+                proxymesh.flags        = 0;
+
+                // MIRRORING. A textured plane's shadow is the mirror image of
+                // its mask when the light is on the plane's far side -- so with
+                // world-fixed planes, roughly half of them cast a FLIPPED
+                // silhouette, and the union reads as the actor plus his mirror
+                // twin (screen/invertedSpriteShadow.png). It appeared on some
+                // enemies of a class and not others because which planes present
+                // their back depends on each actor's bearing to the light, not
+                // on the actor's type.
+                //
+                // A single quad cannot be correct for lights on both sides, so
+                // the tie is broken toward the CAMERA: gzdoom already chose this
+                // sprite's rotation frame for the camera's viewing angle, so
+                // "un-mirrored as seen from the camera side" is the only
+                // definition of correct available -- and it is the right one for
+                // the flashlight, which is at the camera and is where this was
+                // reported. The plane's +normal is its un-mirrored face (local X
+                // is the facing axis, which for the real billboard points at the
+                // viewer), so flip U whenever that normal points away.
+                //
+                // The choice can flip as the player circles an actor. It flips
+                // exactly when a plane turns edge-on to the camera, which is
+                // also when that plane's own shadow is at its thinnest, so the
+                // change lands where it is least visible.
+                const bool mirror = ( c * tocam_x + s * tocam_y ) < 0.f;
+
+                s_proxyverts.assign( s_basev.begin(), s_basev.end() );
+                if( mirror )
+                {
+                    for( auto& v : s_proxyverts )
+                    {
+                        v.texCoord[ 0 ] = ( umin + umax ) - v.texCoord[ 0 ];
+                    }
+                }
+
+                auto proxyprim = prim;
+                proxyprim.pNext       = nullptr;
+                proxyprim.pVertices   = s_proxyverts.data();
+                proxyprim.vertexCount = uint32_t( s_proxyverts.size() );
+                // Keep ONLY the alpha test (the silhouette) and add shadow-only.
+                // Everything else -- water, lava, emissive overrides, decal,
+                // no-shadow -- is about how a surface LOOKS, and this surface is
+                // never seen.
+                proxyprim.flags = ( prim.flags & RG_MESH_PRIMITIVE_ALPHA_TESTED ) |
+                                  RG_MESH_PRIMITIVE_SHADOW_ONLY;
+                proxyprim.emissive = 0.f;
+
+                RgResult pr = rt.rgUploadMeshPrimitive( &proxymesh, &proxyprim );
+                RG_CHECK( pr );
+            }
+        }
+    }
 }

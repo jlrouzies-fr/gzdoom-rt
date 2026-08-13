@@ -270,6 +270,31 @@ struct FRtState
     //
 
     FVector3 m_lastthingposition{};
+    // The actor's collision radius in MAP UNITS, for sizing sprite shadow
+    // proxies (rt_sprite_shadow). A sprite's quad is the art's canvas, which is
+    // far wider than the body it draws -- a marine is 64 units of sprite around
+    // a radius of 17 -- so a proxy built at the quad's width sticks out toward
+    // the viewer about twice as far as the actor really does. 0 = unknown.
+    float    m_lastthingradius{ 0.f };
+
+    // Is this actor a STANDING body, or something lying on the floor?
+    //
+    // A shadow proxy is an assumption about 3D shape, and "a vertical cross"
+    // only fits an upright thing. A corpse, a gib or a dropped weapon is
+    // essentially a flat plate on the ground; standing four vertical cards up
+    // through one gives radiating shadow spokes that swing with the light
+    // (screen/shadowissue.png). The distinction is in the playsim, not in the
+    // renderer -- gzdoom quarters an actor's Height when it dies, and pickups
+    // are short by definition -- so it is decided in hw_sprites.cpp where the
+    // actor is in hand, and the renderer only honours the answer.
+    bool     m_lastthingupright{ false };
+
+    // Is it a LIVE MONSTER? The narrowest scope for shadow proxies, and the
+    // shipping one (rt_sprite_shadow_scope 1). Everything the proxies were built
+    // for is here -- an enemy is the thing the eye tracks and the thing whose
+    // missing shadow reads as "pasted onto the floor" -- while every class the
+    // assumption fits badly is outside it by definition.
+    bool     m_lastthinglivemonster{ false };
     uint8_t  m_berserkBlend{ 0 };
 
     int m_lightlevel{ 255 };
