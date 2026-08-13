@@ -23,6 +23,14 @@ namespace
 // 0x00007FFF'FFFFFFFF, so bit 62 is unreachable by construction.
 constexpr uint64_t RT_SPRITE_SHADOW_ID_BASE = 0x4000000000000000ull;
 
+// Doom64-RT: sprite contact occlusion -- see rt_sprite_ao.
+//
+// Same reasoning as RT_SPRITE_SHADOW_ID_BASE, one bit up. Bits 61 and 62 are
+// both beyond the 0x00007FFF'FFFFFFFF ceiling on a Windows x64 user pointer, and
+// a proxy ID is (actor + bit62 + k<=3), so bit 61 cannot be reached by carrying
+// out of one.
+constexpr uint64_t RT_SPRITE_AO_ID_BASE = 0x2000000000000000ull;
+
 // Fixed WORLD yaw for proxy plane k of n, spread evenly over 180 degrees.
 // World-fixed rather than camera-relative is the entire point: the visible
 // billboard turns to face the viewer, so the shadow it casts changes shape as
@@ -1358,6 +1366,355 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
 
                 RgResult pr = rt.rgUploadMeshPrimitive( &proxymesh, &proxyprim );
                 RG_CHECK( pr );
+            }
+        }
+    }
+
+    // Doom64-RT: CONTACT OCCLUSION under sprites -- rt_sprite_ao.
+    //
+    // The other half of "a sprite is a board". rt_sprite_shadow above answers
+    // WHERE THE LIGHT IS, and does it as well as a board can; this answers
+    // WHETHER SOMETHING IS TOUCHING THIS FLOOR, which has the same answer from
+    // every direction. That is why it is not redundant with the proxies: the one
+    // case a cast shadow cannot survive is a light lying IN the caster's plane,
+    // which projects it to a line -- and an occlusion term does not care.
+    //
+    // It also reaches the classes the proxies deliberately refuse. A vertical
+    // cross through a corpse, a gib or a dropped shotgun is the wrong shape and
+    // threw radiating spokes (screen/shadowissue.png), so those were left on
+    // their stock billboard, i.e. with effectively nothing. A blob on the floor
+    // is the RIGHT shape for a flat thing lying on a floor, which is the whole
+    // reason a second mechanism is worth having rather than more planes.
+    //
+    // Implemented as an RTGL1 DECAL, so it is rasterized into the G-buffer and
+    // multiplied into the floor's ALBEDO. Three properties fall out of that and
+    // all three are wanted:
+    //   - it scales with the light already on that floor. Full strength in a lit
+    //     room, invisible in a dark one -- an occlusion term should never be able
+    //     to make a surface darker than unlit.
+    //   - it is never in the acceleration structure, so it cannot be hit by a
+    //     reflection, refraction or bounce ray, and cannot occlude anything.
+    //   - the decal shader discards where the underlying traced surface is more
+    //     than 5 cm from the quad, so the blob stops at a step edge instead of
+    //     smearing over it, and is hidden behind the sprite's own pixels for
+    //     free. Its cost is that at long range the checkerboard neighbour it
+    //     compares against can fall outside that 5 cm; rt_sprite_ao_dist is the
+    //     bound, and it is tighter than the proxies' for that reason.
+    if( cvar::rt_sprite_ao && !isUI && isSpriteBillboard && rtstate.m_lastthinghasfloor &&
+        rtstate.m_lastthingradius > 0.f &&
+        // ONE blob per actor per frame. A sprite with a fog layer draws twice
+        // (hw_sprites.cpp), and a decal is alpha-blended with no ID collision
+        // check to save us -- two passes would square the darkening. The
+        // primitive index resets per actor, so index 0 is the first draw.
+        prim.primitiveIndexInMesh == 0 &&
+        // Never the viewer's own body: it is drawn at the eye, and a blob under
+        // it is a dark ring painted around the camera.
+        !rtstate.is< RtPrim::FirstPerson >() && !rtstate.is< RtPrim::FirstPersonViewer >() )
+    {
+        // SCOPE. 1 restricts the blob to the things rt_sprite_shadow skips.
+        // Keyed on the CLASS (live monster), not on emitShadowProxies, so that a
+        // monster which merely fell outside the proxies' distance cap does not
+        // silently change category at 40 m.
+        const bool scopeok =
+            ( int{ cvar::rt_sprite_ao_scope } < 1 ) || !rtstate.m_lastthinglivemonster;
+
+        // HEIGHT FADE. This is the honest part: contact occlusion asserts the
+        // thing is ON the floor. A lost soul crossing a room, a cacodemon, a
+        // rocket in flight and a jumping player must not carry a disc under
+        // them, so it fades out over rt_sprite_ao_fade map units and is gone.
+        const float fadeover = std::max( 1.f, float{ cvar::rt_sprite_ao_fade } );
+        const float above    = rtstate.m_lastthingposition.Z - rtstate.m_lastthingfloorz;
+        const float fade     = std::clamp( 1.f - above / fadeover, 0.f, 1.f );
+
+        const float strength = std::clamp( float{ cvar::rt_sprite_ao_strength }, 0.f, 1.f );
+        const float alpha    = strength * fade;
+
+        // Distance cap, in metres, against the actor's own position. Matches the
+        // proxies' cull in form so the two read the same way.
+        const float aox = rtstate.m_lastthingposition.X * ONEGAMEUNIT_IN_METERS;
+        const float aoy = rtstate.m_lastthingposition.Y * ONEGAMEUNIT_IN_METERS;
+        const float aoz = rtstate.m_lastthingfloorz * ONEGAMEUNIT_IN_METERS;
+
+        const bool inrange = [ & ]() -> bool {
+            const float maxdist = std::max( 0.f, float{ cvar::rt_sprite_ao_dist } );
+            if( maxdist <= 0.f )
+            {
+                return true;
+            }
+            const float dx = aox - float( r_viewpoint.Pos.X ) * ONEGAMEUNIT_IN_METERS;
+            const float dy = aoy - float( r_viewpoint.Pos.Y ) * ONEGAMEUNIT_IN_METERS;
+            const float dz = aoz - float( r_viewpoint.Pos.Z ) * ONEGAMEUNIT_IN_METERS;
+            return std::sqrt( dx * dx + dy * dy + dz * dz ) <= maxdist;
+        }();
+
+        // 1/255 -- below this the blob is quantised to nothing by the packed
+        // vertex colour anyway, so building the fan would be pure cost.
+        if( scopeok && inrange && alpha > ( 1.f / 255.f ) )
+        {
+            const int segs = std::clamp( int{ cvar::rt_sprite_ao_segments }, 3, 64 );
+
+            // THE FOOTPRINT'S SHAPE, and it cannot be one shape for every class.
+            //
+            // A circle at the collision radius is right for something STANDING:
+            // a body's footprint really is roughly round, it is camera-
+            // independent, and the collision radius is the honest measure of it
+            // (the sprite's canvas is about twice the body -- the marine drawn on
+            // 64 units around a radius of 17 -- which is the trap
+            // rt_sprite_shadow_width exists for).
+            //
+            // It is wrong for something LYING DOWN. A shotgun on the floor is a
+            // long thin object, and its occlusion should be a long thin smudge
+            // along the barrel, not a disc the size of its pickup radius. For
+            // these the art is the only description of the shape there is, so the
+            // footprint is fitted to the SPRITE QUAD: the along-axis is the
+            // quad's real horizontal extent in world space, which turns with the
+            // billboard, exactly as the drawn object does.
+            //
+            // The across-axis is NOT measurable. A single billboard cannot say
+            // how deep an object is -- that is the same wall docs/rt-voxel-models
+            // hits -- so it is a declared assumption, rt_sprite_ao_aspect, and
+            // not a derived number pretending to be one.
+            const bool useellipse =
+                ( int{ cvar::rt_sprite_ao_shape } >= 2 ) ||
+                ( int{ cvar::rt_sprite_ao_shape } == 1 && !rtstate.m_lastthingupright );
+
+            // Along-axis direction (world, horizontal) and half-length.
+            float axu = 1.f, axv = 0.f;
+            float rada = rtstate.m_lastthingradius * ONEGAMEUNIT_IN_METERS *
+                         std::max( 0.f, float{ cvar::rt_sprite_ao_radius } );
+            float radb = rada;
+
+            if( useellipse && verts.size() >= 3 )
+            {
+                // The quad's horizontal footprint, from its own world vertices.
+                //
+                // Derived by principal axis rather than by "take local Y", which
+                // is the mistake §5.3 spent three fixes on: the local verts carry
+                // a baked (camera_yaw - actor_yaw) offset, so no local axis means
+                // what its name says. A 2x2 covariance of the world XY positions
+                // has no such assumption in it and is correct for a pitched quad
+                // too, where the up axis also has a horizontal component.
+                float cx = 0.f, cy = 0.f;
+                float wx[ 4 ], wy[ 4 ];
+                const int n = int( std::min< size_t >( verts.size(), 4 ) );
+
+                for( int i = 0; i < n; i++ )
+                {
+                    const float lx = verts[ i ].position[ 0 ];
+                    const float ly = verts[ i ].position[ 1 ];
+                    const float lz = verts[ i ].position[ 2 ];
+
+                    wx[ i ] = transform.matrix[ 0 ][ 0 ] * lx + transform.matrix[ 0 ][ 1 ] * ly +
+                              transform.matrix[ 0 ][ 2 ] * lz + transform.matrix[ 0 ][ 3 ];
+                    wy[ i ] = transform.matrix[ 1 ][ 0 ] * lx + transform.matrix[ 1 ][ 1 ] * ly +
+                              transform.matrix[ 1 ][ 2 ] * lz + transform.matrix[ 1 ][ 3 ];
+                    cx += wx[ i ];
+                    cy += wy[ i ];
+                }
+                cx /= float( n );
+                cy /= float( n );
+
+                float sxx = 0.f, syy = 0.f, sxy = 0.f;
+                for( int i = 0; i < n; i++ )
+                {
+                    const float dx = wx[ i ] - cx;
+                    const float dy = wy[ i ] - cy;
+                    sxx += dx * dx;
+                    syy += dy * dy;
+                    sxy += dx * dy;
+                }
+
+                if( sxx + syy > 1e-9f )
+                {
+                    const float th = 0.5f * std::atan2( 2.f * sxy, sxx - syy );
+                    axu            = std::cos( th );
+                    axv            = std::sin( th );
+
+                    float half = 0.f;
+                    for( int i = 0; i < n; i++ )
+                    {
+                        half = std::max(
+                            half, std::fabs( ( wx[ i ] - cx ) * axu + ( wy[ i ] - cy ) * axv ) );
+                    }
+
+                    if( half > 1e-5f )
+                    {
+                        rada = half * std::max( 0.f, float{ cvar::rt_sprite_ao_fit } );
+                        radb = rada * std::clamp( float{ cvar::rt_sprite_ao_aspect }, 0.05f, 1.f );
+                    }
+                }
+            }
+
+            const float rad = std::max( rada, radb );
+
+            if( rada > 1e-4f && radb > 1e-4f )
+            {
+                // A TRIANGLE FAN, not a textured quad: the radial falloff is
+                // then vertex-colour interpolation and the feature ships no art
+                // and touches no material. Centre alpha = strength, rim alpha =
+                // 0. RGB is black, so the blend (src-alpha over) leaves the
+                // floor at albedo * (1 - a) -- a pure multiplicative darkening.
+                // With no texture bound RTGL1 samples its 1x1 white, which is
+                // exactly the identity this needs.
+                static std::vector< RgPrimitiveVertex > s_aoverts;
+                static std::vector< uint32_t >          s_aoidx;
+
+                s_aoverts.clear();
+                s_aoidx.clear();
+                s_aoverts.reserve( size_t( segs ) + 1 );
+                s_aoidx.reserve( size_t( segs ) * 3 );
+
+                const RgNormalPacked32 up      = rt.rgUtilPackNormal( 0.f, 0.f, 1.f );
+                const RgColor4DPacked32 cCentre = rt.rgUtilPackColorFloat4D( 0.f, 0.f, 0.f, alpha );
+                const RgColor4DPacked32 cRim    = rt.rgUtilPackColorFloat4D( 0.f, 0.f, 0.f, 0.f );
+
+                // WORLD-SPACE VERTICES, IDENTITY TRANSFORM -- and this is the one
+                // thing about the decal path that cannot be guessed from the API.
+                //
+                // RsDecal.vert writes `outWorldPos = position`, the raw LOCAL
+                // vertex, while it transforms only gl_Position (the push constant
+                // is model*viewProj premultiplied in RasterizedPushConst). So the
+                // fragment shader's 5 cm test compares an UNTRANSFORMED position
+                // against a true world-space surface position.
+                //
+                // Put the blob's location in the transform, as the shadow proxies
+                // above legitimately do, and the quad rasterizes in exactly the
+                // right place on screen and then discards every single fragment,
+                // because its "world" position is still near the origin and the
+                // floor is tens of metres away. Nothing is drawn and nothing is
+                // logged -- which is precisely what was reported the first time
+                // this shipped.
+                //
+                // gzdoom's own wall decals (hw_decal.cpp) never hit this because
+                // world geometry takes the MakeTransform branch, where the
+                // transform is identity and local already IS world. A sprite is
+                // the only caller that arrives here with a real transform.
+                // 1 mm of bias keeps the quad off the floor's exact plane
+                // without spending the 5 cm test's budget.
+                constexpr float AoBias = 0.001f;
+                const float     aoz_w  = aoz + AoBias;
+
+                s_aoverts.push_back( RgPrimitiveVertex{
+                    .position     = { aox, aoy, aoz_w },
+                    .normalPacked = up,
+                    .texCoord     = { 0.5f, 0.5f },
+                    .color        = cCentre,
+                } );
+
+                // The rim, swept as an ELLIPSE on the two world-horizontal axes:
+                // (axu, axv) is the along-axis, and its perpendicular (-axv, axu)
+                // is the across-axis. For the circle case rada == radb and the
+                // axes cancel out, so one loop serves both shapes.
+                for( int k = 0; k < segs; k++ )
+                {
+                    const float a  = ( 2.f * 3.14159265f * float( k ) ) / float( segs );
+                    const float cx = std::cos( a );
+                    const float sy = std::sin( a );
+
+                    const float ox = cx * rada;
+                    const float oy = sy * radb;
+
+                    s_aoverts.push_back( RgPrimitiveVertex{
+                        .position     = { aox + ox * axu - oy * axv,
+                                          aoy + ox * axv + oy * axu,
+                                          aoz_w },
+                        .normalPacked = up,
+                        .texCoord     = { 0.5f + 0.5f * cx, 0.5f + 0.5f * sy },
+                        .color        = cRim,
+                    } );
+
+                    s_aoidx.push_back( 0 );
+                    s_aoidx.push_back( uint32_t( 1 + k ) );
+                    s_aoidx.push_back( uint32_t( 1 + ( ( k + 1 ) % segs ) ) );
+                }
+
+                // IDENTITY, to match the world-space verts above. Anything else
+                // would move the quad on screen without moving the position the
+                // 5 cm test reads, i.e. it would silently discard the blob.
+                auto aomesh      = mesh;
+                aomesh.transform = RgTransform{ {
+                    { 1, 0, 0, 0 },
+                    { 0, 1, 0, 0 },
+                    { 0, 0, 1, 0 },
+                } };
+                aomesh.uniqueObjectID = mesh.uniqueObjectID + RT_SPRITE_AO_ID_BASE;
+                aomesh.isExportable   = false;
+                // No mesh name, or RTGL1 would look for a gltf replacement and
+                // could substitute a model for the actor's shadow blob.
+                aomesh.pMeshName            = nullptr;
+                aomesh.flags                = 0;
+                aomesh.localLightsIntensity = 0.f;
+
+                auto aoprim                 = prim;
+                aoprim.pNext                = nullptr;
+                aoprim.flags                = RG_MESH_PRIMITIVE_DECAL;
+                aoprim.primitiveIndexInMesh = 0;
+                aoprim.pVertices            = s_aoverts.data();
+                aoprim.vertexCount          = uint32_t( s_aoverts.size() );
+                aoprim.pIndices             = s_aoidx.data();
+                aoprim.indexCount           = uint32_t( s_aoidx.size() );
+                // No texture: the falloff is in the vertex colours. Keeping the
+                // sprite's own texture here would stamp the enemy's artwork onto
+                // the floor.
+                aoprim.pTextureName = nullptr;
+                aoprim.textureFrame = 0;
+                aoprim.color        = RG_PACKED_COLOR_WHITE;
+                // The decal shader falls back to ldrEmis = albedo when no
+                // emissive texture is bound, so a non-zero emissive here would
+                // make the blob GLOW black-on-nothing and, worse, write screen
+                // emission where there should be none.
+                aoprim.emissive = 0.f;
+                // Unused on a decal (only WORLD_CLASSIC consumes it), but it is
+                // a float and inheriting the sprite's would be noise.
+                aoprim.classicLight = 1.f;
+
+                RgResult ar = rt.rgUploadMeshPrimitive( &aomesh, &aoprim );
+                RG_CHECK( ar );
+
+                // rt_sprite_ao_debug -- see the cvar. This counts UPLOADS, which
+                // is the only number that separates "the gates rejected it" from
+                // "it was drawn and every fragment was discarded". The two look
+                // identical on screen and the second one is what shipped first.
+                if( cvar::rt_sprite_ao_debug )
+                {
+                    static int      s_frames  = 0;
+                    static int      s_emitted = 0;
+                    static float    s_nearest = -1.f;
+                    static float    s_np[ 3 ] = { 0, 0, 0 };
+                    static float    s_nr = 0.f, s_na = 0.f;
+
+                    const float dx = aox - float( r_viewpoint.Pos.X ) * ONEGAMEUNIT_IN_METERS;
+                    const float dy = aoy - float( r_viewpoint.Pos.Y ) * ONEGAMEUNIT_IN_METERS;
+                    const float dz = aoz - float( r_viewpoint.Pos.Z ) * ONEGAMEUNIT_IN_METERS;
+                    const float d  = std::sqrt( dx * dx + dy * dy + dz * dz );
+
+                    s_emitted++;
+                    if( s_nearest < 0.f || d < s_nearest )
+                    {
+                        s_nearest = d;
+                        s_np[ 0 ] = aox;
+                        s_np[ 1 ] = aoy;
+                        s_np[ 2 ] = aoz_w;
+                        s_nr      = rad;
+                        s_na      = alpha;
+                    }
+
+                    if( ++s_frames >= 60 )
+                    {
+                        Printf( "rt_sprite_ao: %d emitted over 60 draws; nearest at "
+                                "%.2f m, pos=(%.2f %.2f %.2f) r=%.2f a=%.2f\n",
+                                s_emitted,
+                                s_nearest,
+                                s_np[ 0 ],
+                                s_np[ 1 ],
+                                s_np[ 2 ],
+                                s_nr,
+                                s_na );
+                        s_frames  = 0;
+                        s_emitted = 0;
+                        s_nearest = -1.f;
+                    }
+                }
             }
         }
     }

@@ -170,12 +170,28 @@ void HWSprite::DrawSprite(HWDrawInfo *di, FRenderState &state, bool translucent)
 		// frames where it is folding onto the floor.
 		rtstate.m_lastthinglivemonster =
 			rtstate.m_lastthingupright && (actor->flags3 & MF3_ISMONSTER) && actor->health > 0;
+
+		// Doom64-RT: the surface this thing is standing on, for rt_sprite_ao.
+		//
+		// actor->floorz is the playsim's own answer -- the height of the floor
+		// the actor is over, already resolved across 3D floors and sloped
+		// sectors. Deriving it in the renderer would mean re-tracing what the
+		// playsim traced last tic, and getting it wrong puts the blob inside
+		// the floor (where the decal's 5 cm surface test discards it) or
+		// hanging in the air.
+		//
+		// The player's own viewer sprite is excluded: it is drawn at the eye
+		// and a blob under it would be a dark ring painted around the camera.
+		rtstate.m_lastthingfloorz = float(actor->floorz);
+		rtstate.m_lastthinghasfloor = !isfirstpersonviewer;
 	}
 	else
 	{
 		rtstate.m_lastthingradius = 0.f;
 		rtstate.m_lastthingupright = false;
 		rtstate.m_lastthinglivemonster = false;
+		rtstate.m_lastthingfloorz = 0.f;
+		rtstate.m_lastthinghasfloor = false;
 	}
 #endif
 

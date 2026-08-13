@@ -295,6 +295,20 @@ struct FRtState
     // missing shadow reads as "pasted onto the floor" -- while every class the
     // assumption fits badly is outside it by definition.
     bool     m_lastthinglivemonster{ false };
+
+    // The FLOOR under this actor, in MAP UNITS (actor->floorz), for the contact
+    // occlusion blob (rt_sprite_ao). Not derivable in the renderer: the sprite's
+    // own quad starts at the actor's Z, which is where the actor IS, not what it
+    // is standing on -- a flying enemy, a jumping one and an item on a ledge all
+    // need the surface below them, and only the playsim has traced it.
+    //
+    // NaN-free sentinel: equal to m_lastthingposition.Z when unknown, so the
+    // blob's height fade reads "on the ground" rather than "infinitely high".
+    float    m_lastthingfloorz{ 0.f };
+    // Is this thing a candidate for a contact blob at all? False for the player's
+    // own viewer sprite and for particles, which have no floor to sit on.
+    bool     m_lastthinghasfloor{ false };
+
     uint8_t  m_berserkBlend{ 0 };
 
     int m_lightlevel{ 255 };
