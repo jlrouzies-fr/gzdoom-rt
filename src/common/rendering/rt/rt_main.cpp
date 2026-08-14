@@ -2659,6 +2659,11 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .densityCurve            = fog.on ? fog.curve : 1.f,
         .occludeEmission = bool{ cvar::rt_volume_occlude_emis },
         .ditherRadius  = std::max( 0.f, float{ cvar::rt_volume_dither } ),
+        // The DEPTH half, on its own leash. -sampleHemisphere() is one-sided in
+        // z, so this radius is a mean shortfall of 0.33 * radius froxels against
+        // a prefix-summed volume rather than a symmetric jitter -- it deletes the
+        // far end of every column instead of blurring it. See rt_volume_dither_z.
+        .ditherRadiusZ = std::max( 0.f, float{ cvar::rt_volume_dither_z } ),
         .spatialBlur   = std::clamp( float{ cvar::rt_volume_blur }, 0.f, 1.f ),
         .lightNearFade = fog.on ? std::max( 0.f, float{ cvar::rt_fog_light_near } ) : 0.f,
     };

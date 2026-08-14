@@ -143,13 +143,44 @@ struct SoloBulbTex
 {
     const char* name;
     double      ox, oy;
+    // VERY SMALL solo bulbs get their own intensity and radius. SFLATDE's bulb is a
+    // fraction of SFLATAS's, and before this split they shared rt_solo_lamp_*: tuning
+    // the ceiling PANE up to carry a room dragged the little recessed bulb up with it,
+    // which is the same coupling rt_ceiling_bulb_gain exists to avoid on the lattice
+    // side. A separate pair means each can be set for what it actually depicts.
+    //
+    // NOT named `small`: Windows' rpcndr.h does `#define small char`, so a member or
+    // parameter called that expands to `bool char` and the error you get names the
+    // TYPE rather than the macro ("'bool' followed by 'char' is illegal"), which
+    // reads like a syntax error somewhere else entirely.
+    bool        verySmall;
 };
 static constexpr SoloBulbTex SoloBulbTextures[] = {
-    { "SFLATDE", 31.5, 30.5 },
-    { "SFLATCH", 32.0, 32.0 },
+    { "SFLATDE", 31.5, 30.5, /*verySmall*/ true },
+    { "SFLATCH", 32.0, 32.0, /*verySmall*/ false },
+    // SFLATAS, the ceiling lamp pane, joined this list on 2026-08-14 together with
+    // the art change that made it a single-bulb flat (tools/make_single_bulb_flat.py,
+    // README "Art changes"). It is NOT a solo bulb in the original game -- it paints
+    // 2x2 -- so the table entry and the texture override have to ship together. With
+    // the stock four-bulb art this puts one light where three bulbs are painted; with
+    // the new art and the old table, three lights land on blank plate.
+    //
+    // WHY IT MOVED. The lattice gives one light per painted bulb, and those bulbs are
+    // 32 map units apart -- one metre. The cage grating's openings are about half
+    // that, and once the lights are further apart than the occluder's features each
+    // one lays down an offset copy of the mesh shadow that fills the previous one's
+    // gaps, so the pattern cancels. Measured in the shadow lab (MAP93): 1 light casts
+    // crisp diamonds, 4 casts once the intensity beats the bounce, 16 casts nothing at
+    // any source radius. See docs/rt-lighting-practices.md 34.
+    //
+    // Exact strcmp is safe for this one: SFLATAS has no animated frames in
+    // D64RTR_v15.WAD and no ANIMDEFS entry, so there is no sibling to fall through to
+    // the prefix-matching lattice below and flicker against it. Check that again
+    // before adding a texture here that does animate.
+    { "SFLATAS", 32.0, 32.0, /*verySmall*/ false },
 };
 
-static bool RT_FindSoloBulbOffset( const char* name, double& ox, double& oy )
+static bool RT_FindSoloBulbOffset( const char* name, double& ox, double& oy, bool& verySmall )
 {
     if( !cvar::rt_solo_lamps || !name || !*name )
     {
@@ -159,8 +190,9 @@ static bool RT_FindSoloBulbOffset( const char* name, double& ox, double& oy )
     {
         if( strcmp( name, t.name ) == 0 )
         {
-            ox = t.ox;
-            oy = t.oy;
+            ox    = t.ox;
+            oy    = t.oy;
+            verySmall = t.verySmall;
             return true;
         }
     }
@@ -1038,7 +1070,8 @@ void RT_UploadCeilingEdgeLamps()
                         float{ cvar::rt_faux_lamp_intensity } > 0.01f &&
                         int{ cvar::rt_faux_lamp_max } > 0;
     const bool  soloOn    = bool{ cvar::rt_solo_lamps } &&
-                        float{ cvar::rt_solo_lamp_intensity } > 0.01f &&
+                        ( float{ cvar::rt_solo_lamp_intensity } > 0.01f ||
+                          float{ cvar::rt_solo_small_intensity } > 0.01f ) &&
                         int{ cvar::rt_solo_lamp_max } > 0;
     if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn && !soloOn )
     {
@@ -1139,6 +1172,8 @@ void RT_UploadCeilingEdgeLamps()
     const float fauxIntensity = std::max( 0.f, float{ cvar::rt_faux_lamp_intensity } );
     const float soloIntensity = std::max( 0.f, float{ cvar::rt_solo_lamp_intensity } );
     const float soloRadius    = std::max( 0.01f, float{ cvar::rt_solo_lamp_radius } );
+    const float soloSmallI    = std::max( 0.f, float{ cvar::rt_solo_small_intensity } );
+    const float soloSmallR    = std::max( 0.01f, float{ cvar::rt_solo_small_radius } );
     const float soloZofs      = float{ cvar::rt_solo_lamp_zofs };
 
     // Shared by both the faux (4x4 grid) and solo (single bulb) placements: walk whole
@@ -1177,6 +1212,23 @@ void RT_UploadCeilingEdgeLamps()
             return;
         }
 
+        // FLAT PANNING. A Doom flat anchors to the WORLD ORIGIN, not to the sector, so
+        // a lamp pane's painted bulbs land wherever `x mod 64` happens to fall and a
+        // wall can cut one in half. The cure is to pan the flat per sector so the bulbs
+        // sit clear of the edges (tools/pan_lamp_panes.py) -- and the moment anything
+        // does that, the LIGHTS have to move with the art or they end up on blank
+        // plate. This walk read raw world coordinates and ignored panning entirely, so
+        // every panned lamp flat in the game already had its lights in the wrong place;
+        // it was simply never noticed, because Retribution pans almost none of them.
+        //
+        // Sign: GZDoom's xform offsets SHIFT THE TEXTURE, and the lattice offsets are
+        // texture-space, so they add. Verified in the shadow lab rather than reasoned
+        // about -- pan the pane and watch the painted bulb and the lit spot move
+        // together (tools/build_shadow_lab.py --pan).
+        const int    planeIdx = isCeiling ? sector_t::ceiling : sector_t::floor;
+        const double panX     = sector.GetXOffset( planeIdx );
+        const double panY     = sector.GetYOffset( planeIdx );
+
         // Walk whole tiles across the sector's bounding box, then the lattice within each.
         const long tile0x = long( std::floor( minx / TileSize ) );
         const long tile1x = long( std::floor( maxx / TileSize ) );
@@ -1202,8 +1254,8 @@ void RT_UploadCeilingEdgeLamps()
                             continue;
                         }
 
-                        const double px = double( tx ) * TileSize + offX[ ox ];
-                        const double py = double( ty ) * TileSize + offY[ oy ];
+                        const double px = double( tx ) * TileSize + offX[ ox ] + panX;
+                        const double py = double( ty ) * TileSize + offY[ oy ] + panY;
                         if( px < minx || px > maxx || py < miny || py > maxy )
                         {
                             continue;
@@ -1253,11 +1305,16 @@ void RT_UploadCeilingEdgeLamps()
     };
 
     auto addSoloLattice = [ & ]( const sector_t& sector, unsigned secIndex, bool isCeiling,
-                                 double ox, double oy ) {
+                                 double ox, double oy, bool verySmall ) {
         const double offX[ 1 ] = { ox };
         const double offY[ 1 ] = { oy };
+        // Same placement and the same budget -- only how bright and how tight the
+        // source is differs, because that is the only thing the size of the painted
+        // bulb should change.
         addLattice( sector, secIndex, isCeiling, offX, offY, 1, soloStrideN, RT_SoloLampHue(),
-                    soloIntensity, soloRadius, soloZofs, SoloLatticeId_Base, soloCand );
+                    verySmall ? soloSmallI : soloIntensity,
+                    verySmall ? soloSmallR : soloRadius,
+                    soloZofs, SoloLatticeId_Base, soloCand );
     };
 
 
@@ -1282,7 +1339,8 @@ void RT_UploadCeilingEdgeLamps()
         const char* ftname = gtex->GetName().GetChars();
         const bool  isFaux = RT_IsFauxLampFlat( ftname );
         double      soloOx = 0.0, soloOy = 0.0;
-        const bool  isSolo = !isFaux && RT_FindSoloBulbOffset( ftname, soloOx, soloOy );
+        bool        soloVerySmall = false;
+        const bool  isSolo = !isFaux && RT_FindSoloBulbOffset( ftname, soloOx, soloOy, soloVerySmall );
         if( !isFaux && !isSolo && !RT_IsCeilingInsetLampTexture( ftname ) )
         {
             continue;
@@ -1311,7 +1369,7 @@ void RT_UploadCeilingEdgeLamps()
             // Same lattice mechanism as faux, same reason (the perimeter walk has no
             // relation to where the art puts its one bulb per tile), just one point per
             // tile instead of sixteen.
-            addSoloLattice( sector, i, isCeiling, soloOx, soloOy );
+            addSoloLattice( sector, i, isCeiling, soloOx, soloOy, soloVerySmall );
             continue;
         }
         ( isCeiling ? lampCeils : lampFloors )++;
