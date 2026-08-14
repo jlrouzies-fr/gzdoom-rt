@@ -2626,6 +2626,43 @@
                                                 "CONE rather than a frustum on purpose: a frustum would be tighter and would "
                                                 "also delete every mote a mirror or water surface reflects, which is a visible "
                                                 "hole. -1 draws the whole sphere." )
+    RT_CVAR( rt_dust_shaft_floor,       0.08f,  "HOW VISIBLE DUST IS WHERE THERE IS NO SHAFT. An albedo multiplier: 1 keeps "
+                                                "the ungated behaviour (a mote is as visible anywhere the room lights it), 0 "
+                                                "makes dust exist only inside beams. 0.08 is 'barely'.\n"
+                                                "\n"
+                                                "It exists because traced lighting alone does NOT give the effect. A room "
+                                                "ambient and its bounced GI reach everywhere, so every mote in the level picks "
+                                                "up something and the field reads as an even haze of specks rather than as air "
+                                                "made visible by a beam. Asked for from play as 'mostly visible under shafts, "
+                                                "barely when not'.\n"
+                                                "\n"
+                                                "The weight it interpolates against is PROXIMITY x PHASE against the shaft "
+                                                "light list, never a radiance -- how much light actually arrives is the "
+                                                "tracer answer and computing it here as well would count it twice. Visibility "
+                                                "stays the tracer job too: a mote near a lamp but behind a wall gets a high "
+                                                "weight and no light, so it is still black." )
+    RT_CVAR( rt_dust_shaft_radius,      2.5f,   "METRES: how far from a shaft light a mote still counts as being in the beam. "
+                                                "The weight is 1 at the light and 1/2 here, and it is deliberately NOT inverse "
+                                                "square -- that is the light own falloff and the path tracer has already "
+                                                "applied it. This is asking 'is this mote in the beam', not 'how bright is the "
+                                                "lamp'. Wider reads as a soft cone, tighter as a hard column." )
+    RT_CVAR( rt_dust_moon,              true,   "let the MOON count as a shaft source for the dust gate. It is the strongest "
+                                                "shaft in the game and a mote in one should blaze.\n"
+                                                "\n"
+                                                "Gated on the mote sector having a SKY CEILING, and that is not fussiness: a "
+                                                "directional light has no position, so proximity says nothing about it and the "
+                                                "phase term alone would brighten every mote in the level whenever the player "
+                                                "faces the moon bearing -- including in a sealed room the moon cannot reach. "
+                                                "The sky test is cheap, exact for the case that matters, and wrong only under "
+                                                "an overhang, where the tracer finds the mote shadowed and blacks it anyway." )
+    RT_CVAR( rt_dust_moon_weight,       1.0f,   "how hard the moon drives the dust gate relative to a lamp, before the phase "
+                                                "term. Above 1 makes a moonbeam the dustiest thing in the level, which is "
+                                                "usually what is wanted outdoors; 0 is the same as rt_dust_moon 0." )
+    RT_CVAR( rt_dust_clip,              true,   "skip motes that are not in open air -- outside every sector, or inside a "
+                                                "floor or ceiling. Not a look change: a mote inside solid geometry is lit by "
+                                                "nothing and therefore already invisible. What it buys is the quads not being "
+                                                "BUILT, so the same rt_dust_max buys more dust where dust can be seen. It also "
+                                                "supplies the sector rt_dust_moon needs, so the two share one lookup." )
     RT_CVAR( rt_dust_debug,             false,  "periodic console line: motes drawn, the derived cell spacing, and the mote "
                                                 "size at the near and far ends. The cell spacing is the useful one -- it says "
                                                 "whether rt_dust_density or rt_dust_max is deciding the look." )
@@ -2939,10 +2976,15 @@
                                                 "hold full brightness for a while instead of dimming from birth. That "
                                                 "is what is wanted here: a discharge is flat-out bright and then "
                                                 "gone." )
-    RT_CVAR( rt_arc_max,                32,     "how many impact MARKS may be alive at once. A mark is a whole filigree, "
-                                                "not a particle, so this is a much smaller number than rt_spark_max and "
-                                                "means something different: 32 simultaneous plasma scars, each drawing "
-                                                "its own branches. Oldest-out." )
+    RT_CVAR( rt_arc_max,                64,     "how many impact MARKS may be alive at once. A mark is a whole filigree "
+                                                "plus a scorch, not a particle, so this is a much smaller number than "
+                                                "rt_spark_max and means something different: 64 simultaneous plasma "
+                                                "scars. Oldest-out.\n"
+                                                "SIZED FOR THE BURN, NOT THE ARCS. The filigree lasts half a second, so "
+                                                "a dozen slots would always have covered it; the scorch lasts 25 s, and "
+                                                "a plasma rifle held down puts marks up at about ten a second. This is "
+                                                "therefore the knob that decides HOW FAR BACK the wall damage goes, and "
+                                                "it is the pool ceiling that bounds it rather than the lifetime." )
     RT_CVAR( rt_arc_branches,           9,      "polylines radiating from the impact point. THE COUNT IS A LEGIBILITY "
                                                 "KNOB, not a density one: too few and the mark reads as a scratch, too "
                                                 "many and the kinks average out into a disc and it reads as a splat. "
@@ -2971,7 +3013,58 @@
                                                 "branch stays out for several frames rather than strobing every one -- "
                                                 "at 100+ fps a per-frame coin flip averages back out to 'always on, "
                                                 "slightly dimmer', which is not a flicker at all." )
-    RT_CVAR( rt_arc_churn,              18.f,   "TIMES PER SECOND THE BRANCHES RE-PATH. This is what makes an arc read "
+    // THE BURN. A separate, far longer-lived thing from the filigree: the arcs
+    // are the event, this is the evidence it happened. Same mark, two clocks.
+    RT_CVAR( rt_arc_burn,               1,      "leave a BLACK SCORCH on the wall where a projectile hit, lasting long "
+                                                "after the arcs have gone. A real DECAL (RG_MESH_PRIMITIVE_DECAL), not "
+                                                "an additive quad: it DARKENS the wall's albedo instead of adding to "
+                                                "the screen, which is the only way a burn can read as burnt rather than "
+                                                "as a grey sticker glowing faintly in the dark.\n"
+                                                "Built on exactly the machinery of the settled-debris AO blob -- fan "
+                                                "with an opaque centre and a zero-alpha rim, one primitive per mark, "
+                                                "emissive pinned at 0. Every trap on that path applies here and is "
+                                                "already solved there; see docs/sprite-shadows-and-ao.md." )
+    RT_CVAR( rt_arc_burn_life,          25.f,   "seconds a scorch lasts. FIFTY TIMES the arcs' own life, and that ratio "
+                                                "is the point -- a mark that fades with the discharge is part of the "
+                                                "effect, one that is still there when you walk back through the room is "
+                                                "a record of what you did. Bounded by rt_arc_max rather than by taste: "
+                                                "the oldest scorch is evicted when the pool fills, so a long firefight "
+                                                "keeps the most recent ones." )
+    RT_CVAR( rt_arc_burn_radius,        0.28f,  "metres, radius of the scorch. Comfortably WIDER than the core "
+                                                "(rt_arc_core) and narrower than the branches reach: a burn the size of "
+                                                "the whole filigree reads as a stain, and one the size of the core "
+                                                "reads as a bullet hole." )
+    RT_CVAR( rt_arc_burn_strength,      0.72f,  "fraction of the wall's albedo removed at the scorch centre, falling to "
+                                                "0 at the rim. NOT the darkness you see: it multiplies albedo, so what "
+                                                "reaches the screen is already scaled by the room's light. Reasoning "
+                                                "about it as a screen overlay under-shoots -- that is exactly how "
+                                                "rt_sprite_ao_strength shipped a third too low." )
+    RT_CVAR( rt_arc_burn_dist,          25.f,   "metres beyond which a scorch is not uploaded. NOT a cost cull: "
+                                                "RsDecal.frag keeps a fragment only where the traced surface under it "
+                                                "is within 5 cm of the quad, and at range a pixel footprint on a "
+                                                "grazing wall exceeds that -- which is what produced the AO 'lines' "
+                                                "reaching away from settled debris. Same limit, same reason, and "
+                                                "rt_spark_debris_ao_dist bounds it at 20 for the same geometry." )
+    RT_CVAR( rt_arc_burn_max,           48,     "how many scorches may be uploaded per frame, nearest-first. Each is "
+                                                "its own decal primitive -- batching them into one is what produced "
+                                                "the AO 'lines', and the sprite AO this is modelled on uploads one per "
+                                                "actor -- so this is an upload count, not a memory bound." )
+    RT_CVAR( rt_arc_creep,              6,      "DETACHED arcs skittering across the wall AROUND the mark, on top of the "
+                                                "branches radiating out of it. They are not connected to the core and "
+                                                "they JUMP TO A NEW PLACE on every re-path, so they are what makes the "
+                                                "churn legible on the SURFACE rather than only in the silhouette.\n"
+                                                "Without them the mark reads as 'a ball plus arcs' -- a fixed centre "
+                                                "with a fixed number of legs, whose movement all happens along those "
+                                                "legs. Real surface discharge re-strikes in places it was not a moment "
+                                                "ago, and it is that arriving-somewhere-else that says the wall is "
+                                                "energised rather than merely decorated. Set 0 for the radial-only "
+                                                "look (arm: arc-nocreep)." )
+    RT_CVAR( rt_arc_creep_reach,        1.35f,  "how far the creepers wander from the impact, as a multiple of "
+                                                "rt_arc_reach. ABOVE 1 on purpose: they are meant to land outside the "
+                                                "radial branches, which is what widens the affected area. Too high and "
+                                                "they read as unrelated sparks somewhere else on the wall rather than "
+                                                "as part of this impact." )
+    RT_CVAR( rt_arc_churn,              24.f,   "TIMES PER SECOND THE BRANCHES RE-PATH. This is what makes an arc read "
                                                 "as ALIVE rather than as a drawn shape that fades: real electricity "
                                                 "never holds one path, it re-strikes constantly between the same two "
                                                 "anchors. Every kink angle and segment length is hashed against a "
@@ -2983,7 +3076,7 @@
                                                 "and the eye integrates white noise back into a smooth blur -- the "
                                                 "motion disappears exactly when you add the most of it. The same trap "
                                                 "as rt_arc_flicker_rate. 0 = a frozen skeleton (arm: arc-still)." )
-    RT_CVAR( rt_arc_wander,             0.35f,  "how far a branch's ROOT ANGLE drifts between re-paths, radians. Small "
+    RT_CVAR( rt_arc_wander,             0.45f,  "how far a branch's ROOT ANGLE drifts between re-paths, radians. Small "
                                                 "on purpose: at 0 the branches re-path but always leave the core in the "
                                                 "same nine directions, which reads as mechanical; too high and they "
                                                 "swap places around the ring between frames, which reads as noise "
@@ -3015,12 +3108,14 @@
     RT_CVAR( rt_arc_light_intensity,    220.f,  "intensity of a projectile impact's flash. Brighter than the spark "
                                                 "flash's 180: a plasma discharge is a bigger event than a bullet, and "
                                                 "blue and green both read dimmer than amber at equal intensity." )
-    RT_CVAR( rt_arc_light_life,         0.22f,  "seconds the projectile impact flash lasts. DELIBERATELY SHORTER than "
-                                                "rt_arc_life, which is the one place the two are meant to disagree: the "
-                                                "flash is the moment of impact and the mark is what is left afterwards, "
-                                                "so the light going out while the filigree is still crackling on the "
-                                                "wall is the effect working, not a mismatch. A flash that outlived its "
-                                                "own mark would read as a lamp." )
+    RT_CVAR( rt_arc_light_life,         0.5f,   "seconds the projectile impact flash lasts. MATCHED TO rt_arc_life so "
+                                                "the mark stays lit until it has completely faded.\n"
+                                                "This shipped at 0.22 on the argument that the flash is the moment of "
+                                                "impact and the mark is what is left over, so the two SHOULD come "
+                                                "apart. In play that was simply wrong: the light going out at 44% of "
+                                                "the mark's life reads as the effect being cut short, not as two "
+                                                "distinct events. Raise it above rt_arc_life and it starts reading as "
+                                                "a lamp instead; equal is the value that works." )
     RT_CVAR( rt_arc_probe,              1.6f,   "multiplier on the projectile's own Speed, in map units, for the surface "
                                                 "probe. A dead projectile's last recorded position is up to a tic of "
                                                 "flight short of what it hit, and a FIXED distance cannot serve both: "

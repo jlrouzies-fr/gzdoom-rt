@@ -56,8 +56,15 @@ struct ShaftOffer
     RtShaftSrc src;
 };
 
-std::vector< ShaftOffer >  g_offers;
-std::vector< uint64_t >    g_selected;
+std::vector< ShaftOffer >    g_offers;
+std::vector< uint64_t >      g_selected;
+std::vector< RtShaftLight >  g_selectedFull;
+
+// The selection runs ONCE a frame and both callers get the same answer. It has
+// two now -- the volumetric params and the dust -- and running it twice would
+// not merely cost twice, it would append to g_selected a second time and hand
+// RTGL1 a list with every id in it twice.
+bool g_selectedThisFrame = false;
 
 // Per-family offer counts, for rt_volume_shaft_verbose. Kept separately from
 // g_offers.size() because the whole question this feature keeps raising is
@@ -75,6 +82,8 @@ void RT_ShaftLightsBegin()
 {
     g_offers.clear();
     g_selected.clear();
+    g_selectedFull.clear();
+    g_selectedThisFrame = false;
     g_offered[ 0 ] = g_offered[ 1 ] = g_offered[ 2 ] = 0;
 }
 
@@ -125,8 +134,20 @@ void RT_ShaftLightOffer( uint64_t   id,
     g_offers.push_back( ShaftOffer{ id, mapX, mapY, mapZ, intensity, d2, src } );
 }
 
+const std::vector< RtShaftLight >& RT_ShaftLightsSelected()
+{
+    RT_ShaftLightsSelect();
+    return g_selectedFull;
+}
+
 const std::vector< uint64_t >& RT_ShaftLightsSelect()
 {
+    if( g_selectedThisFrame )
+    {
+        return g_selected;
+    }
+    g_selectedThisFrame = true;
+
     if( !cvar::rt_volume_shafts || g_offers.empty() )
     {
         return g_selected;
@@ -253,9 +274,11 @@ const std::vector< uint64_t >& RT_ShaftLightsSelect()
     }
 
     g_selected.reserve( kept.size() );
+    g_selectedFull.reserve( kept.size() );
     for( const ShaftOffer* k : kept )
     {
         g_selected.push_back( k->id );
+        g_selectedFull.push_back( RtShaftLight{ k->id, k->x, k->y, k->z, k->intensity } );
     }
 
     if( cvar::rt_volume_shaft_verbose )

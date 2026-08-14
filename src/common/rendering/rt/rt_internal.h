@@ -577,7 +577,23 @@ void RT_ShaftLightOffer( uint64_t     id,
                          RtShaftSrc   src );
 // Nearest-first, deduped, culled and capped. Valid until the next
 // RT_ShaftLightsBegin(); empty when the feature is off.
+//
+// SAFE TO CALL TWICE IN A FRAME: the selection runs once and is cached, because
+// two callers need it -- the volumetric params and the dust, which wants to know
+// where the shafts are so it can be visible in them and barely anywhere else.
 const std::vector< uint64_t >& RT_ShaftLightsSelect();
+
+// The same set, with POSITIONS -- in MAP UNITS, the space the fixture walks
+// offered them in. For anything that needs to ask "is this point in a shaft"
+// without a ray: the answer is a proximity weight, and visibility is somebody
+// else's problem (for dust, the path tracer's).
+struct RtShaftLight
+{
+    uint64_t id;
+    double   x, y, z;
+    float    intensity;
+};
+const std::vector< RtShaftLight >& RT_ShaftLightsSelected();
 
 // rt_dust.cpp -- dust motes in the air. One batched primitive per frame, and no
 // state at all: the motes live on a hashed lattice fixed in WORLD space and this
