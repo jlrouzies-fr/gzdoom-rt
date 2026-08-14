@@ -360,6 +360,10 @@ constexpr uint64_t RT_SPARK_MESH_ID = 0x1000000000000000ull;
 // one of the two uploads.
 constexpr uint64_t RT_DEBRIS_MESH_ID = 0x1000000000000001ull;
 
+// The contact-occlusion decals. Well clear of the per-class debris IDs above,
+// which run to RT_DEBRIS_MESH_ID + SurfKind::COUNT.
+constexpr uint64_t RT_DEBRIS_AO_MESH_ID = 0x1000000000000100ull;
+
 struct Spark
 {
     FVector3  pos;      // METRES
@@ -417,6 +421,10 @@ int s_dbgSpawned  = 0;
 int s_dbgQuads    = 0;
 int s_dbgLights   = 0;
 int s_dbgTraces   = 0;
+// AO blobs UPLOADED this frame. The distinction docs/sprite-shadows-and-ao.md
+// insists on: emitted > 0 with nothing on screen is a POSITION bug, not a
+// strength one, and the two are indistinguishable without this.
+int s_dbgAo       = 0;
 
 // Per-CLASS hit counters, so the ladder can report what the impacts were landing
 // on rather than only how many there were. Reset with the rest of the counters.
@@ -467,6 +475,20 @@ float rnd11()
 float rnd01()
 {
     return 0.5f * ( rnd11() + 1.f );
+}
+
+// A stable per-particle random. Keyed on the spark's own `sid`, so a chip's
+// shape and orientation are fixed for its whole life instead of reshuffling
+// every frame -- which at a 20 s lifetime would be the most visible thing debris
+// does. Not the sim RNG: that advances per spawn and cannot be re-queried.
+float hash01( uint32_t x )
+{
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return float( x & 0xFFFFu ) / 65535.f;
 }
 
 // Snap to a world-space grid. WORLD space, never screen space: screen-space
@@ -743,7 +765,41 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         if( SurfThrowsDebris( pSurf ) )
         {
             const uint32_t avg = AverageTextureColor( hitTexture );
-            pCol.Format( "  avg=#%06X%s", avg, avg == 0x808080u ? " (FALLBACK/grey)" : "" );
+
+            // BOTH ENDS OF THE COLOUR PATH, because the raw mean alone was
+            // misleading: it looked plausible (#574D4B is warm) while producing
+            // grey chips, and only comparing it against the corrected value
+            // shows how little chroma the mean actually carries.
+            float ar = ( ( avg >> 16 ) & 0xFF ) / 255.f;
+            float ag = ( ( avg >> 8 ) & 0xFF ) / 255.f;
+            float ab = ( avg & 0xFF ) / 255.f;
+            {
+                const float sat  = std::max( 0.f, float{ cvar::rt_spark_debris_sat } );
+                const float grey = 0.2126f * ar + 0.7152f * ag + 0.0722f * ab;
+                ar = std::clamp( grey + ( ar - grey ) * sat, 0.f, 1.f );
+                ag = std::clamp( grey + ( ag - grey ) * sat, 0.f, 1.f );
+                ab = std::clamp( grey + ( ab - grey ) * sat, 0.f, 1.f );
+                const float lum = 0.2126f * ar + 0.7152f * ag + 0.0722f * ab;
+                if( lum > 0.01f )
+                {
+                    const float tgt = std::clamp(
+                        float{ cvar::rt_spark_debris_albedo } * ProfileFor( pSurf ).albedo,
+                        0.02f,
+                        1.f );
+                    const float k = tgt / lum;
+                    ar            = std::min( 1.f, ar * k );
+                    ag            = std::min( 1.f, ag * k );
+                    ab            = std::min( 1.f, ab * k );
+                }
+            }
+            const uint32_t fin = ( uint32_t( ar * 255.f + 0.5f ) << 16 ) |
+                                 ( uint32_t( ag * 255.f + 0.5f ) << 8 ) |
+                                 uint32_t( ab * 255.f + 0.5f );
+
+            pCol.Format( "  avg=#%06X -> chip=#%06X%s",
+                         avg,
+                         fin,
+                         avg == 0x808080u ? " (avg is the FALLBACK/grey)" : "" );
         }
 
         Printf( "rt_spark surface: '%s' -> %s%s   (%s)%s\n",
@@ -977,7 +1033,33 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         sp.settled = false;
         sp.kind    = kind;
         sp.surf    = surf;
-        sp.nrm     = normal;
+        // SCATTERED NORMALS, and this is the fix for debris going white.
+        //
+        // Every chip used to carry the SURFACE normal it came off. The
+        // flashlight is at the camera and chips fly toward the camera, so
+        // N.L was near 1 for every chip at once -- maximum irradiance,
+        // identically, on all of them. Reported as "in path traced view,
+        // especially with flashlight, they become white". Real rubble has its
+        // normals pointing everywhere, so only some fragments catch a light.
+        //
+        // Still BIASED toward the surface normal rather than fully random: a
+        // chip did just come off that wall, and a uniform sphere of normals
+        // makes half of them face into it.
+        if( dbr )
+        {
+            const FVector3 rnd3{ rnd11(), rnd11(), rnd11() };
+            FVector3       n = normal * 0.35f + rnd3 * 0.65f;
+            if( n.LengthSquared() < 1e-6f )
+            {
+                n = normal;
+            }
+            n.MakeUnit();
+            sp.nrm = n;
+        }
+        else
+        {
+            sp.nrm = normal;
+        }
         // Rubble randomness. Debris also gets a much wider SIZE spread than a
         // spark (below): chips off a wall come in obviously different sizes,
         // and uniform ones read as manufactured.
@@ -1343,14 +1425,109 @@ struct QuadBatch
     std::vector< uint32_t >          idx;
 };
 
-QuadBatch s_batchSpark;
-// ONE BATCH PER CLASS. They could all share one while every profile has a null
-// texture, but the moment a class names a sprite (blood, say) a batch can only
-// carry one material -- so the split is here from the start rather than being a
-// refactor the first textured class forces. At most COUNT+1 uploads a frame.
-QuadBatch s_batchDebris[ int( SurfKind::COUNT ) ];
+// CONTACT OCCLUSION UNDER SETTLED DEBRIS.
+//
+// Straight from docs/sprite-shadows-and-ao.md 2: a chip lying on a floor has the
+// same problem a dropped weapon does -- with no contact term it reads as
+// hovering, and a cast shadow cannot supply one because a flat fragment lit from
+// a shallow angle throws almost nothing. A blob answers "is something touching
+// this floor", which has the same answer from every light direction.
+//
+// Everything about the technique is that document's, and the three rules it
+// bought the hard way are all load-bearing here too:
+//   - WORLD-SPACE VERTS, IDENTITY TRANSFORM. RsDecal.vert writes
+//     outWorldPos = position untransformed while transforming gl_Position, so a
+//     transform makes the quad rasterize in the right place and then discard
+//     100% of its fragments -- invisible, silently, with nothing logged.
+//   - A SINGLE FAN per blob, centre at alpha and rim at 0. A high-alpha ring
+//     creases along every quad diagonal; more segments does not fix it.
+//   - emissive = 0, or the decal shader falls back to ldrEmis = albedo and the
+//     blob GLOWS.
+QuadBatch s_batchDebrisAo;
 
-void UploadBatch( const QuadBatch& b, uint64_t meshId, bool additive, const char* texName )
+QuadBatch s_batchSpark;
+
+// DEBRIS IS BATCHED BY COLOUR, and that is forced by how RTGL1 shades traced
+// geometry rather than by anything about the effect.
+//
+// HitInfo.inl, for a surface with no albedo texture:
+//
+//     // if no albedo textures, use primary color
+//     dst = mix( unpackUintColor( layerColors[0] ).rgb, dst, float( hasAnyAlbedoTexture ) );
+//
+// `layerColors[0]` is the PER-PRIMITIVE colour (RgMeshPrimitiveInfo::color).
+// The per-VERTEX colour is stored -- ShVertex has a `color` field -- but the
+// traced albedo path never reads it. So while debris was rasterized the vertex
+// colours worked, and the moment it became traced geometry every chip took
+// prim.color, which was RG_PACKED_COLOR_WHITE. Chips were white BY CONSTRUCTION,
+// and no value of rt_spark_debris_albedo or _tint could move them; the arm that
+// proved it set albedo to 0.02 and they stayed white.
+//
+// A primitive therefore carries exactly one albedo, so per-particle colour needs
+// either one primitive per particle (thousands of uploads and BLAS entries) or
+// particles grouped by colour. Grouping is far cheaper and the quantisation is
+// invisible: chip colour comes from a handful of wall textures and a slow age
+// ramp, so a room in play uses a few buckets out of the cap.
+//
+// The key carries the CLASS as well as the colour, so a class that later names a
+// sprite in its profile still gets its own primitive and its own material.
+constexpr int RT_DEBRIS_BUCKETS = 32;
+
+struct DebrisBucket
+{
+    uint32_t  key;   // class << 12 | quantised rgb
+    uint32_t  rgb;   // the representative colour uploaded as prim.color
+    SurfKind  kind;
+    QuadBatch batch;
+};
+
+DebrisBucket s_debrisBuckets[ RT_DEBRIS_BUCKETS ];
+int          s_debrisBucketCount = 0;
+
+// 4 bits a channel. Finer buckets do not buy anything the eye can see here and
+// only raise the chance of hitting the cap in a room with many wall textures.
+uint32_t DebrisColorKey( SurfKind k, float r, float g, float b )
+{
+    const uint32_t qr = uint32_t( std::clamp( r, 0.f, 1.f ) * 15.f + 0.5f );
+    const uint32_t qg = uint32_t( std::clamp( g, 0.f, 1.f ) * 15.f + 0.5f );
+    const uint32_t qb = uint32_t( std::clamp( b, 0.f, 1.f ) * 15.f + 0.5f );
+    return ( uint32_t( k ) << 12 ) | ( qr << 8 ) | ( qg << 4 ) | qb;
+}
+
+QuadBatch& DebrisBucketFor( SurfKind k, float r, float g, float b )
+{
+    const uint32_t key = DebrisColorKey( k, r, g, b );
+
+    for( int i = 0; i < s_debrisBucketCount; i++ )
+    {
+        if( s_debrisBuckets[ i ].key == key )
+        {
+            return s_debrisBuckets[ i ].batch;
+        }
+    }
+
+    if( s_debrisBucketCount < RT_DEBRIS_BUCKETS )
+    {
+        DebrisBucket& nb = s_debrisBuckets[ s_debrisBucketCount++ ];
+        nb.key           = key;
+        nb.kind          = k;
+        nb.rgb           = ( uint32_t( std::clamp( r, 0.f, 1.f ) * 255.f + 0.5f ) << 16 ) |
+                 ( uint32_t( std::clamp( g, 0.f, 1.f ) * 255.f + 0.5f ) << 8 ) |
+                 uint32_t( std::clamp( b, 0.f, 1.f ) * 255.f + 0.5f );
+        return nb.batch;
+    }
+
+    // Cap reached: fold into the first bucket rather than dropping the chip. A
+    // slightly wrong colour is a far smaller artefact than debris vanishing,
+    // and the cap is generous enough that this should not be reachable in play.
+    return s_debrisBuckets[ 0 ].batch;
+}
+
+void UploadBatch( const QuadBatch&  b,
+                  uint64_t          meshId,
+                  bool              additive,
+                  const char*       texName,
+                  RgColor4DPacked32 primColor )
 {
     if( b.verts.empty() )
     {
@@ -1374,14 +1551,43 @@ void UploadBatch( const QuadBatch& b, uint64_t meshId, bool additive, const char
                 { 0, 1, 0, 0 },
                 { 0, 0, 1, 0 },
             } },
-        .isExportable         = false,
-        .animationTime        = 0.f,
-        .localLightsIntensity = 0.f,
+        .isExportable  = false,
+        .animationTime = 0.f,
+        // 1.0 IS THE DOCUMENTED DEFAULT (RgMeshInfo, "Default: 1.0"). This was
+        // 0, which is a real value meaning "take no local light" -- harmless for
+        // the additive spark batch, which is unlit either way, but wrong for
+        // debris the moment it became traced geometry.
+        .localLightsIntensity = 1.f,
+    };
+
+    // EXPLICIT PBR FOR THE TRACED BATCH, and it is worth being clear about what
+    // this does and does not fix.
+    //
+    // Asked from play, after debris still blew out under the flashlight: "should
+    // we give them light absorption property? like PBR?" Right instinct, wrong
+    // lever -- and the header says why. RgMeshPrimitivePBREXT documents its
+    // defaults as roughness 1.0 and metallic 0.0 when no roughness-metallic
+    // texture is present, which debris has none of. So it was ALREADY the
+    // roughest, least shiny dielectric available, and a rough diffuse surface
+    // returns albedo * E / pi whatever its roughness. Nothing here can reduce a
+    // whiteout; that is albedo against irradiance, and rt_spark_debris_albedo is
+    // the only surface-side term in it.
+    //
+    // Set anyway, because "no material at all" leaves what ASManager falls back
+    // to unstated, and an unstated default is exactly the kind of thing that has
+    // cost this project days. Stating it costs one struct and removes the doubt.
+    auto pbr = RgMeshPrimitivePBREXT{
+        .sType           = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_PBR_EXT,
+        .pNext           = nullptr,
+        .metallicDefault = std::clamp( float{ cvar::rt_spark_debris_metal }, 0.f, 1.f ),
+        .roughnessDefault = std::clamp( float{ cvar::rt_spark_debris_rough }, 0.f, 1.f ),
     };
 
     auto prim = RgMeshPrimitiveInfo{
         .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
-        .pNext = nullptr,
+        // Only the traced batch takes it: the additive spark overlay is not
+        // shaded at all, so a PBR block on it would be noise.
+        .pNext = additive ? nullptr : &pbr,
         // THE EMISSIVE BELOW IS WHAT PICKS THE BLEND MODE, and that is the entire
         // reason these are two batches rather than one.
         // RasterizedDataCollector::ToPipelineState turns a TRANSLUCENT primitive
@@ -1415,8 +1621,74 @@ void UploadBatch( const QuadBatch& b, uint64_t meshId, bool additive, const char
         // vertex colour. That is what makes a spark one flat pixel.
         .pTextureName = texName,
         .textureFrame = 0,
-        .color        = RG_PACKED_COLOR_WHITE,
+        // THE ALBEDO, for the traced batch -- see the note above the buckets.
+        // Alpha must stay 1: below 0.98 RTGL1 demotes the primitive to the
+        // rasterized overlay and it goes fullbright again.
+        .color        = primColor,
         .emissive     = additive ? 1.f : 0.f,
+        .classicLight = 1.f,
+    };
+
+    RgResult r = rt.rgUploadMeshPrimitive( &mesh, &prim );
+    RG_CHECK( r );
+}
+
+// ONE PRIMITIVE PER BLOB, and that is not an arbitrary choice -- it is the only
+// structural difference between this and the sprite AO in rt_draw.cpp, which
+// ships and is correct.
+//
+// The first version batched every blob into a single decal primitive. It is
+// geometrically sound -- no triangle spans two blobs, and each fan interpolates
+// only its own vertices -- and it still produced AO "lines" reaching away from
+// the chips, through a distance cull that ruled out the documented 5 cm
+// grazing-floor limit. Rather than keep reasoning about what a batched decal
+// means to RTGL1's rasterizer, this matches the shape of the implementation that
+// is known to work: one fan, one primitive, one uniqueObjectID, exactly as
+// docs/sprite-shadows-and-ao.md describes.
+//
+// The cost is bounded by rt_spark_debris_ao_max rather than by the pool, because
+// only SETTLED chips get a blob and a decal upload is not free.
+void UploadAoBlob( const QuadBatch& b, uint64_t meshId )
+{
+    if( b.verts.empty() )
+    {
+        return;
+    }
+
+    auto mesh = RgMeshInfo{
+        .sType          = RG_STRUCTURE_TYPE_MESH_INFO,
+        .pNext          = nullptr,
+        .flags          = 0,
+        .uniqueObjectID = meshId,
+        .pMeshName      = nullptr,
+        // IDENTITY -- see the note above the batch.
+        .transform =
+            RgTransform{ {
+                { 1, 0, 0, 0 },
+                { 0, 1, 0, 0 },
+                { 0, 0, 1, 0 },
+            } },
+        .isExportable         = false,
+        .animationTime        = 0.f,
+        .localLightsIntensity = 0.f,
+    };
+
+    auto prim = RgMeshPrimitiveInfo{
+        .sType                = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
+        .pNext                = nullptr,
+        .flags                = RG_MESH_PRIMITIVE_DECAL,
+        .primitiveIndexInMesh = 0,
+        .pVertices            = b.verts.data(),
+        .vertexCount          = uint32_t( b.verts.size() ),
+        .pIndices             = b.idx.data(),
+        .indexCount           = uint32_t( b.idx.size() ),
+        // No texture: the falloff is vertex-colour interpolation, so this ships
+        // no art and touches no material. RTGL1 samples its 1x1 white.
+        .pTextureName = nullptr,
+        .textureFrame = 0,
+        .color        = RG_PACKED_COLOR_WHITE,
+        // MUST be 0 -- see the note above the batch.
+        .emissive     = 0.f,
         .classicLight = 1.f,
     };
 
@@ -1461,14 +1733,27 @@ void RT_DrawSparks()
     const float grid   = pixel ? std::max( 0.f, float{ cvar::rt_spark_grid } ) : 0.f;
     const float streak = std::max( 1.f, float{ cvar::rt_spark_streak } );
     const float bright = std::max( 0.f, float{ cvar::rt_spark_bright } );
+    const float aoStrength =
+        std::clamp( float{ cvar::rt_spark_debris_ao_strength }, 0.f, 1.f );
+    const float aoFar = std::max( 0.f, float{ cvar::rt_spark_debris_ao_dist } );
+    const int   aoMax = std::max( 0, int{ cvar::rt_spark_debris_ao_max } );
+    int         aoEmitted = 0;
+    s_dbgAo               = 0;
+
+    const FVector3 eyeM{ float( vp.Pos.X ) * ONEGAMEUNIT_IN_METERS,
+                         float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
+                         float( vp.Pos.Z ) * ONEGAMEUNIT_IN_METERS };
 
     s_batchSpark.verts.clear();
     s_batchSpark.idx.clear();
-    for( QuadBatch& b : s_batchDebris )
+    s_batchDebrisAo.verts.clear();
+    s_batchDebrisAo.idx.clear();
+    for( int i = 0; i < s_debrisBucketCount; i++ )
     {
-        b.verts.clear();
-        b.idx.clear();
+        s_debrisBuckets[ i ].batch.verts.clear();
+        s_debrisBuckets[ i ].batch.idx.clear();
     }
+    s_debrisBucketCount = 0;
 
     const RgNormalPacked32 nrm = rt.rgUtilPackNormal( -fwd.X, -fwd.Y, -fwd.Z );
 
@@ -1478,9 +1763,6 @@ void RT_DrawSparks()
 
         const bool           isDbr = ( sp.kind == SparkKind::Debris );
         const DebrisProfile& pr    = ProfileFor( sp.surf );
-
-        QuadBatch& batch =
-            isDbr ? s_batchDebris[ int( sp.surf ) % int( SurfKind::COUNT ) ] : s_batchSpark;
 
         const uint32_t* ramp  = isDbr ? pr.ramp : RT_SPARK_RAMP;
         const int       rampN = isDbr ? pr.rampN : RT_SPARK_RAMP_N;
@@ -1549,6 +1831,33 @@ void RT_DrawSparks()
                 float tr = ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f;
                 float tg = ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f;
                 float tb = ( sp.baseRgb & 0xFF ) / 255.f;
+
+                // A WHOLE-TEXTURE MEAN IS A CHROMA KILLER, and this is the step
+                // that makes the tint visible at all.
+                //
+                // Measured from play: a wall that reads plainly beige/orange
+                // averages to #574D4B, and another to #504848. Those ARE warm --
+                // R > G > B in both -- but by about 14%, because beige highlights
+                // average against shadow and black gaps and collapse toward
+                // neutral. Normalising luminance then scales all three channels
+                // equally and preserves that 14%, so the chip came out grey and
+                // the whole feature read as not working. The sampling was right
+                // and the DATA was too dull to use.
+                //
+                // gzdoom hits the same wall: FGameTexture::GetGlowColor passes
+                // maxout=153 to averageColor precisely because a plain mean is
+                // too dull to be a glow colour. It solves it by normalising the
+                // PEAK channel, which also blows the brightness out -- wrong for
+                // an albedo. So the chroma is expanded about the pixel's own
+                // luminance instead, which leaves brightness for the step below
+                // to pin and keeps the two corrections independent.
+                {
+                    const float sat = std::max( 0.f, float{ cvar::rt_spark_debris_sat } );
+                    const float grey = 0.2126f * tr + 0.7152f * tg + 0.0722f * tb;
+                    tr = std::clamp( grey + ( tr - grey ) * sat, 0.f, 1.f );
+                    tg = std::clamp( grey + ( tg - grey ) * sat, 0.f, 1.f );
+                    tb = std::clamp( grey + ( tb - grey ) * sat, 0.f, 1.f );
+                }
 
                 const float lum = 0.2126f * tr + 0.7152f * tg + 0.0722f * tb;
                 if( lum > 0.01f )
@@ -1706,6 +2015,10 @@ void RT_DrawSparks()
         // rasterized (see the shrink above). rt_spark_bright is meaningless for
         // it either way -- that knob widens an ADDITIVE peak, and debris does
         // not add.
+        // The bucket can only be chosen once the colour is resolved, since the
+        // colour IS the batch key.
+        QuadBatch& batch = isDbr ? DebrisBucketFor( sp.surf, r, g, b ) : s_batchSpark;
+
         const float fade = 1.f - t * t;
         const float a    = isDbr ? 1.f : std::clamp( bright * fade, 0.f, 1.f );
 
@@ -1719,44 +2032,161 @@ void RT_DrawSparks()
 
         const uint32_t base = uint32_t( batch.verts.size() );
 
-        const FVector3 corner[ 4 ] = {
-            c - ex - ey,
-            c + ex - ey,
-            c + ex + ey,
-            c - ex + ey,
-        };
-        const float uv[ 4 ][ 2 ] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
-
-        for( int k = 0; k < 4; k++ )
+        if( isDbr && !pixel )
         {
-            batch.verts.push_back( RgPrimitiveVertex{
-                .position     = { corner[ k ].X, corner[ k ].Y, corner[ k ].Z },
-                .normalPacked = vnrm,
-                .texCoord     = { uv[ k ][ 0 ], uv[ k ][ 1 ] },
-                .color        = col,
-            } );
+            // AN IRREGULAR POLYGON, NOT A QUAD. A rotated rectangle is still a
+            // rectangle: reported as debris looking like "just a pixel /
+            // square" even with the tumble and the aspect ratio already in.
+            // Rubble is angular and no two pieces are the same outline, so each
+            // chip gets 5-7 corners at its own radii -- stable for its life,
+            // because the radii are hashed from its `sid` rather than drawn
+            // fresh each frame.
+            //
+            // Fan-triangulated from corner 0, which is safe here because the
+            // polygon is convex by construction (radii vary, angles are
+            // monotonic). Pixelated style keeps the quad below: there a chip is
+            // deliberately one square texel.
+            const int n = 5 + int( hash01( sp.sid * 2654435761u ) * 3.f );
+
+            for( int k = 0; k < n; k++ )
+            {
+                const float a =
+                    ( 2.f * rt_pi() * float( k ) ) / float( n ) +
+                    hash01( sp.sid * 40503u + uint32_t( k ) ) * ( rt_pi() / float( n ) );
+                const float rr = 0.55f + 0.45f * hash01( sp.sid * 22695477u + uint32_t( k ) * 7919u );
+
+                const FVector3 pv = c + ex * ( std::cos( a ) * rr ) + ey * ( std::sin( a ) * rr );
+
+                batch.verts.push_back( RgPrimitiveVertex{
+                    .position     = { pv.X, pv.Y, pv.Z },
+                    .normalPacked = vnrm,
+                    .texCoord     = { 0.5f + 0.5f * std::cos( a ), 0.5f + 0.5f * std::sin( a ) },
+                    .color        = col,
+                } );
+            }
+
+            for( int k = 1; k + 1 < n; k++ )
+            {
+                batch.idx.push_back( base );
+                batch.idx.push_back( base + uint32_t( k ) );
+                batch.idx.push_back( base + uint32_t( k + 1 ) );
+            }
+        }
+        else
+        {
+            const FVector3 corner[ 4 ] = {
+                c - ex - ey,
+                c + ex - ey,
+                c + ex + ey,
+                c - ex + ey,
+            };
+            const float uv[ 4 ][ 2 ] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+
+            for( int k = 0; k < 4; k++ )
+            {
+                batch.verts.push_back( RgPrimitiveVertex{
+                    .position     = { corner[ k ].X, corner[ k ].Y, corner[ k ].Z },
+                    .normalPacked = vnrm,
+                    .texCoord     = { uv[ k ][ 0 ], uv[ k ][ 1 ] },
+                    .color        = col,
+                } );
+            }
+
+            batch.idx.push_back( base + 0 );
+            batch.idx.push_back( base + 1 );
+            batch.idx.push_back( base + 2 );
+            batch.idx.push_back( base + 0 );
+            batch.idx.push_back( base + 2 );
+            batch.idx.push_back( base + 3 );
         }
 
-        batch.idx.push_back( base + 0 );
-        batch.idx.push_back( base + 1 );
-        batch.idx.push_back( base + 2 );
-        batch.idx.push_back( base + 0 );
-        batch.idx.push_back( base + 2 );
-        batch.idx.push_back( base + 3 );
-
         s_dbgQuads++;
+
+        // The blob, for debris that has come to REST on a floor. Only settled
+        // pieces get one: the whole claim of contact occlusion is that the thing
+        // is touching this floor, and a chip still bouncing is not. That is the
+        // same honesty rt_sprite_ao_fade buys for a flying enemy.
+        // AO IS DISTANCE-CULLED, and not for cost. RsDecal.frag keeps a fragment
+        // only where the traced surface under it is within 5 cm of the quad, and
+        // at range a pixel footprint on a grazing floor exceeds that -- the same
+        // limit docs/sprite-shadows-and-ao.md bounds with rt_sprite_ao_dist 30
+        // and the game's own bullet-hole decals share. Reported here as AO
+        // "lines" reaching away from the chips.
+        const bool aoNear = ( sp.pos - eyeM ).LengthSquared() <= aoFar * aoFar;
+
+        if( isDbr && sp.settled && aoNear && aoStrength > 0.f && cvar::rt_spark_debris_ao &&
+            aoEmitted < aoMax )
+        {
+            const float rad = edge * std::max( 0.f, float{ cvar::rt_spark_debris_ao_radius } );
+            if( rad > 1e-4f )
+            {
+                s_batchDebrisAo.verts.clear();
+                s_batchDebrisAo.idx.clear();
+                const uint32_t abase = 0;
+
+                const RgNormalPacked32  up = rt.rgUtilPackNormal( 0.f, 0.f, 1.f );
+                const RgColor4DPacked32 cc =
+                    rt.rgUtilPackColorFloat4D( 0.f, 0.f, 0.f, aoStrength );
+                const RgColor4DPacked32 cr = rt.rgUtilPackColorFloat4D( 0.f, 0.f, 0.f, 0.f );
+
+                // 1 mm of bias keeps the quad off the floor's exact plane
+                // without spending the decal shader's 5 cm budget.
+                const float az = sp.pos.Z + 0.001f;
+
+                s_batchDebrisAo.verts.push_back( RgPrimitiveVertex{
+                    .position     = { sp.pos.X, sp.pos.Y, az },
+                    .normalPacked = up,
+                    .texCoord     = { 0.5f, 0.5f },
+                    .color        = cc,
+                } );
+
+                constexpr int kAoSegs = 10;
+                for( int k = 0; k < kAoSegs; k++ )
+                {
+                    const float a = ( 2.f * rt_pi() * float( k ) ) / float( kAoSegs );
+                    s_batchDebrisAo.verts.push_back( RgPrimitiveVertex{
+                        .position     = { sp.pos.X + std::cos( a ) * rad,
+                                          sp.pos.Y + std::sin( a ) * rad,
+                                          az },
+                        .normalPacked = up,
+                        .texCoord     = { 0.5f + 0.5f * std::cos( a ), 0.5f + 0.5f * std::sin( a ) },
+                        .color        = cr,
+                    } );
+                }
+                for( int k = 0; k < kAoSegs; k++ )
+                {
+                    s_batchDebrisAo.idx.push_back( abase );
+                    s_batchDebrisAo.idx.push_back( abase + 1 + uint32_t( k ) );
+                    s_batchDebrisAo.idx.push_back( abase + 1 + uint32_t( ( k + 1 ) % kAoSegs ) );
+                }
+
+                // A distinct ID per blob. RTGL1 keeps one upload per ID and it is
+                // the LATER one that loses, so a shared ID would silently show
+                // only the first chip's blob.
+                UploadAoBlob( s_batchDebrisAo, RT_DEBRIS_AO_MESH_ID + uint64_t( aoEmitted ) );
+                aoEmitted++;
+                s_dbgAo++;
+            }
+        }
     }
 
-    UploadBatch( s_batchSpark, RT_SPARK_MESH_ID, true, nullptr );
-    for( int k = 0; k < int( SurfKind::COUNT ); k++ )
+    UploadBatch( s_batchSpark, RT_SPARK_MESH_ID, true, nullptr, RG_PACKED_COLOR_WHITE );
+
+    for( int i = 0; i < s_debrisBucketCount; i++ )
     {
-        // Distinct mesh IDs per class: RTGL1 keeps only one upload per ID, and
-        // it is the LATER one that loses, so a shared ID would silently drop
-        // every class after the first.
-        UploadBatch( s_batchDebris[ k ],
-                     RT_DEBRIS_MESH_ID + uint64_t( k ),
+        const DebrisBucket& db = s_debrisBuckets[ i ];
+
+        // Distinct mesh IDs: RTGL1 keeps only one upload per ID and it is the
+        // LATER one that loses, so a shared ID would silently drop every bucket
+        // after the first.
+        UploadBatch( db.batch,
+                     RT_DEBRIS_MESH_ID + uint64_t( i ),
                      false,
-                     RT_DEBRIS_PROFILES[ k ].texture );
+                     ProfileFor( db.kind ).texture,
+                     rt.rgUtilPackColorFloat4D( ( ( db.rgb >> 16 ) & 0xFF ) / 255.f,
+                                                ( ( db.rgb >> 8 ) & 0xFF ) / 255.f,
+                                                ( db.rgb & 0xFF ) / 255.f,
+                                                1.0f ) );
     }
 }
 
@@ -2016,6 +2446,14 @@ void SparkReport( const char* why )
             s_dbgLights,
             int{ cvar::rt_spark_light_max },
             s_dbgTraces );
+
+    if( cvar::rt_spark_debris_ao )
+    {
+        Printf( "  AO blobs uploaded: %d of %d max.  >0 with nothing on screen is a "
+                "POSITION bug, not a strength one.\n",
+                s_dbgAo,
+                int{ cvar::rt_spark_debris_ao_max } );
+    }
 
     // WHAT THOSE IMPACTS LANDED ON. Separate line because it answers a different
     // question from the ladder above -- the ladder is "is the feature running",

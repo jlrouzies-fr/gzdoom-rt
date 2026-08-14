@@ -2594,6 +2594,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         // RTGL1 side so the two cannot drift.
         .asymmetry = float{ cvar::rt_volume_shaft_asym },
         .debugMode = uint32_t( std::clamp( int{ cvar::rt_volume_shaft_debug }, 0, 3 ) ),
+        // The two knobs the "shafts do not reach" report needed: how much of the
+        // inverse-square falloff is given back, and how the per-froxel ray
+        // budget is decided. See rt_volume_shaft_falloff / _relcull.
+        .falloffCompensation =
+            std::clamp( float{ cvar::rt_volume_shaft_falloff }, 0.f, 2.f ),
+        .relativeCull = std::clamp( float{ cvar::rt_volume_shaft_relcull }, 0.f, 1.f ),
     };
 
     auto volumetrics_params = RgDrawFrameVolumetricParams{
