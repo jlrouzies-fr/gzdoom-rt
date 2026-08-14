@@ -2485,21 +2485,28 @@
                                                 "volume is a 64-slice grid, so one ray per cell per light is ~900k rays; in a "
                                                 "typical cell only one or two lamps survive rt_volume_shaft_mincontrib, so this "
                                                 "is rarely reached. Raise it only after measuring." )
-    RT_CVAR( rt_volume_shaft_mult,      1.f,    "brightness of the lamp shafts, on top of rt_volume_lintensity. Its own knob so "
+    RT_CVAR( rt_volume_shaft_mult,      10.f,   "brightness of the lamp shafts, on top of rt_volume_lintensity. Its own knob so "
                                                 "a corridor lamp can be tuned WITHOUT moving the moon's shafts, which are "
                                                 "already tuned and shipped -- the same coupling rt_solo_small_intensity exists "
                                                 "to avoid on the fixture side.\n"
                                                 "\n"
+                                                "10, JUDGED IN PLAY, and the size of it is not a mistake. A lamp is a small "
+                                                "sphere and its scattering is a solid angle, so what reaches a froxel a few "
+                                                "metres away is a tiny fraction of what the moon -- a directional light with "
+                                                "no distance term at all -- delivers everywhere. The two are simply not in "
+                                                "the same units, which is exactly why this knob is separate from "
+                                                "rt_volume_lintensity rather than folded into it.\n"
+                                                "\n"
                                                 "This is also the ABSURD ARM: a knob that appears to do nothing is always two "
                                                 "hypotheses -- too small to see, or never reaching the shader -- and only an "
-                                                "unmissable value separates them. Try 200 before concluding anything, or use "
+                                                "unmissable value separates them. Try 2000 before concluding anything, or use "
                                                 "rt_volume_shaft_debug 3, which reads nothing but the count." )
     RT_CVAR( rt_volume_shaft_nearfade,  1.5f,   "METRES: fade in-scattering out this close to a shaft light. These are point "
                                                 "lights sitting INSIDE the medium, so the froxels touching a bulb take an "
                                                 "inverse-square term with nothing bounding it and the fixture reads as a white "
                                                 "ball with a beam somewhere behind it. Keyed off distance to the LIGHT, like "
                                                 "rt_fog_light_near, so the shaft further down the room survives. 0 = physical." )
-    RT_CVAR( rt_volume_shaft_falloff,   1.f,    "HOW FAR A SHAFT REACHES FROM ITS LAMP. This is how much of the inverse-square "
+    RT_CVAR( rt_volume_shaft_falloff,   0.5f,   "HOW FAR A SHAFT REACHES FROM ITS LAMP. This is how much of the inverse-square "
                                                 "falloff is handed back, as an exponent: radiance *= pow(max(d,1), this). "
                                                 "0 = physical, 1 = 1/d, 2 = no falloff past a metre (sun-like).\n"
                                                 "\n"
@@ -2511,9 +2518,11 @@
                                                 "level and a lamp's does not. Reported from play on 2026-08-14 as 'it works but "
                                                 "it doesn't display very far, a few metres from the light it is gone'.\n"
                                                 "\n"
-                                                "1 is a STARTING POINT, not a settled value -- tools/arms/lampshaft-phys.cfg is "
-                                                "0 and lampshaft-flat.cfg is 2. Nothing inside a metre is boosted, so this "
-                                                "cannot fight rt_volume_shaft_nearfade, which owns that region." )
+                                                "0.5 is JUDGED IN PLAY, not derived: 0 read as a puddle around the bulb and 1 "
+                                                "read as fog with no shape to it, so the answer is between them and nearer "
+                                                "the physical end. tools/arms/lampshaft-phys.cfg is 0 and lampshaft-flat.cfg "
+                                                "is 2 if you want the brackets back. Nothing inside a metre is boosted, so "
+                                                "this cannot fight rt_volume_shaft_nearfade, which owns that region." )
     RT_CVAR( rt_volume_shaft_relcull,   0.05f,  "skip a light whose radiance at a froxel is below this FRACTION of the "
                                                 "brightest light reaching the same froxel. Applied on top of "
                                                 "rt_volume_shaft_mincontrib.\n"
@@ -2964,7 +2973,22 @@
                                                 "surface where a plasma bolt or BFG ball died. Independent of rt_spark -- "
                                                 "the two systems share a particle pool but not a switch, so hitscan sparks "
                                                 "can stay off while arcs are on." )
-    RT_CVAR( rt_arc_life,               0.5f,   "seconds a mark lasts. LONGER THAN THE PARTICLE VERSION'S 0.25, and "
+    // THE SHIPPING NUMBERS CAME FROM PLAY, NOT FROM THE SPRITE TIMING.
+    //
+    // Everything in this group first shipped about a third of its current value,
+    // reasoned from 64PlasmaBall's death animation (PLSE A-F, ~0.23 s) on the
+    // principle that the effect should not outlive the flash it belongs to. That
+    // reasoning produced an effect the player could not see: reported as "i
+    // tried but nothing with it" at the old defaults, while the deliberately
+    // exaggerated diagnostic arms -- arc-creepy and arc-burn -- both read fine.
+    //
+    // Which is the useful part: both arms had the SAME code and the same
+    // features switched on, so nothing was broken and no amount of looking at
+    // the plumbing would have found anything. The sprite-timing argument is
+    // sound for a particle thrown off a wall and simply does not transfer to a
+    // mark held ON one, because the two are looked at for different lengths of
+    // time. Where an argument and the screen disagree, the screen wins.
+    RT_CVAR( rt_arc_life,               2.0f,   "seconds a mark lasts. LONGER THAN THE PARTICLE VERSION'S 0.25, and "
                                                 "the reason the PLSE argument no longer binds: 64PlasmaBall's death "
                                                 "animation runs ~0.23 s, which was the right ceiling for particles "
                                                 "flying away from the impact -- they had to be gone before the flash "
@@ -3024,17 +3048,17 @@
                                                 "with an opaque centre and a zero-alpha rim, one primitive per mark, "
                                                 "emissive pinned at 0. Every trap on that path applies here and is "
                                                 "already solved there; see docs/sprite-shadows-and-ao.md." )
-    RT_CVAR( rt_arc_burn_life,          25.f,   "seconds a scorch lasts. FIFTY TIMES the arcs' own life, and that ratio "
+    RT_CVAR( rt_arc_burn_life,          120.f,   "seconds a scorch lasts. FIFTY TIMES the arcs' own life, and that ratio "
                                                 "is the point -- a mark that fades with the discharge is part of the "
                                                 "effect, one that is still there when you walk back through the room is "
                                                 "a record of what you did. Bounded by rt_arc_max rather than by taste: "
                                                 "the oldest scorch is evicted when the pool fills, so a long firefight "
                                                 "keeps the most recent ones." )
-    RT_CVAR( rt_arc_burn_radius,        0.28f,  "metres, radius of the scorch. Comfortably WIDER than the core "
+    RT_CVAR( rt_arc_burn_radius,        0.40f,  "metres, radius of the scorch. Comfortably WIDER than the core "
                                                 "(rt_arc_core) and narrower than the branches reach: a burn the size of "
                                                 "the whole filigree reads as a stain, and one the size of the core "
                                                 "reads as a bullet hole." )
-    RT_CVAR( rt_arc_burn_strength,      0.72f,  "fraction of the wall's albedo removed at the scorch centre, falling to "
+    RT_CVAR( rt_arc_burn_strength,      0.90f,  "fraction of the wall's albedo removed at the scorch centre, falling to "
                                                 "0 at the rim. NOT the darkness you see: it multiplies albedo, so what "
                                                 "reaches the screen is already scaled by the room's light. Reasoning "
                                                 "about it as a screen overlay under-shoots -- that is exactly how "
@@ -3049,7 +3073,7 @@
                                                 "its own decal primitive -- batching them into one is what produced "
                                                 "the AO 'lines', and the sprite AO this is modelled on uploads one per "
                                                 "actor -- so this is an upload count, not a memory bound." )
-    RT_CVAR( rt_arc_creep,              6,      "DETACHED arcs skittering across the wall AROUND the mark, on top of the "
+    RT_CVAR( rt_arc_creep,              16,      "DETACHED arcs skittering across the wall AROUND the mark, on top of the "
                                                 "branches radiating out of it. They are not connected to the core and "
                                                 "they JUMP TO A NEW PLACE on every re-path, so they are what makes the "
                                                 "churn legible on the SURFACE rather than only in the silhouette.\n"
@@ -3059,7 +3083,7 @@
                                                 "ago, and it is that arriving-somewhere-else that says the wall is "
                                                 "energised rather than merely decorated. Set 0 for the radial-only "
                                                 "look (arm: arc-nocreep)." )
-    RT_CVAR( rt_arc_creep_reach,        1.35f,  "how far the creepers wander from the impact, as a multiple of "
+    RT_CVAR( rt_arc_creep_reach,        2.4f,  "how far the creepers wander from the impact, as a multiple of "
                                                 "rt_arc_reach. ABOVE 1 on purpose: they are meant to land outside the "
                                                 "radial branches, which is what widens the affected area. Too high and "
                                                 "they read as unrelated sparks somewhere else on the wall rather than "
@@ -3108,7 +3132,7 @@
     RT_CVAR( rt_arc_light_intensity,    220.f,  "intensity of a projectile impact's flash. Brighter than the spark "
                                                 "flash's 180: a plasma discharge is a bigger event than a bullet, and "
                                                 "blue and green both read dimmer than amber at equal intensity." )
-    RT_CVAR( rt_arc_light_life,         0.5f,   "seconds the projectile impact flash lasts. MATCHED TO rt_arc_life so "
+    RT_CVAR( rt_arc_light_life,         2.0f,   "seconds the projectile impact flash lasts. MATCHED TO rt_arc_life so "
                                                 "the mark stays lit until it has completely faded.\n"
                                                 "This shipped at 0.22 on the argument that the flash is the moment of "
                                                 "impact and the mark is what is left over, so the two SHOULD come "
