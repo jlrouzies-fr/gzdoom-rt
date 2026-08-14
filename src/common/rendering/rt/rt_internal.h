@@ -536,6 +536,35 @@ void RT_UploadSwitchLights();
 void RT_UploadLavaLights();
 void RT_UploadFlameLights();
 
+// rt_light_shafts.cpp -- which fixtures get visible air around them.
+//
+// Not a light source of its own: the fixture walks in rt_lights_fixtures.cpp
+// upload their lights exactly as before and OFFER them here, and this file only
+// decides which of the offers are worth a shadow ray per froxel. That split is
+// deliberate -- "is this lamp bright enough to light the room" and "does this
+// lamp deserve a beam" are different questions, and answering the second inside
+// the placement walks would bury it in three unrelated loops.
+//
+// Order in RT_DrawFrame matters: RT_ShaftLightsBegin() before the fixture
+// uploads, RT_ShaftLightsSelect() after them and before the params are built.
+enum RtShaftSrc : uint32_t
+{
+    RT_SHAFT_SRC_CEILING_INSET = 1, // one light at a lamp sector's centre
+    RT_SHAFT_SRC_CEILING_EDGE  = 2, // the perimeter walk + the bulb/faux lattices
+    RT_SHAFT_SRC_SOLO          = 4, // SFLATDE / SFLATCH / SFLATAS single bulbs
+};
+
+void RT_ShaftLightsBegin();
+void RT_ShaftLightOffer( uint64_t     id,
+                         double       mapX,
+                         double       mapY,
+                         double       mapZ,
+                         float        intensity,
+                         RtShaftSrc   src );
+// Nearest-first, deduped, culled and capped. Valid until the next
+// RT_ShaftLightsBegin(); empty when the feature is off.
+const std::vector< uint64_t >& RT_ShaftLightsSelect();
+
 // rt_smoke.cpp
 void RT_UpdateSmokePuffs();
 

@@ -2105,6 +2105,11 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         }
     }
 
+    // BEFORE the fixture walks: they offer their lights into this list as they
+    // upload them, and RT_ShaftLightsSelect() reads it when the volumetric
+    // params are built further down. See rt_light_shafts.cpp.
+    RT_ShaftLightsBegin();
+
     RT_UploadExportableSectorLights();
     RT_UploadGzDoomDynamicLights();
     RT_UploadCeilingInsetLamps();
@@ -2564,9 +2569,36 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .absorb         = std::max( 0.f, float{ cvar::rt_smoke_absorb } ),
     };
 
+    // LIGHT SHAFTS FROM ORDINARY LAMPS. The list was collected by the fixture
+    // walks above; this only says how it is to be scattered. Empty (and so free)
+    // whenever rt_volume_shafts is off or nothing qualified.
+    //
+    // Its own pNext struct rather than fields on the volumetric params, for the
+    // reason the smoke block is: the fog is shipped and tuned on nine maps, and
+    // a struct that does not change size cannot break it.
+    const std::vector< uint64_t >& shaft_ids = RT_ShaftLightsSelect();
+
+    auto shaft_params = RgDrawFrameLightShaftParams{
+        .sType           = RG_STRUCTURE_TYPE_DRAW_FRAME_LIGHT_SHAFT_PARAMS,
+        .pNext           = &smoke_params,
+        .count           = uint32_t( shaft_ids.size() ),
+        .pLightUniqueIds = shaft_ids.empty() ? nullptr : shaft_ids.data(),
+        .multiplier      = std::max( 0.f, float{ cvar::rt_volume_shaft_mult } ),
+        // METRES, like every other position and radius crossing this boundary.
+        // Not map units -- see ONEGAMEUNIT_IN_METERS; a light placed in map
+        // units lands 32x out and reads as simply absent.
+        .nearFade    = std::max( 0.f, float{ cvar::rt_volume_shaft_nearfade } ),
+        .minRadiance = std::max( 0.f, float{ cvar::rt_volume_shaft_mincontrib } ),
+        .maxTraced   = uint32_t( std::clamp( int{ cvar::rt_volume_shaft_trace }, 1, 32 ) ),
+        // Below -1 is the "share rt_volume_lassymetry" sentinel, resolved on the
+        // RTGL1 side so the two cannot drift.
+        .asymmetry = float{ cvar::rt_volume_shaft_asym },
+        .debugMode = uint32_t( std::clamp( int{ cvar::rt_volume_shaft_debug }, 0, 3 ) ),
+    };
+
     auto volumetrics_params = RgDrawFrameVolumetricParams{
         .sType                   = RG_STRUCTURE_TYPE_DRAW_FRAME_VOLUMETRIC_PARAMS,
-        .pNext                   = &smoke_params,
+        .pNext                   = &shaft_params,
         .enable                  = fog.on || cvar::rt_volume_type != 0 || smoke_count > 0,
         // Smoke-only frames drop the history: it is tuned for fog, which moves
         // no faster than the player, and it smears a puff that does.

@@ -558,6 +558,17 @@ void RT_UploadCeilingInsetLamps()
         RgResult r = rt.rgUploadLight( &info );
         RG_CHECK( r );
 
+        // Light shaft source. `intensity` and not `peak`: this lamp class
+        // BLINKS and is deliberately still uploaded while dark (see the fade
+        // above -- deleting it cuts ReSTIR/RR history), so offering the nominal
+        // brightness would leave a beam hanging under a lamp that is off.
+        RT_ShaftLightOffer( info.uniqueID,
+                            double( sector.centerspot.X ),
+                            double( sector.centerspot.Y ),
+                            double( z ),
+                            intensity,
+                            RT_SHAFT_SRC_CEILING_INSET );
+
         if( cvar::rt_ceiling_lamp_debug )
         {
             auto markSph = RgLightSphericalEXT{
@@ -1127,6 +1138,11 @@ void RT_UploadCeilingEdgeLamps()
         // Recording at placement time instead would mark a pane lit that the cap then
         // dropped, and that pane would lose its painted glow and gain nothing.
         uint32_t planeKey;
+        // Which family this light belongs to for rt_volume_shaft_src. Carried
+        // rather than recovered from the id base: the three lists merge before
+        // upload, and decoding a family out of an id is exactly the kind of
+        // implicit coupling that breaks silently when a base moves.
+        RtShaftSrc shaftSrc = RT_SHAFT_SRC_CEILING_EDGE;
     };
     static constexpr uint32_t NoPlane = UINT32_MAX;
     std::vector< Cand > cand;
@@ -1201,7 +1217,8 @@ void RT_UploadCeilingEdgeLamps()
                              const double* offX, const double* offY, int nOff, int stride,
                              FVector3 hue, float intensity, float radius, float zofs,
                              uint64_t idBase, std::vector< Cand >& out,
-                             uint32_t planeKey = NoPlane ) {
+                             uint32_t planeKey = NoPlane,
+                             RtShaftSrc shaftSrc = RT_SHAFT_SRC_CEILING_EDGE ) {
         double minx = 1.e9, miny = 1.e9, maxx = -1.e9, maxy = -1.e9;
         for( unsigned li = 0; li < sector.Lines.Size(); li++ )
         {
@@ -1313,7 +1330,8 @@ void RT_UploadCeilingEdgeLamps()
                             uint64_t( gx & 0x3FF ) +
                             ( isCeiling ? 0ull : 0x80000ull );
 
-                        out.push_back( Cand{ d2, px, py, pz, id, hue, intensity, radius, planeKey } );
+                        out.push_back(
+                            Cand{ d2, px, py, pz, id, hue, intensity, radius, planeKey, shaftSrc } );
                     }
                 }
             }
@@ -1336,7 +1354,7 @@ void RT_UploadCeilingEdgeLamps()
         addLattice( sector, secIndex, isCeiling, offX, offY, 1, soloStrideN, RT_SoloLampHue(),
                     verySmall ? soloSmallI : soloIntensity,
                     verySmall ? soloSmallR : soloRadius,
-                    soloZofs, SoloLatticeId_Base, soloCand );
+                    soloZofs, SoloLatticeId_Base, soloCand, NoPlane, RT_SHAFT_SRC_SOLO );
     };
 
 
@@ -1655,6 +1673,13 @@ void RT_UploadCeilingEdgeLamps()
         RgResult r = rt.rgUploadLight( &info );
         RG_CHECK( r );
         uploaded++;
+
+        // Offer it as a light shaft source. AFTER the upload, deliberately: a
+        // candidate that did not survive the distance cap or the budget above
+        // is not in `cand` at all, so a shaft can never be asked for a light
+        // that was never sent -- the same one-frame-honest rule
+        // g_latticeLitPlanes follows just above.
+        RT_ShaftLightOffer( c.id, c.x, c.y, c.z, c.intensity, c.shaftSrc );
 
         // Cyan, not the wall strips' magenta: with both paths marked at once the only
         // useful question is which one owns a given light, and two colours answer it

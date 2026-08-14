@@ -2424,6 +2424,95 @@
     RT_CVAR( rt_volume_lintensity,      1.f,    "intensity of lights for scattering" )
     RT_CVAR( rt_volume_lassymetry,      0.5f,   "scaterring phase function assymetry" )
     RT_CVAR( rt_volume_history,         8.f,    "max history length for scaterring accumulation (in frames)" )
+
+    // --- Light shafts from ordinary lamps -----------------------------------
+    // docs/plan-light-shafts.md. The froxel pass scatters exactly ONE light --
+    // whatever TryGetVolumetricLight picked, which here is always the moon -- so
+    // until now this renderer could only make a beam OUTDOORS. Every ceiling
+    // lamp and grate inside a level was a light with no air around it. These
+    // hand RTGL1 a short, explicit list of fixtures that get air around them.
+    RT_CVAR( rt_volume_shafts,          true,   "scatter the volumetric medium around ORDINARY LAMPS, not just the moon. The "
+                                                "froxel pass shadow-tests exactly one light per frame (the sun), which is why "
+                                                "beams only ever happened outdoors; this adds a short explicit list of fixtures "
+                                                "on TOP of it, so a corridor lamp and the moon can both be in the air at once.\n"
+                                                "\n"
+                                                "Deliberately NOT rt_fog_illum, which is the all-lights estimate: that one "
+                                                "REPLACES the single-light path and takes the sun's sky probe -- i.e. every "
+                                                "shaft the map already has -- with it, shades the medium with a fake normal "
+                                                "that scores dot~0 for a light directly overhead (which is exactly what a "
+                                                "ceiling lamp is), and needs a temporal history to denoise.\n"
+                                                "\n"
+                                                "The cost is per FROXEL, not per pixel: one shadow ray per qualifying light "
+                                                "per cell, bounded by rt_volume_shaft_trace and rt_volume_shaft_mincontrib." )
+    RT_CVAR( rt_volume_shaft_src,       7,      "which fixture families get air around them, as a BITMASK. 1 = ceiling inset "
+                                                "lamps (rt_ceiling_lamps), 2 = the ceiling perimeter/bulb lattice "
+                                                "(rt_ceiling_edge_lamps, including the faux panels), 4 = solo bulbs "
+                                                "(rt_solo_lamps). 7 = all three, 0 = none.\n"
+                                                "\n"
+                                                "NOTE bit 1 offers NOTHING in the shipping config: rt_ceiling_lamps is pinned 0 "
+                                                "in tools/d64rt-pins.cfg because a centre sphere in a big hall reads as a "
+                                                "floating blob, which is the whole reason the perimeter walk exists. It is left "
+                                                "in the default mask so that turning the family back on needs one cvar and not "
+                                                "two, but do not read its silence as this feature being broken -- "
+                                                "tools/arms/lampshaft-inset.cfg turns both on together.\n"
+                                                "\n"
+                                                "A mask rather than one switch because these three place lights in completely "
+                                                "different densities -- a bulb lattice is ~16 lights on one pane, an inset lamp "
+                                                "is one per sector -- and 20 of rt-lighting-practices.md is the standing warning "
+                                                "about what happens when a dense family is turned on wholesale." )
+    RT_CVAR( rt_volume_shaft_max,       16,     "how many fixtures are handed to the shader per frame, nearest first. Hard "
+                                                "ceiling is RG_MAX_SHAFT_LIGHTS (32) -- the indices ride in the global uniform. "
+                                                "This is NOT the per-froxel cost: that is rt_volume_shaft_trace. Raising this "
+                                                "only widens the set the per-cell radiance cull gets to choose from." )
+    RT_CVAR( rt_volume_shaft_trace,     3,      "hard cap on shadow rays per FROXEL, and therefore the actual budget. The "
+                                                "volume is a 64-slice grid, so one ray per cell per light is ~900k rays; in a "
+                                                "typical cell only one or two lamps survive rt_volume_shaft_mincontrib, so this "
+                                                "is rarely reached. Raise it only after measuring." )
+    RT_CVAR( rt_volume_shaft_mult,      1.f,    "brightness of the lamp shafts, on top of rt_volume_lintensity. Its own knob so "
+                                                "a corridor lamp can be tuned WITHOUT moving the moon's shafts, which are "
+                                                "already tuned and shipped -- the same coupling rt_solo_small_intensity exists "
+                                                "to avoid on the fixture side.\n"
+                                                "\n"
+                                                "This is also the ABSURD ARM: a knob that appears to do nothing is always two "
+                                                "hypotheses -- too small to see, or never reaching the shader -- and only an "
+                                                "unmissable value separates them. Try 200 before concluding anything, or use "
+                                                "rt_volume_shaft_debug 3, which reads nothing but the count." )
+    RT_CVAR( rt_volume_shaft_nearfade,  1.5f,   "METRES: fade in-scattering out this close to a shaft light. These are point "
+                                                "lights sitting INSIDE the medium, so the froxels touching a bulb take an "
+                                                "inverse-square term with nothing bounding it and the fixture reads as a white "
+                                                "ball with a beam somewhere behind it. Keyed off distance to the LIGHT, like "
+                                                "rt_fog_light_near, so the shaft further down the room survives. 0 = physical." )
+    RT_CVAR( rt_volume_shaft_mincontrib, 0.f,   "skip a light whose unshadowed in-scattered radiance at a froxel is below this, "
+                                                "BEFORE its shadow ray is traced. This is the cull that pays for the feature -- "
+                                                "a few ALU against one ray per cell. Same units as the radiance the shader "
+                                                "accumulates, so find it by A/B rather than by derivation. 0 = trace everything "
+                                                "the trace cap allows." )
+    RT_CVAR( rt_volume_shaft_asym,      -2.f,   "phase-function asymmetry for the LAMP shafts only. Below -1 means share "
+                                                "rt_volume_lassymetry, which is what the moon is tuned at (0.5, an ~11x forward "
+                                                "bias). A lamp overhead is seen from every angle at once and may want less; "
+                                                "splitting the knob means finding that out cannot retune the moon or the nine "
+                                                "fogged maps. NOTE the moon lesson: lowering asymmetry is DIMMER, not flatter -- "
+                                                "the forward peak is what carries a shaft (moon-and-sky-leaks.md 5.5)." )
+    RT_CVAR( rt_volume_shaft_maxdist,   1024.f, "MAP UNITS: drop a fixture further than this from the camera before it is even "
+                                                "sorted. Independent of rt_ceiling_edge_maxdist (3072), which decides whether "
+                                                "the LIGHT exists at all -- a lamp across the level should still light its room, "
+                                                "it just has no business spending a shadow ray in every froxel to do it." )
+    RT_CVAR( rt_volume_shaft_mingap,    96.f,   "MAP UNITS: minimum separation between two shaft lights. A lamp pane is ~16 "
+                                                "point lights on a 16-unit lattice, so without this ONE pane takes the whole "
+                                                "rt_volume_shaft_max budget and produces a single blob rather than a beam, while "
+                                                "every other fixture in the room gets nothing. Nearest wins. 0 = no dedupe." )
+    RT_CVAR( rt_volume_shaft_minint,    0.f,    "skip a fixture whose uploaded RT intensity is below this. A blinking ceiling "
+                                                "lamp is still uploaded while dark (rt_ceiling_lamp_off, kept in ReSTIR on "
+                                                "purpose), and a shaft from a lamp that is currently off is worse than no shaft." )
+    RT_CVAR( rt_volume_shaft_debug,     0,      "shader-side probe. 1 paints a froxel RED wherever a shaft light survives the "
+                                                "radiance cull, BEFORE any shadow ray -- so it says the list arrived and its "
+                                                "indices resolve, independently of visibility and of magnitude. 2 is the same but "
+                                                "only where the light is also UNSHADOWED, so 1-painting-where-2-does-not is an "
+                                                "occluder. 3 paints every froxel GREEN whenever the list is non-empty, with no "
+                                                "position or visibility test at all: blank there means the uniform is not being "
+                                                "read and no amount of retuning will help. Same philosophy as rt_smoke_debug 4." )
+    RT_CVAR( rt_volume_shaft_verbose,   false,  "periodic console dump of the shaft list: how many candidates each family "
+                                                "offered, how many survived the gap/distance culls, and what was actually sent." )
     RT_CVAR( rt_illum_volume,           false,  "sample the traced illumination volume (RtVolumetric.rgen output) when shading "
                                                 "RASTERIZED translucent primitives, instead of the RTGL1 default "
                                                 "max(1, avgLuminance). OFF: tried as a way to dim ghost sprites in dark rooms "
@@ -2612,6 +2701,42 @@
                                                 "from a spark at a glance, before the colour is even read." )
     RT_CVAR( rt_spark_debris_bounce,    0.22f,  "restitution for chips. Below a spark's -- stone does not bounce, it "
                                                 "clatters once and settles." )
+    RT_CVAR( rt_spark_debris_ao,        true,   "contact occlusion under SETTLED debris: a small soft dark blob on the "
+                                                "floor, so a chip reads as lying ON it rather than hovering. Straight "
+                                                "from docs/sprite-shadows-and-ao.md section 2 -- an RTGL1 decal "
+                                                "multiplied into the floor's albedo, which means it scales with the "
+                                                "light already there and is invisible in an unlit room, and it cannot "
+                                                "occlude or be hit because it is never in the acceleration structure. "
+                                                "ONLY settled pieces get one: the claim a blob makes is that the thing "
+                                                "is touching this floor, and a chip still bouncing is not -- the same "
+                                                "honesty rt_sprite_ao_fade buys for a flying enemy." )
+    RT_CVAR( rt_spark_debris_ao_strength, 0.5f, "fraction of the floor's albedo removed at the blob's centre. NOT the "
+                                                "darkness you see: it multiplies albedo, so what reaches the screen is "
+                                                "already scaled by the room's light and by the rim falloff. Reasoning "
+                                                "about it as a screen overlay under-shoots -- that is exactly how "
+                                                "rt_sprite_ao_strength shipped a third too low." )
+    RT_CVAR( rt_spark_debris_ao_radius, 1.0f,   "blob radius as a multiple of the chip's own drawn size. Larger than 1 "
+                                                "on purpose: occlusion reaches past a silhouette, and a blob cut "
+                                                "exactly at the object reads as a sticker." )
+    RT_CVAR( rt_spark_debris_ao_dist,   20.f,   "metres beyond which a settled chip gets no AO blob. NOT a cost cull: "
+                                                "RsDecal.frag keeps a fragment only where the traced surface under it "
+                                                "is within 5 cm of the quad, and at range a pixel footprint on a "
+                                                "grazing floor exceeds that -- which is what produced AO 'lines' "
+                                                "reaching away from the chips. docs/sprite-shadows-and-ao.md bounds "
+                                                "the same limit with rt_sprite_ao_dist 30, and the game's own "
+                                                "bullet-hole decals share it. Tighter than 30 here because a chip is "
+                                                "far smaller than an enemy and its blob is not worth the artefact." )
+    RT_CVAR( rt_spark_debris_rough,     1.0f,   "roughness for the traced debris batch, via RgMeshPrimitivePBREXT. "
+                                                "1 = fully diffuse, which is both the default and what a chip of "
+                                                "stone is. THIS IS NOT THE WHITEOUT KNOB: a rough diffuse surface "
+                                                "returns albedo * E / pi whatever its roughness, so lowering it makes "
+                                                "chips SHINIER, not darker. It is set explicitly only because a "
+                                                "primitive with no material leaves the fallback unstated, and an "
+                                                "unstated default is the kind of thing that costs days here." )
+    RT_CVAR( rt_spark_debris_metal,     0.0f,   "metallic for the traced debris batch. 0 = dielectric, correct for "
+                                                "stone, wood, dirt and flesh. Raising it toward 1 tints the "
+                                                "reflection by the albedo and kills the diffuse term -- worth trying "
+                                                "only if a `metal` class ever throws debris, which today it does not." )
     RT_CVAR( rt_spark_debris_tint,      0.85f,  "how much of the HIT TEXTURE's own average colour a chip takes, 0..1. "
                                                 "0 = the built-in neutral ramp only; 1 = fully the colour of the wall it "
                                                 "was chipped off. This is only possible because the wall texture now "
@@ -2623,6 +2748,20 @@
                                                 "frame. The ramp is still used as the AGE CURVE -- the texture gives the "
                                                 "hue, the ramp gives how it darkens -- so a chip does not sit at one "
                                                 "flat colour for twenty seconds." )
+    RT_CVAR( rt_spark_debris_sat,       3.0f,   "chroma expansion on the hit texture's average colour, before it tints a "
+                                                "chip. 1 = the raw mean, which in practice is GREY: measured from play, "
+                                                "a wall that reads plainly beige averages to #574D4B and another to "
+                                                "#504848 -- warm by about 14%, because highlights average against shadow "
+                                                "and black gaps and collapse toward neutral. Normalising luminance "
+                                                "preserves that 14%, so chips came out grey off an orange wall and the "
+                                                "tint read as broken when it was working on data too dull to use. gzdoom "
+                                                "hits the same wall and solves it the other way: GetGlowColor passes "
+                                                "maxout=153 to averageColor to normalise the PEAK channel, which also "
+                                                "blows brightness out -- fine for a glow, wrong for an albedo. This "
+                                                "expands chroma about the pixel's own luminance instead, leaving "
+                                                "brightness to rt_spark_debris_albedo so the two corrections stay "
+                                                "independent. 3 turns 14% into roughly 40%. Raise it for cartoon "
+                                                "saturation, drop it to 1 to see the honest mean." )
     RT_CVAR( rt_spark_debris_albedo,    0.30f,  "target LUMINANCE for a texture-tinted chip, before the room lights it. "
                                                 "The texture average is normalised to this and only its HUE is kept, "
                                                 "which is the whole reason the tint is safe to turn up: Doom wall art "
