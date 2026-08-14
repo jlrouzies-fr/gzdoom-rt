@@ -793,6 +793,7 @@ if (HAVE_RT)
 		common/rendering/rt/rt_lights_fixtures.cpp
 		common/rendering/rt/rt_lights_fx.cpp
 		common/rendering/rt/rt_smoke.cpp
+		common/rendering/rt/rt_sparks.cpp
 		common/rendering/rt/rt_presets.cpp
 		common/rendering/rt/rt_weather.cpp
 		common/rendering/rt/rt_export.cpp

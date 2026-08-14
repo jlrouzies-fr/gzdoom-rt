@@ -657,6 +657,72 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             mStreamData.uObjectColor, mStreamData.uVertexColor, forcealpha1 );
     }
 
+    // Doom64-RT: WHY DOES rt_spectre_alpha / rt_nightmareimp_alpha DO NOTHING?
+    //
+    // Reported 2026-08-14: rt_nightmareimp_alpha changes nothing at any value,
+    // 1.0 included. That single symptom has at least four causes and the final
+    // image cannot separate them -- the sprite never reaches the ghost branch
+    // (name mismatch, not an ExportInstance, rt_mod_compat off), it reaches it
+    // and the value is overwritten downstream, it is packed correctly and RTGL1
+    // ignores it, or it is packed correctly and something else dominates what
+    // you see. So this prints the chain rather than the outcome: what the
+    // sprite is CALLED here, how GhostSprite() classified it, the alpha in,
+    // the cvar, and the alpha actually PACKED into prim.color.
+    //
+    // Mode 2 prints EVERY sprite, not only the ones already classified as
+    // ghosts. That is deliberate and it is the whole value of the instrument: a
+    // filter built around the theory can only ever confirm it, and "no TRO2
+    // line appeared" would be indistinguishable from "the imp is not on
+    // screen". Mode 2 shows what the imp is actually called.
+    if( cvar::rt_ghost_debug && !isUI && rtstate.is< RtPrim::ExportInstance >() )
+    {
+        bool             dbgCorpse = false;
+        const GhostActor dbgGhost  = GhostSprite( &dbgCorpse );
+        const char*      dbgName   = rtstate.get_exportinstance_name();
+
+        if( int{ cvar::rt_ghost_debug } >= 2 || dbgGhost != GhostActor::None )
+        {
+            struct GhostRow
+            {
+                uint64_t lastPrint;
+                int      count;
+            };
+            static std::unordered_map< std::string, GhostRow > s_ghost;
+            static uint64_t                                    s_gframe;
+            s_gframe++;
+
+            auto& row = s_ghost[ dbgName ? dbgName : "(null)" ];
+            row.count++;
+            if( s_gframe - row.lastPrint > 60 )
+            {
+                row.lastPrint = s_gframe;
+
+                const auto pf = makePrimFlags( isUI );
+                Printf( "rt_ghost_debug %-6s class=%-12s corpse=%d living=%d "
+                        "objA=%.3f vertA=%.3f cvar=%.3f lightscale=%.3f "
+                        "packedA=%u/255 flags=0x%X%s%s modcompat=%d x%d\n",
+                        dbgName ? dbgName : "(null)",
+                        dbgGhost == GhostActor::Spectre        ? "Spectre"
+                        : dbgGhost == GhostActor::NightmareImp ? "NightmareImp"
+                                                               : "None",
+                        int( dbgCorpse ),
+                        int( IsLivingGhost() ),
+                        mStreamData.uObjectColor.a,
+                        mStreamData.uVertexColor[ 3 ],
+                        dbgGhost == GhostActor::Spectre
+                            ? float( cvar::rt_spectre_alpha )
+                            : float( cvar::rt_nightmareimp_alpha ),
+                        GhostLightScale(),
+                        unsigned( uint32_t( primColor ) >> 24 ),
+                        unsigned( pf ),
+                        ( pf & RG_MESH_PRIMITIVE_TRANSLUCENT ) ? " TRANSLUCENT" : "",
+                        ( pf & RG_MESH_PRIMITIVE_ALPHA_TESTED ) ? " ALPHA_TESTED" : "",
+                        int( rt_mod_compat ),
+                        row.count );
+            }
+        }
+    }
+
     // Reports what RTGL1 will actually DO with each world primitive, not what we
     // hoped it would do. Two prior fixes were judged by eye from the final image and
     // both nulls were worthless, because "renders but casts nothing" and "casts but
@@ -1027,11 +1093,56 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         return RgMeshPrimitiveFlags( 0 );
     };
 
+    // Doom64-RT: WHY rt_nightmareimp_alpha / rt_spectre_alpha DO NOTHING.
+    //
+    // A living ghost's alpha is packed correctly all the way into prim.color --
+    // measured, 0.42 -> packedA 89/255 and 1.00 -> 214/255 -- and the image does
+    // not move. The alpha is not the problem: the BLEND MODE is.
+    //
+    // These sprites carry an eye mask, so textures.json gives them
+    // "emissiveMult": 2.0, and RTGL1's TextureMeta.cpp overwrites prim.emissive
+    // with it unless the caller sets EMISSIVE_OVERRIDE. RasterizedDataCollector's
+    // ToPipelineState then reads:
+    //
+    //     if( emissive > eps ) if( TRANSLUCENT ) -> ADDITIVE
+    //     ADDITIVE: blendSrc = SRC_ALPHA, blendDst = ONE
+    //
+    // so the whole body draws ADDITIVELY. Under additive blending alpha only
+    // scales how much the sprite ADDS -- it can never make the body occlude what
+    // is behind it, so no value can read as "more solid", and on art as dark as
+    // the nightmare imp's the difference between 0.35 and 0.84 of a dark colour
+    // added to a lit room is close to invisible. That is the reported symptom
+    // exactly, and it applies to the spectre for the same reason.
+    //
+    // Two ways out of that, and they are NOT alternatives -- the second is the
+    // shipping one and the first is now only a probe:
+    //
+    //   rt_ghost_emis 0        forces emissive to 0 with EMISSIVE_OVERRIDE so
+    //                          the material cannot put it back. Alpha works;
+    //                          the glowing EYES go dark with it, because
+    //                          prim.emissive is also what multiplies
+    //                          outScreenEmission. Kept as the one-flag probe
+    //                          that proved the diagnosis.
+    //   rt_ghost_emis_split 1  the body drops its emissive exactly as above, and
+    //                          the eye mask is re-uploaded on a SECOND primitive
+    //                          whose alpha is zero (see the upload below). Both
+    //                          halves, no RTGL1 change.
+    const bool livingGhostLike = IsSpectre() || IsLivingGhost();
+    // The body carries no emissive in either mode -- that is what buys the
+    // alpha blending. The two modes differ only in whether anything else
+    // carries the eyes.
+    const bool ghostNoEmis =
+        livingGhostLike && ( !cvar::rt_ghost_emis || cvar::rt_ghost_emis_split );
+    const bool ghostEyeCopy =
+        livingGhostLike && cvar::rt_ghost_emis && cvar::rt_ghost_emis_split;
+
     auto prim = RgMeshPrimitiveInfo{
         .sType = RG_STRUCTURE_TYPE_MESH_PRIMITIVE_INFO,
         .pNext = isUI ? &ui : nullptr,
         .flags = makePrimFlags( isUI ) | l_waterflag() | l_nocausticsflag() | l_lavaflag() |
                  lampGlowFlag | l_spriteshadowcaster() |
+                 ( ghostNoEmis ? RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE
+                               : RgMeshPrimitiveFlags( 0 ) ) |
                  RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
                  ( rtstate.is< RtPrim::ExportInvertNormals >()
                        ? RG_MESH_PRIMITIVE_EXPORT_INVERT_NORMALS
@@ -1044,7 +1155,7 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         .pTextureName         = texname,
         .textureFrame         = 0,
         .color        = primColor,
-        .emissive     = lampGlowEmis,
+        .emissive     = ghostNoEmis ? 0.f : lampGlowEmis,
         .classicLight = lightlevel_to_classic( isUI, mLightParms[ 3 ] ),
     };
 
@@ -1114,6 +1225,61 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
 
     RgResult r = rt.rgUploadMeshPrimitive( &mesh, &prim );
     RG_CHECK( r );
+
+    // Doom64-RT: THE GHOST'S EYES, ON THEIR OWN PRIMITIVE -- rt_ghost_emis_split.
+    //
+    // The problem this solves is the one above: a living ghost's eye mask gives
+    // it emissiveMult 2.0, RTGL1 reads that as "emissive + translucent =
+    // ADDITIVE", and an additive body cannot occlude anything at any alpha, so
+    // rt_nightmareimp_alpha and rt_spectre_alpha are inert. Zeroing the emissive
+    // (rt_ghost_emis 0) restores real alpha blending but takes the glowing eyes
+    // with it, which is a bad trade -- the eyes are the better half.
+    //
+    // Both are available because the two live on DIFFERENT ATTACHMENTS with
+    // different blend factors (RasterizerPipelines.cpp): the body is attachment
+    // 0 at SRC_ALPHA, and outScreenEmission is attachment 1 at ONE,ONE, which
+    // never looks at alpha at all. So the emission does not need this
+    // primitive's alpha, and the body does not need this primitive's emissive.
+    // Split them:
+    //
+    //   BODY  -- emissive forced to 0 with EMISSIVE_OVERRIDE (above), so the
+    //            material cannot put it back and the pipeline stays plain
+    //            SRC_ALPHA / ONE_MINUS_SRC_ALPHA. The alpha cvars now mean what
+    //            they say, and a ghost can genuinely occlude the wall behind it.
+    //   EYES  -- the same quad again with its packed alpha set to ZERO, and the
+    //            emissive left alone so TextureMeta fills in emissiveMult. Its
+    //            contribution to attachment 0 is `SRC_ALPHA x colour` = exactly
+    //            nothing, so it adds no body; its contribution to attachment 1
+    //            is the full eye mask, because that attachment ignores alpha.
+    //
+    // Cost is one extra rasterized quad per visible ghost per frame, with no
+    // texture work and no geometry work -- it is the same vertices under the
+    // same transform, which is the same trick the shadow proxies below use.
+    // Order does not matter: neither attachment reads the other, and translucent
+    // primitives do not write depth.
+    if( ghostEyeCopy )
+    {
+        auto eyeprim = prim;
+        // A distinct index within the mesh, or RTGL1 sees two primitives with the
+        // same ID and drops one -- silently, and the copy is the one that loses.
+        eyeprim.primitiveIndexInMesh = rtstate.next_primitiveindex();
+        // Packed RGBA8, alpha in the top byte. Masking it off leaves the colour
+        // (which the emission is multiplied by, so the eyes keep their hue and
+        // the sector tint) and removes the body.
+        eyeprim.color = RgColor4DPacked32( uint32_t( primColor ) & 0x00FFFFFFu );
+        // Hand the emissive back to the material. Dropping EMISSIVE_OVERRIDE is
+        // the whole point: TextureMeta writes emissiveMult here, which is what
+        // lights the mask.
+        eyeprim.flags &= ~RgMeshPrimitiveFlags( RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE );
+        eyeprim.flags |= RG_MESH_PRIMITIVE_TRANSLUCENT;
+        eyeprim.emissive = lampGlowEmis;
+        // It contributes no body, so it must not contribute a shadow either --
+        // the real body primitive is the caster (or the proxies are).
+        eyeprim.flags |= RG_MESH_PRIMITIVE_NO_SHADOW;
+
+        RgResult re = rt.rgUploadMeshPrimitive( &mesh, &eyeprim );
+        RG_CHECK( re );
+    }
 
     // ---------------------------------------------------------------------
     // Doom64-RT: SPRITE SHADOW PROXIES (rt_sprite_shadow).
@@ -1420,6 +1586,26 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         const bool scopeok =
             ( int{ cvar::rt_sprite_ao_scope } < 1 ) || !rtstate.m_lastthinglivemonster;
 
+        // A LIVING SEE-THROUGH MONSTER gets no blob -- rt_sprite_ao_ghosts.
+        //
+        // The blob's claim is that a solid body is standing here and blocking
+        // the light that would otherwise reach this floor. For the 64Spectre
+        // and the 64NightmareImp that claim is false by construction: they are
+        // rasterized TRANSLUCENT overlays and the room is visible through them
+        // at rt_spectre_alpha / rt_nightmareimp_alpha, so an opaque smudge
+        // under a body you can see through reads as a disc painted on the floor
+        // following the monster -- and on the two creatures whose whole point
+        // is being hard to see, it is the most visible thing about them.
+        //
+        // Same test makePrimFlags uses to choose the translucent overlay, so
+        // the two can never disagree: whatever renders see-through is exactly
+        // what is refused here. It is living-only for free -- IsLivingGhost()
+        // excludes corpses, and rt_spectre_corpse_solid takes the dead ones out
+        // of IsSpectre() too -- so a dead spectre is an ordinary solid sprite
+        // and keeps its blob, which is what a body lying on the floor wants.
+        const bool ghostok = bool( cvar::rt_sprite_ao_ghosts ) ||
+                             !( IsSpectre() || IsLivingGhost() );
+
         // HEIGHT FADE. This is the honest part: contact occlusion asserts the
         // thing is ON the floor. A lost soul crossing a room, a cacodemon, a
         // rocket in flight and a jumping player must not carry a disc under
@@ -1479,7 +1665,7 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
 
         // 1/255 -- below this the blob is quantised to nothing by the packed
         // vertex colour anyway, so building the fan would be pure cost.
-        if( scopeok && inrange && alpha > ( 1.f / 255.f ) )
+        if( scopeok && ghostok && inrange && alpha > ( 1.f / 255.f ) )
         {
             const int segs = std::clamp( int{ cvar::rt_sprite_ao_segments }, 3, 64 );
 

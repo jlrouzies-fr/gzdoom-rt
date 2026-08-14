@@ -2119,6 +2119,13 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UploadSpinPanelLights();
     RT_UploadCeilingEdgeLamps();
     RT_UpdateSmokePuffs();
+    // Impact sparks, in this order: step the pool, draw it, then light it. The
+    // draw has to follow the sim or the batch is a frame stale, and the lights
+    // follow the draw only so the debug ladder's C/sent line counts both.
+    RT_UpdateSparks();
+    RT_DrawSparks();
+    RT_UploadSparkLights();
+    RT_SparkDebugTick();
     RT_DebugNearbyWallTextures();
 
     auto tm_params = RgDrawFrameTonemappingParams{
@@ -2679,6 +2686,13 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .emissionMaxScreenColor = cvar::rt_emis_maxscrcolor,
         .minRoughness           = cvar::rt_refl_thresh,
         .heightMapDepth         = 0.02f * cvar::rt_heightmap_stren,
+        // Inverted on purpose: the cvar reads as "metals on", the API field as
+        // "strip them". rt_metallic 0 turns the whole hand-labelled metalness
+        // pass off without touching a single _orm.png.
+        .forceNonMetallic       = !cvar::rt_metallic,
+        .metallicMax            = cvar::rt_metallic_max,
+        .metallicRoughCut       = cvar::rt_metallic_roughcut,
+        .metallicRoughBand      = cvar::rt_metallic_roughband,
     };
 
     float dirtscale = ( ( powerupflags & RT_POWERUP_FLAG_RADIATIONSUIT_BIT ) ||

@@ -379,11 +379,16 @@
                                                 "colour. Unlike the faux panels, these fixtures genuinely show a lit bulb in "
                                                 "the art, so there is no case for tinting them — white is not a placeholder "
                                                 "here, it is the answer" )
-    RT_CVAR( rt_solo_lamp_intensity,    45.f,   "RT intensity per solo bulb light. Deliberately modest — well under "
-                                                "rt_ceiling_edge_intensity (180), rt_faux_lamp_intensity (500) and "
-                                                "rt_ceiling_lamp_intensity (700): a single small ceiling bulb over a room "
-                                                "should read as a normal fixture, not as the brightest thing in it. Was 90; "
-                                                "halved on request after the first pass still read too strong (2026-08-08)" )
+    RT_CVAR( rt_solo_lamp_intensity,    100.f,  "RT intensity per solo bulb light. Under rt_ceiling_edge_intensity (180), "
+                                                "rt_faux_lamp_intensity (500) and rt_ceiling_lamp_intensity (700), but well "
+                                                "above where it sat when a solo bulb was only a small recessed fitting — "
+                                                "because a solo bulb is the ONLY light on its pane and has to carry the room "
+                                                "a lattice used to carry with four. Was 90, halved to 45 on 2026-08-08; "
+                                                "raised to 200 on 2026-08-14 when SFLATAS became a broken-bulb ceiling PANE "
+                                                "lit by its one surviving bulb, then settled at 100 the same day — 200 read "
+                                                "too hot by eye. SFLATDE keeps the modest value through "
+                                                "rt_solo_small_intensity, which exists precisely so a pane and a recessed "
+                                                "fitting can differ" )
     RT_CVAR( rt_solo_lamp_radius,       0.06f,  "RT source radius in meters for solo bulb lights. Tighter than the faux/real "
                                                 "lattice/edge lamps (0.35/0.10): a single visible bulb reads better with a "
                                                 "harder, more precise source than a soft wide one" )
@@ -791,7 +796,7 @@
 
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
-    RT_CVAR( rt_spectre_alpha,          0.20f,  "the single alpha a LIVING 64Spectre (SAR2) renders at, in every state "
+    RT_CVAR( rt_spectre_alpha,          0.24f,  "the single alpha a LIVING 64Spectre (SAR2) renders at, in every state "
                                                 "[0 = disable, use whatever DECORATE's A_SetTranslucent last set]. 0.20 is the "
                                                 "value the actor's own See/Melee/Pain states use, so this changes nothing "
                                                 "about a spectre that is awake and chasing you — it only pulls the Spawn/Idle "
@@ -801,8 +806,12 @@
                                                 "wakes up, which is why it still read as lit in a pitch black room while a "
                                                 "charging one looked correct. Cost: the Idle state's 0.25->1.0 alpha pulse is "
                                                 "flattened; under path tracing that pulse reads as the ghost glowing on and "
-                                                "off rather than as a shimmer (2026-08-09)" )
-    RT_CVAR( rt_nightmareimp_alpha,     0.35f,  "the single alpha a LIVING 64NightmareImp (TRO2) renders at, in every state "
+                                                "off rather than as a shimmer (2026-08-09).\n"
+                                                "0.20 -> 0.24 on 2026-08-14: 20% MORE OPAQUE, asked for by eye. Read as a "
+                                                "20% cut in opacity's complement it would be 0.36, i.e. nearly twice as "
+                                                "solid — that is not what was wanted here, and the same 1.2x was applied "
+                                                "to rt_nightmareimp_alpha so the pair keeps its relative spacing" )
+    RT_CVAR( rt_nightmareimp_alpha,     0.42f,  "the single alpha a LIVING 64NightmareImp (TRO2) renders at, in every state "
                                                 "[0 = disable, use DECORATE's value]. The companion to rt_spectre_alpha, but "
                                                 "note the two monsters had DIFFERENT bugs. The imp declares a flat "
                                                 "\"Alpha 0.60\" and none of its states call A_SetTranslucent, so unlike the "
@@ -818,7 +827,10 @@
                                                 "for real RT brightness in this mod, so a faint sprite is what actually makes "
                                                 "imperfect light tracking stop being visible. Still well above the spectre's "
                                                 "0.20 — a nightmare imp is a semi-transparent monster, not an invisible one "
-                                                "(2026-08-09)" )
+                                                "(2026-08-09).\n"
+                                                "0.35 -> 0.42 on 2026-08-14, the same 1.2x applied to rt_spectre_alpha in "
+                                                "the same pass — 20% more opaque, keeping the two monsters' relative "
+                                                "spacing" )
     RT_CVAR( rt_spectre_corpse_solid,   true,   "stop treating a 64Spectre as a spectre once it is dead (SAR2 frames I-N). "
                                                 "A spectre carries RG_MESH_PRIMITIVE_TRANSLUCENT, so RTGL1 rasterizes it and "
                                                 "RsWorld.inl draws vertexColor*texture with NO lighting term — the corpse "
@@ -860,6 +872,62 @@
                                                 "is deliberate: routing dynamic lights here is what made the illumination "
                                                 "volume look foggy. Corpses are excluded — they are solid and genuinely traced "
                                                 "and lit, see rt_spectre_corpse_solid (2026-08-09)" )
+    RT_CVAR( rt_ghost_emis_split,       true,   "put a living ghost's EYES on their own primitive, so the body can be a "
+                                                "normal alpha-blended sprite. This is what makes rt_spectre_alpha and "
+                                                "rt_nightmareimp_alpha work at all -- see rt_ghost_emis for why they "
+                                                "were inert.\n"
+                                                "The body and the emission live on DIFFERENT rasterizer attachments "
+                                                "with different blend factors: the body is attachment 0 at SRC_ALPHA, "
+                                                "outScreenEmission is attachment 1 at ONE,ONE and never reads alpha. So "
+                                                "the body does not need the emissive and the eyes do not need the "
+                                                "alpha. The body goes out with emissive 0 (+EMISSIVE_OVERRIDE, so the "
+                                                "material cannot restore it), which keeps it out of RTGL1's ADDITIVE "
+                                                "pipeline; the same quad is then uploaded a second time with its packed "
+                                                "alpha set to ZERO, which contributes exactly nothing to the body "
+                                                "(SRC_ALPHA x colour = 0) and the full eye mask to the emission.\n"
+                                                "Costs one extra rasterized quad per visible ghost per frame -- same "
+                                                "vertices, same transform, no texture or geometry work, the same trick "
+                                                "rt_sprite_shadow's proxies use. 0 reverts to the old behaviour: an "
+                                                "additive body whose alpha cvar does nothing (2026-08-14)" )
+    RT_CVAR( rt_ghost_emis,             true,   "keep the eye-mask EMISSION on a living see-through monster (64Spectre "
+                                                "SAR2, 64NightmareImp TRO2). Off = prim.emissive is forced to 0 with "
+                                                "RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE so the material cannot put it back.\n"
+                                                "This is the knob behind 'rt_nightmareimp_alpha changes nothing'. The "
+                                                "alpha is packed correctly (measured: 0.42 -> packedA 89/255, 1.00 -> "
+                                                "214/255) and the image does not move, because the BLEND MODE is wrong, "
+                                                "not the alpha. These sprites carry an eye mask, so textures.json gives "
+                                                "them emissiveMult 2.0; RTGL1's TextureMeta overwrites prim.emissive "
+                                                "with it, and RasterizedDataCollector::ToPipelineState turns any "
+                                                "TRANSLUCENT primitive with emissive>0 into an ADDITIVE one "
+                                                "(SRC_ALPHA / ONE). Additive blending cannot occlude what is behind it "
+                                                "at ANY alpha -- the cvar only scales how much a dark sprite ADDS to a "
+                                                "lit room, which is close to invisible on this art.\n"
+                                                "Cost, and the reason this is not the default: prim.emissive is also "
+                                                "the multiplier on outScreenEmission, so the glowing EYES go dark with "
+                                                "it. Having both alpha AND eyes needs an RTGL1 change (stop inferring "
+                                                "ADDITIVE from emissive on a primitive that explicitly asked for "
+                                                "translucency), which is a runtime rebuild, not a cvar. "
+                                                "A/B: tools/arms/ghost-noemis.cfg against ghost-opaque.cfg "
+                                                "(2026-08-14)" )
+    RT_CVAR_NOARCH( rt_ghost_debug,     0,      "Debug: trace the LIVING-GHOST alpha chain, once a second per sprite. "
+                                                "1 = only sprites GhostSprite() already classifies as a ghost; "
+                                                "2 = EVERY actor sprite, which is the mode that answers 'my cvar does "
+                                                "nothing'.\n"
+                                                "Prints the sprite name as this code sees it, the classification, the "
+                                                "incoming object/vertex alpha, the cvar in force (rt_spectre_alpha or "
+                                                "rt_nightmareimp_alpha), rt_ghost_lightscale's factor, the alpha "
+                                                "actually PACKED into prim.color, and whether the primitive went out "
+                                                "TRANSLUCENT or ALPHA_TESTED.\n"
+                                                "It exists because 'rt_nightmareimp_alpha changes nothing at any value' "
+                                                "has at least four causes that look identical on screen: the sprite "
+                                                "never reaches the branch (name mismatch / not an ExportInstance / "
+                                                "rt_mod_compat off), the value is overwritten later, it is packed and "
+                                                "RTGL1 ignores it, or it is packed and something else dominates the "
+                                                "image. packedA moving with the cvar puts the fault downstream of this "
+                                                "file; packedA NOT moving puts it here. Mode 2 rather than a TRO2/SAR2 "
+                                                "filter on purpose -- a filtered instrument can only confirm the theory "
+                                                "it was built around, and 'no line appeared' would not distinguish a "
+                                                "name mismatch from the monster being off screen (2026-08-14)" )
     RT_CVAR_NOARCH( rt_prim_debug,     false,   "Debug: list world textures RTGL1 will RASTERIZE rather than ray-trace. A "
                                                 "rasterized primitive is never added to the acceleration structure, so it "
                                                 "renders normally and can never block a shadow ray — which looks exactly like "
@@ -1187,7 +1255,7 @@
                                                 "moves to the lying-down side the moment gzdoom quarters its Height. "
                                                 "Lower it further if monsters still read heavy; this is the knob for "
                                                 "that, NOT rt_sprite_ao_strength, which would take the props with it." )
-    RT_CVAR( rt_sprite_ao_sizefall,     0.6f,   "how much SMALLER, relative to its owner, a blob gets as the sprite "
+    RT_CVAR( rt_sprite_ao_sizefall,     0.2f,   "how much SMALLER, relative to its owner, a blob gets as the sprite "
                                                 "grows [0..1]. 0 = footprint strictly proportional to the object; "
                                                 "1 = every blob the same size whatever its owner.\n"
                                                 "Both sizing paths are otherwise LINEAR in the object -- the circle is "
@@ -1204,10 +1272,17 @@
                                                 "a thing changes size in play (gzdoom quarters Height on death).\n"
                                                 "The reference is deliberately not a cvar: moving the pivot is what "
                                                 "rt_sprite_ao_radius and rt_sprite_ao_fit already do, and this knob "
-                                                "only sets how much SPREAD there is around it." )
-    RT_CVAR( rt_sprite_ao_shape,        1,      "the FOOTPRINT'S SHAPE. 0 = always a circle at the collision radius; "
+                                                "only sets how much SPREAD there is around it.\n"
+                                                "Shipping moved 0.6 -> 0.2 on 2026-08-14, i.e. mostly back to "
+                                                "proportional. It lands with rt_sprite_ao_shape 2 in the same pass and "
+                                                "the two interact: once every blob is an ellipse fitted to the SPRITE, "
+                                                "the footprint already tracks the art rather than the collision "
+                                                "radius, so a heavy extra correction on top was flattening big and "
+                                                "small things toward the same smudge." )
+    RT_CVAR( rt_sprite_ao_shape,        2,      "the FOOTPRINT'S SHAPE. 0 = always a circle at the collision radius; "
                                                 "1 = circle for upright things, an ellipse fitted to the SPRITE for "
-                                                "things lying down (shipping); 2 = fitted ellipse for everything.\n"
+                                                "things lying down; 2 = fitted ellipse for EVERYTHING (shipping since "
+                                                "2026-08-14).\n"
                                                 "One shape cannot serve every class, which is the same lesson "
                                                 "rt_sprite_shadow_scope encodes. A standing body's footprint really is "
                                                 "roughly round, and the collision radius is the honest measure of it -- "
@@ -1221,7 +1296,15 @@
                                                 "opposite of rt_sprite_shadow's world-fixed proxies, and for the same "
                                                 "reason -- a cast shadow's shape must not follow the camera, but a "
                                                 "footprint traced from the drawn object should track what is drawn. "
-                                                "Set 0 if the swing reads worse than the disc did." )
+                                                "Set 0 if the swing reads worse than the disc did.\n"
+                                                "Shipping moved 1 -> 2 on 2026-08-14: standing bodies get the fitted "
+                                                "ellipse as well. Note this changes their SIZE as well as their shape "
+                                                "-- the circle is rt_sprite_ao_radius x the collision radius, the "
+                                                "ellipse is rt_sprite_ao_fit x the SPRITE's width and rt_sprite_ao_"
+                                                "aspect across -- and the two upright knobs still apply on top, so a "
+                                                "standing body keeps its rt_sprite_ao_upright dimming. Judge it on an "
+                                                "enemy standing on a LIT floor: too long a smudge is rt_sprite_ao_fit, "
+                                                "too thin is rt_sprite_ao_aspect." )
     RT_CVAR( rt_sprite_ao_fit,          1.f,    "multiplies the SPRITE-FITTED along-axis (rt_sprite_ao_shape 1/2 only). "
                                                 "1 = exactly the art's own horizontal extent.\n"
                                                 "Separate from rt_sprite_ao_radius on purpose: that one multiplies the "
@@ -1253,6 +1336,19 @@
                                                 "blob is what keeps its feet on the floor in that frame. The two do "
                                                 "overlap where both are present, which is why the default strength is "
                                                 "well under half." )
+    RT_CVAR( rt_sprite_ao_ghosts,       false,  "give a contact blob to a LIVING SEE-THROUGH monster as well -- the "
+                                                "64Spectre (SAR2) and the 64NightmareImp (TRO2). Off by default, and "
+                                                "that is the same narrowing rt_sprite_shadow already applies to them "
+                                                "for the same reason.\n"
+                                                "A contact blob asserts that a SOLID body is sitting on this floor and "
+                                                "blocking the light that would otherwise reach it. These two are "
+                                                "rasterized translucent overlays -- the room is visible THROUGH them at "
+                                                "rt_spectre_alpha / rt_nightmareimp_alpha -- so a full-strength opaque "
+                                                "smudge under a body you can see through reads as a painted disc "
+                                                "following the monster, and it is the most visible thing about a "
+                                                "creature whose whole point is being hard to see. Their CORPSES are "
+                                                "unaffected: rt_spectre_corpse_solid makes those ordinary solid "
+                                                "sprites, and they keep the blob (2026-08-14)." )
     RT_CVAR( rt_sprite_ao_segments,     32,     "ANGULAR resolution of the blob [3..64] -- how round it is. The falloff "
                                                 "is vertex-interpolated from one centre vertex, so the rim is the only "
                                                 "polygonal boundary and it sits at alpha 0, where a facet cannot be "
@@ -1482,7 +1578,40 @@
     RT_CVAR( rt_refr_glass,             1.52f,  "glass index of refraction") 
     RT_CVAR( rt_refr_water,             1.33f,  "water index of refraction") 
     RT_CVAR( rt_refr_thinwidth,         0.0f,   "approx. width of thin media, e.g. thin glass (in meters)") 
-    RT_CVAR( rt_refl_thresh,            0.0f,   "assume mirror if roughness is less than this value") 
+    RT_CVAR( rt_refl_thresh,            0.6f,   "GLOBAL ROUGHNESS FLOOR: no surface may be glossier than this. "
+                                            "Named for its original job, but the only thing it does today is "
+                                            "clamp roughness UP (HitInfo.inl, minRoughness). It does NOT gate "
+                                            "water or mirrors -- those reflect from a primitive flag, not from "
+                                            "roughness (Media.h isReflectFromFlags)" )
+
+    // The two levers over the hand-labelled metal/roughness pass
+    // (tools/apply_material_labels.py, tools/bake_material_labels_orm.py, and
+    // docs/plan-metal-labelling.md). Metals have no diffuse lobe, so a rough dark
+    // metal is both the darkest and the noisiest surface in a 1-spp interior:
+    //   rt_metallic 0     -> every surface dielectric, ignoring the ORM blue
+    //                        channel and metallicDefault. The whole labelling
+    //                        pass off in one keystroke, no files touched.
+    //   rt_refl_thresh    -> clamps roughness UP globally (shader minRoughness),
+    //                        which narrows nothing but widens every lobe.
+    // Keep them apart when judging: the first is "is this metal at all", the
+    // second is "how tight is the highlight allowed to get".
+    RT_CVAR( rt_metallic,               true,   "honour authored metalness (ORM blue channel / metallicDefault). "
+                                                "0 forces every surface dielectric -- the escape hatch if metals "
+                                                "read too noisy or too dark" )
+
+    // Fail-safes over a WRONG label, rather than over metalness as a whole.
+    // A metal has no diffuse lobe: it shows a blurred image of its surroundings
+    // and nothing else. In a dark room that is nothing, and the rougher it is the
+    // darker it reads, because the same energy is spread wider. rt_refl_thresh
+    // pushes roughness UP and therefore makes this worse, not better -- these two
+    // are the knobs that actually counter it.
+    RT_CVAR( rt_metallic_roughcut,      0.7f,   "roughness at which metalness fades out, over rt_metallic_roughband. "
+                                                "Very rough 'metal' is usually oxide, paint or scale -- dielectrics -- "
+                                                "so 0.85 demotes a mislabelled rusty floor automatically. 0 = off" )
+    RT_CVAR( rt_metallic_roughband,     0.3f,   "width of that fade. At roughcut 0.85 and band 0.1, roughness 0.95 is "
+                                                "fully dielectric" )
+    RT_CVAR( rt_metallic_max,           0.9f,   "ceiling on metalness. 0.8 leaves every metal a fifth of its diffuse "
+                                                "response, so nothing can reach pure black in an unlit room. 1 = off" )
 
     // Doom64-RT: this ALSO gates localised smoke (rt_smoke). The puff is spawned
     // from the flash's own resolved position -- which has already been traced
@@ -2310,6 +2439,198 @@
                                                 "not just the ghosts. Superseded by rt_ghost_lightscale, which is per-sprite "
                                                 "and needs no shader support. Left in (and RTGL1 still built with "
                                                 "ILLUMINATION_VOLUME=1) only so the path can be re-tested (2026-08-09)" )
+
+    // Impact sparks. Spawned from the hitscan impact point in P_LineAttack, simulated on the
+    // CPU in rt_sparks.cpp, drawn as one batched primitive of flat world-space squares, and
+    // lit by ONE short spherical light per impact. NOT smoke: a 1 cm bright dot cannot be
+    // represented in a 64-slice froxel volume, so nothing here touches rt_smoke_*.
+    RT_CVAR( rt_spark,                  false,  "master switch for impact sparks -- the hot bits thrown off when a hitscan "
+                                                "hits a wall, floor or ceiling. OFF by default until judged in play. "
+                                                "Flesh is deliberately excluded (blood owns it), as are sky and liquid. "
+                                                "The particles are an ADDITIVE rasterized overlay and so appear in no "
+                                                "reflection and cast no GI: rt_spark_light is the half that is actually "
+                                                "ray traced, and rt_spark_nolight is the arm that shows how much it carries." )
+    RT_CVAR( rt_spark_count,            8,      "sparks per impact, before the distance cull. A shotgun blast is 7-20 "
+                                                "separate impacts, so the per-impact count is NOT the thing that bounds "
+                                                "a super-shotgun -- rt_spark_max is. Raise this for a denser burst from "
+                                                "one bullet; raise rt_spark_max if a shotgun visibly starves." )
+    RT_CVAR( rt_spark_life,             1.1f,   "spark lifetime in seconds. A settled spark (rt_spark_rest) spends the "
+                                                "remainder of its life lying still on the floor glowing down the palette "
+                                                "ramp, so this is the ember-linger knob. It also stretches the RAMP, which "
+                                                "is indexed by age/life -- doubling it makes a spark stay on each PUFF "
+                                                "palette entry twice as long, i.e. hot for longer, not merely present for "
+                                                "longer. Raised 0.55 -> 1.1 from play. THE POOL FOLLOWS IT: twice the life "
+                                                "is twice the live sparks for the same rate of fire, which is why "
+                                                "rt_spark_max went 320 -> 640 in the same change. Move them together or a "
+                                                "shotgun blast starts evicting its own sparks." )
+    RT_CVAR( rt_spark_speed,            6.0f,   "initial speed in m/s, along the direction the shot REFLECTS off the "
+                                                "surface. Reflection is why the impact hook is in P_LineAttack rather "
+                                                "than P_SpawnPuff -- only there is a true surface normal in scope." )
+    RT_CVAR( rt_spark_spread,           38.f,   "half-angle in DEGREES of the cone the sparks are thrown into around the "
+                                                "reflected direction. Small is a jet, wide is a splash. At 90 the sparks "
+                                                "cover the whole hemisphere and the reflection stops reading at all." )
+    RT_CVAR( rt_spark_gravity,          11.f,   "downward acceleration in m/s^2. Higher than real gravity on purpose: at "
+                                                "9.8 a 0.55 s spark barely arcs, and the fall is what separates a spark "
+                                                "from a static dot." )
+    RT_CVAR( rt_spark_drag,             1.6f,   "velocity damping per second. Air resistance on something this small is "
+                                                "large, and the drag is what makes a spark decelerate into its settle "
+                                                "rather than skidding at launch speed until it dies." )
+    RT_CVAR( rt_spark_size,             0.055f, "edge of the square, in METRES, before rt_spark_grid quantizes it. One "
+                                                "spark is one flat single-coloured quad -- that IS the pixel. There is no "
+                                                "texture and no falloff, so this is the only size knob." )
+    RT_CVAR( rt_spark_grid,             0.03125f, "world-space snapping in METRES for both a spark's SIZE and its POSITION "
+                                                "(1/32 m = 1 map unit). This is the pixel-art knob: a spark moves in "
+                                                "discrete steps like an animated sprite instead of sliding. WORLD space, "
+                                                "never screen space -- screen-space blocks crawl as soon as the camera "
+                                                "turns and the eye reads that as noise rather than as style, which is the "
+                                                "same reasoning as rt_smoke_stylize_grid. 0 = off (arm: spark-nogrid)." )
+    RT_CVAR( rt_spark_bright,           2.0f,   "how hard a spark ADDS to the screen. THE ONLY PER-SPARK BRIGHTNESS LEVER "
+                                                "THERE IS, and that is worth knowing before reaching for another one: "
+                                                "RTGL1 Saturates RgMeshPrimitiveInfo::emissive to [0,1] and this batch "
+                                                "already ships at 1.0, so raising it is a literal no-op (the same trap as "
+                                                "pitfall 15); and the other multiplier in the shader line, "
+                                                "emissionMaxScreenColor / rt_emis_maxscrcolor, is GLOBAL to every world "
+                                                "emissive in the game and pinned at 3, so moving it for sparks would "
+                                                "re-tune every monitor, key and lava pool with them (pitfall 12). What is "
+                                                "left is vertex ALPHA, which RsWorld.inl multiplies the emission by, and "
+                                                "this scales it. It is CLAMPED at 1 per vertex because the colour is packed "
+                                                "to 8 bits, so the effect is not a linear gain: at 2.0 a spark HOLDS full "
+                                                "brightness for the first ~70% of its life instead of dimming from the "
+                                                "frame it was born, then falls. That hold is what reads as brighter. The "
+                                                "palette RGB is deliberately NOT scaled -- the top of the PUFF ramp is "
+                                                "already f8f8b0, and multiplying it would clip the ramp to white and throw "
+                                                "away the match to the sprite that the whole look is built on." )
+    RT_CVAR( rt_spark_max,              640,    "live sparks across the whole level. The pool is a fixed array and"
+                                                "overflow is oldest-out, so this bounds memory and the per-frame vertex "
+                                                "build, not the spawn rate. Uploads are one batched primitive, so the "
+                                                "draw cost of a full pool is a single rgUploadMeshPrimitive." )
+    RT_CVAR( rt_spark_far,              40.f,   "metres beyond which an impact spawns NO sparks. A SPAWN cull, not a "
+                                                "render cull, and that is deliberate: eviction is oldest-out while the "
+                                                "interesting sparks are the ones in front of your face, so a firefight "
+                                                "across the map would otherwise push your own impact out of the pool. "
+                                                "Same reasoning as rt_smoke_monster_far." )
+
+    RT_CVAR( rt_spark_collide,          true,   "master for all three collision tiers: floor/ceiling reflection, wall "
+                                                "reflection, and settling. OFF is the before, and it is worth looking at "
+                                                "once (arm: spark-nocollide) -- sparks that sink through the floor read "
+                                                "as fading dots rather than as sparks, which is why collision is not an "
+                                                "optional polish pass here." )
+    RT_CVAR( rt_spark_bounce,           0.38f,  "restitution: the fraction of normal velocity kept across a bounce. "
+                                                "0 = dead stop on contact, 1 = perfectly elastic and the spark never "
+                                                "settles. Hot metal fragments are not bouncy; this is deliberately low." )
+    RT_CVAR( rt_spark_friction,         0.28f,  "fraction of TANGENTIAL velocity lost per bounce. Without it a spark "
+                                                "landing on a floor keeps all its horizontal speed and skates away "
+                                                "instead of skittering to a halt." )
+    RT_CVAR( rt_spark_rest,             0.55f,  "speed in m/s below which a bounced spark SETTLES: velocity is zeroed and "
+                                                "it lies where it fell, glowing down the palette ramp until its life runs "
+                                                "out. This is what turns a burst into embers on the floor, and it also "
+                                                "stops the sub-step jitter a nearly-stopped bouncer would otherwise show." )
+    RT_CVAR( rt_spark_trace_max,        24,     "wall traces per tic, nearest-first. Tier 2 only traces when a spark's "
+                                                "step LEAVES its sector, which is false for the large majority of steps, "
+                                                "so this cap is rarely reached -- but it is the only unbounded cost in the "
+                                                "feature and a bounded budget is easier to reason about than a promise "
+                                                "that sector changes stay rare. Profile a super-shotgun into a corner." )
+
+    RT_CVAR( rt_spark_light,            true,   "the per-IMPACT flash: one short spherical light at the impact point. "
+                                                "ONE per impact, never one per spark -- 20 pellets x 8 sparks would be "
+                                                "160 moving lights in a frame, which is rt-lighting-practices section 20 "
+                                                "exactly. This is the only part of the effect that is genuinely traced, "
+                                                "since the particles themselves are a rasterized overlay outside the BLAS." )
+    RT_CVAR( rt_spark_light_intensity,  180.f,  "intensity of the impact flash. Tuned against RT_UploadFlameLights, whose "
+                                                "numbers this path copies wholesale. Raised 90 -> 180 with "
+                                                "rt_spark_bright: unlike the particle quads this has NO ceiling -- it is an "
+                                                "analytic light, not an 8-bit packed vertex colour -- so it is the half of "
+                                                "'twice as bright' that is genuinely a factor of two." )
+    RT_CVAR( rt_spark_light_life,       0.18f,  "seconds the impact flash lasts, faded to zero over its life. Short: the "
+                                                "flash is the moment of impact, not a lamp left behind. Note the light is "
+                                                "driven from the IMPACT POINT, which does not move, rather than from a "
+                                                "particle -- a light chasing a grid-snapped spark reads as the two coming "
+                                                "apart." )
+    RT_CVAR( rt_spark_light_max,        12,     "global cap on live impact flashes, nearest-first. This is what keeps a "
+                                                "super-shotgun from becoming a light storm; the rt_gore_max precedent." )
+
+    RT_CVAR( rt_spark_glow,             true,   "do the FLYING SPARKS cast light, or only the impact point? Reported from "
+                                                "play: 'the sparks themselves don't seem to emit any light, only the "
+                                                "impact location'. That was correct and by construction -- the particles "
+                                                "are an ADDITIVE RASTERIZED overlay, which is bright on screen and lights "
+                                                "nothing, because RTGL1 keeps translucent primitives out of the "
+                                                "acceleration structure entirely. Screen brightness and cast light are "
+                                                "different channels here and no amount of rt_spark_bright will cross "
+                                                "between them; the only thing that casts is an analytic light. So this "
+                                                "adds a few, riding the sparks themselves. NOT ONE PER SPARK -- see "
+                                                "rt_spark_glow_max." )
+    RT_CVAR( rt_spark_glow_max,         8,      "how many flying sparks may carry a light at once, GLOBALLY, nearest "
+                                                "and youngest first. This is the number that keeps the feature "
+                                                "affordable, and it is small on purpose: a super-shotgun is 20 impacts x "
+                                                "8 sparks, so one light per spark is 160 MOVING lights in a frame, which "
+                                                "is rt-lighting-practices section 20 exactly and was rejected on those "
+                                                "grounds when this feature was designed. A handful of glowing sparks "
+                                                "among many reads as all of them glowing, because the eye cannot audit "
+                                                "which dot is lighting the wall. Raise it only with a frame time in "
+                                                "front of you." )
+    RT_CVAR( rt_spark_glow_intensity,   26.f,   "intensity of a flying spark's light. Much dimmer than the impact flash "
+                                                "(rt_spark_light_intensity): a 5 cm fragment is not a lamp, and the "
+                                                "effect wanted is a moving highlight travelling over the wall, not a "
+                                                "second flash chasing the first. Fades with the spark's own age curve so "
+                                                "the light and the dot go out together." )
+    RT_CVAR( rt_spark_style,            0,      "0 = PIXELATED, 1 = REALISTIC. Two looks, one particle system. Pixelated "
+                                                "snaps position and size to rt_spark_grid and quantizes colour to the "
+                                                "seven PUFF palette entries with no blending, so a spark is a chunky "
+                                                "square that steps -- it matches the sprite art it fires alongside. "
+                                                "Realistic drops the snapping, interpolates the same ramp smoothly, and "
+                                                "stretches the quad along its own velocity into a short streak, which is "
+                                                "what a hot fragment actually looks like in motion. DELIBERATELY "
+                                                "RESTRAINED: same palette, same sizes, no bloom of its own, no motion "
+                                                "blur, streak capped by rt_spark_streak. It is the same effect drawn "
+                                                "smoothly, not a different one -- 'like the base game' means palette and "
+                                                "mood, and the realistic mode is meant to stay inside that." )
+    RT_CVAR( rt_spark_streak,           2.5f,   "REALISTIC style only: how many times its own width a spark may stretch "
+                                                "along its velocity. 1 = no streak, square. The stretch is capped rather "
+                                                "than proportional to speed alone, because an uncapped streak turns a "
+                                                "fast spark into a long thin line that reads as a laser rather than as a "
+                                                "fragment. Ignored entirely at rt_spark_style 0, where the whole point is "
+                                                "that a spark is one square pixel." )
+
+    RT_CVAR( rt_spark_debris,           true,   "MASTER for wall debris: a surface labelled CONCRETE throws dull chips "
+                                                "instead of hot sparks. OPT-IN, and that is the whole reason this can "
+                                                "ship on: a texture must be positively labelled `concrete` in "
+                                                "rt/data/spark_surfaces.txt to behave differently, so metal, other and "
+                                                "everything the labeller has not reached keep the ordinary spark. The "
+                                                "first version inverted this -- metal sparked and EVERYTHING ELSE was "
+                                                "debris -- which with 83 of 2331 textures labelled meant almost the "
+                                                "whole game turned to chips, and one unlabelled map would have been "
+                                                "entirely wrong. Off is the before. See docs/plan-impact-fx.md." )
+    RT_CVAR( rt_spark_debris_count,     6,      "chips per impact on a non-metal surface. Fewer than sparks: stone throws "
+                                                "a handful of visible fragments where metal throws a shower." )
+    RT_CVAR( rt_spark_debris_life,      1.4f,   "chip lifetime in seconds. Longer than a spark's -- debris does not burn "
+                                                "out, it falls, lands and stays until it is culled." )
+    RT_CVAR( rt_spark_debris_speed,     3.4f,   "initial speed, m/s. Slower than a spark: a chip is knocked loose, not "
+                                                "ejected as burning metal." )
+    RT_CVAR( rt_spark_debris_size,      0.05f,  "chip edge in metres, before rt_spark_grid quantizes it." )
+    RT_CVAR( rt_spark_debris_gravity,   17.f,   "downward acceleration for chips, m/s^2. Heavier than a spark's on "
+                                                "purpose: the fragment is dense and the short arc is what separates it "
+                                                "from a spark at a glance, before the colour is even read." )
+    RT_CVAR( rt_spark_debris_bounce,    0.22f,  "restitution for chips. Below a spark's -- stone does not bounce, it "
+                                                "clatters once and settles." )
+    RT_CVAR_NOARCH( rt_spark_surface_debug, 1,  "1 prints the TEXTURE NAME of every surface an impact lands on, and how "
+                                                "it classified. This is the tool for building "
+                                                "rt/data/spark_surfaces.txt, and it exists because there is no other way "
+                                                "to do the job: Doom 64 texture names are opaque (C1, C102B, SPACEAO1), "
+                                                "a screenshot carries no texture name, and identifying a surface by "
+                                                "matching the art has pointed the wrong way before. Shoot a wall, read "
+                                                "the name, decide, add the line, `spark_surfaces` to reload. "
+                                                "ON BY DEFAULT while the labelling is in progress, and that costs "
+                                                "nothing in normal play because it cannot print unless rt_spark is on "
+                                                "-- the whole spawn path early-returns first, and sparks ship off. The "
+                                                "A/B arms each state their own value, so only a plain launcher run "
+                                                "picks this up; every spark-* arm except spark-debris still sets it to "
+                                                "0 so a look can be judged without console spam over the image." )
+    RT_CVAR_NOARCH( rt_spark_debug,     0,      "1 logs the chain once a second: A/hit (impacts seen and why any were "
+                                                "rejected), B/spawn (sparks created, live of max), C/sent (quads uploaded, "
+                                                "lights of cap). The point is that `nothing spawned` and `spawned but not "
+                                                "drawn` look identical on screen, and this project has lost sessions to "
+                                                "not being able to tell them apart. The `sparks` CCMD prints the same "
+                                                "counters once, on demand." )
 
     RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )

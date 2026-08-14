@@ -283,6 +283,23 @@ constexpr uint64_t SwitchLightId_Base    = 1ull << 46;
 // set die and respawn, and it throws away its temporal reservoirs, which on lights
 // this large reads as the entire room boiling.
 constexpr uint64_t LavaLightId_Base      = 1ull << 47;
+// Lights carried by FLYING sparks, as opposed to the impact flash below. Bit 49,
+// the last free bit under GunGlowLightId at 1<<50. Keyed on the spark's own
+// monotonic spawn id (low 32 bits), NOT on the light slot: a slot reassigned to a
+// different spark each frame would be one light teleporting across the room,
+// which is worse for ReSTIR than a light dying. Tied to the spark, a glow is born
+// and dies with it and never jumps.
+constexpr uint64_t SparkGlowId_Base      = 1ull << 49;
+// Impact-spark flashes. Bit 48, one clear bit above the lava range: a lava ID is
+// LavaLightId_Base + secIndex * LavaSlotsPerSector + cell, and secIndex * 65536 at
+// any sector count a Doom map can hold stays far below 1<<48, so the two cannot
+// meet. GunGlowLightId at 1<<50 is the next occupant above, leaving 49 spare.
+//
+// The low bits are the POOL SLOT, never the age or the tick. That is the rule
+// SwitchLightId_Base and LavaLightId_Base both state: an id that moves makes RTGL1
+// see the whole set die and respawn every frame and throw away its temporal
+// reservoirs. A flash lives ~0.18 s, so it would be reborn for its entire life.
+constexpr uint64_t SparkFlashId_Base     = 1ull << 48;
 // 16 bits of slot: the grid CELL packed as (cellY & 0xFF) * 256 + (cellX & 0xFF).
 // 256 was not enough -- a lava hall is easily more than 256 grid cells, and the
 // wrap gave two lights in the same sector the same id, which RTGL1 asserts on and
@@ -521,6 +538,20 @@ void RT_UploadFlameLights();
 
 // rt_smoke.cpp
 void RT_UpdateSmokePuffs();
+
+// rt_sparks.cpp -- impact sparks. Three calls per frame, in this order: the sim
+// steps the pool, the upload draws it, the lights go out with it. The SPAWN entry
+// point is NOT here: it is called from playsim (P_LineAttack) and so lives at
+// global scope, exactly as RT_SpawnFluid does -- see rt_sparks.cpp.
+void RT_UpdateSparks();
+void RT_DrawSparks();
+void RT_UploadSparkLights();
+void RT_ClearSparks();
+void RT_SparkDebugTick();
+// Live counts, so the `sparks` CCMD can report them without duplicating any of
+// the simulation's state. Mirrors g_smokePuffCount above.
+extern uint32_t g_sparkCount;
+extern uint32_t g_sparkFlashCount;
 
 
 // rt_presets.cpp -- the per-map moon/cloud/tint/fog tables.

@@ -158,12 +158,12 @@ struct SoloBulbTex
 static constexpr SoloBulbTex SoloBulbTextures[] = {
     { "SFLATDE", 31.5, 30.5, /*verySmall*/ true },
     { "SFLATCH", 32.0, 32.0, /*verySmall*/ false },
-    // SFLATAS, the ceiling lamp pane, joined this list on 2026-08-14 together with
-    // the art change that made it a single-bulb flat (tools/make_single_bulb_flat.py,
-    // README "Art changes"). It is NOT a solo bulb in the original game -- it paints
-    // 2x2 -- so the table entry and the texture override have to ship together. With
-    // the stock four-bulb art this puts one light where three bulbs are painted; with
-    // the new art and the old table, three lights land on blank plate.
+    // SFLATAS, the ceiling lamp pane, joined this list on 2026-08-14. It is NOT a solo
+    // bulb in the original game -- it paints 2x2 -- so the table entry and the texture
+    // override (tools/gen_broken_bulb_flat.py -> d64r-sflatas-broken.wad) have to ship
+    // together. With the stock four-bulb art this lights one bulb and leaves three
+    // painted-but-dark; with the new art and no table entry, the lattice puts a light
+    // inside three bulbs that are visibly smashed.
     //
     // WHY IT MOVED. The lattice gives one light per painted bulb, and those bulbs are
     // 32 map units apart -- one metre. The cage grating's openings are about half
@@ -173,11 +173,26 @@ static constexpr SoloBulbTex SoloBulbTextures[] = {
     // crisp diamonds, 4 casts once the intensity beats the bounce, 16 casts nothing at
     // any source radius. See docs/rt-lighting-practices.md 34.
     //
+    // The art solves it by BREAKING three of the four bulbs rather than deleting them,
+    // which is why this offset is one of the authored lattice positions (BulbLatticeAS
+    // = {15.5, 47.5}) and not the centre of the tile: nothing was moved, so the light
+    // goes where the surviving bulb has always been painted, and _n/_h/_orm stay
+    // authored because all four housings still physically exist.
+    //
+    // A FLAT'S Y IS FLIPPED against the image, and this offset is (16, 16) rather than
+    // the (16, 48) the PNG shows because of it: for a ceiling flat the world position
+    // of a texel is ( img_x, TileSize - img_y ). Measured, not derived -- stand under
+    // the pane (tools/shot.ps1 -WarpTo "96 96" -Pitch 40 on the MAP93 lab), capture
+    // once with rt_solo_lamps 1 and once with 0, and subtract: the lit patch and the
+    // emissive bulb have to land on the same pixels. Placing it at the image's own
+    // (16, 48) put the light on a SMASHED bulb one position away, which reads as "the
+    // lights are misplaced" and is exactly what it is.
+    //
     // Exact strcmp is safe for this one: SFLATAS has no animated frames in
     // D64RTR_v15.WAD and no ANIMDEFS entry, so there is no sibling to fall through to
     // the prefix-matching lattice below and flicker against it. Check that again
     // before adding a texture here that does animate.
-    { "SFLATAS", 32.0, 32.0, /*verySmall*/ false },
+    { "SFLATAS", 16.0, 16.0, /*verySmall*/ false },
 };
 
 static bool RT_FindSoloBulbOffset( const char* name, double& ox, double& oy, bool& verySmall )
@@ -1221,10 +1236,17 @@ void RT_UploadCeilingEdgeLamps()
         // every panned lamp flat in the game already had its lights in the wrong place;
         // it was simply never noticed, because Retribution pans almost none of them.
         //
-        // Sign: GZDoom's xform offsets SHIFT THE TEXTURE, and the lattice offsets are
-        // texture-space, so they add. Verified in the shadow lab rather than reasoned
-        // about -- pan the pane and watch the painted bulb and the lit spot move
-        // together (tools/build_shadow_lab.py --pan).
+        // SIGN: SUBTRACT. A GZDoom flat offset shifts the texture in the NEGATIVE
+        // world direction, so a bulb painted at `base` within its tile appears at
+        // `base - offset`. Adding instead puts the light half a tile from the bulb
+        // it belongs to -- with pan 48 on MAP01's cage the bulb drew at 48 and the
+        // light sat at 16, which is screen/wrongLightPositionAndCut.png: a lit
+        // patch of bare plate beside an unlit bulb.
+        //
+        // The first version added, and the lab "confirmed" it by showing the lit
+        // spot MOVE when the pane was panned. Moving is not agreeing -- the test
+        // has to be that the light lands ON the painted bulb, and at pan 24 both
+        // signs move it, just in opposite directions.
         const int    planeIdx = isCeiling ? sector_t::ceiling : sector_t::floor;
         const double panX     = sector.GetXOffset( planeIdx );
         const double panY     = sector.GetYOffset( planeIdx );
@@ -1254,8 +1276,8 @@ void RT_UploadCeilingEdgeLamps()
                             continue;
                         }
 
-                        const double px = double( tx ) * TileSize + offX[ ox ] + panX;
-                        const double py = double( ty ) * TileSize + offY[ oy ] + panY;
+                        const double px = double( tx ) * TileSize + offX[ ox ] - panX;
+                        const double py = double( ty ) * TileSize + offY[ oy ] - panY;
                         if( px < minx || px > maxx || py < miny || py > maxy )
                         {
                             continue;
