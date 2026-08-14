@@ -2823,6 +2823,76 @@
                                                 "not being able to tell them apart. The `sparks` CCMD prints the same "
                                                 "counters once, on demand." )
 
+    // PROJECTILE IMPACT ARCS. Electric remains that crawl across the surface a
+    // plasma bolt or a BFG ball just hit. They share the spark POOL, the spark
+    // COLLISION and the spark DRAW, and differ in three things: they are thrown
+    // along the surface rather than off it, they use their own projectile's
+    // palette, and they are spawned from a projectile-death walk rather than
+    // from P_LineAttack.
+    //
+    // rt_arc IS ITS OWN MASTER, and deliberately not gated on rt_spark. Sparks
+    // ship off pending a play verdict; arcs would have silently shipped off with
+    // them. That is exactly the hidden coupling the smoke walk has and that
+    // docs/plan-projectile-impact-fx.md 2 argues against inheriting.
+    RT_CVAR( rt_arc,                    1,      "master for PROJECTILE IMPACT ARCS: electric remains that crawl over the "
+                                                "surface where a plasma bolt or BFG ball died. Independent of rt_spark -- "
+                                                "the two systems share a particle pool but not a switch, so hitscan sparks "
+                                                "can stay off while arcs are on." )
+    RT_CVAR( rt_arc_count,              18,     "arc particles per projectile impact. Higher than rt_spark_count because "
+                                                "an arc reads as a RING rather than as a shower: too few and the eye sees "
+                                                "individual dots leaving the impact instead of a discharge spreading over "
+                                                "the wall." )
+    RT_CVAR( rt_arc_life,               0.25f,  "seconds an arc particle lives. SHORT ON PURPOSE, and the number is not "
+                                                "arbitrary: 64PlasmaBall's own death animation (PLSE A-F) runs 16 tics "
+                                                "~= 0.23 s. Much past that and the arcs outlive the flash they came from, "
+                                                "so the impact reads as two separate events rather than one." )
+    RT_CVAR( rt_arc_speed,              7.0f,   "m/s along the SURFACE, away from the impact point. Faster than a spark: "
+                                                "an arc is a discharge racing over the wall, not debris being thrown off "
+                                                "it, and the speed is most of what separates the two reads." )
+    RT_CVAR( rt_arc_spread,             0.30f,  "how far out of the surface PLANE an arc is allowed to stray, 0..1. "
+                                                "0 = a perfectly flat ring crawling on the wall, which reads as a decal "
+                                                "and is too tidy; 1 = a hemisphere, which is just a spark shower in blue. "
+                                                "The value is the whole difference between the two effects, so this is "
+                                                "the first knob to reach for if an arc stops looking electric." )
+    RT_CVAR( rt_arc_size,               0.022f, "metres, edge of an arc particle. Marginally larger than a spark at the "
+                                                "shipping 0.02 -- an arc is hotter and shorter-lived, so it can afford "
+                                                "the size without becoming a blob." )
+    RT_CVAR( rt_arc_bright,             3.0f,   "how hard an arc ADDS to the screen. Read rt_spark_bright first: this is "
+                                                "the same vertex-ALPHA lever and it is subject to the same ceiling. "
+                                                "Higher than the spark's 2.0 because an electric discharge is the "
+                                                "brightest thing in the room for a quarter of a second." )
+    RT_CVAR( rt_arc_drag,               3.5f,   "velocity damping per second for arcs. Much heavier than rt_spark_drag: "
+                                                "an arc should decelerate visibly as it crawls, so the ring expands fast "
+                                                "and then stalls rather than flying away at a constant rate." )
+    RT_CVAR( rt_arc_gravity,            2.0f,   "m/s^2 on an arc particle. Nearly weightless -- an electric remain is not "
+                                                "falling debris -- but not zero, so arcs off a ceiling drift down and the "
+                                                "effect does not read as pinned to the surface." )
+    RT_CVAR( rt_arc_far,                40.f,   "metres beyond which a projectile impact spawns NO arcs. A SPAWN cull, "
+                                                "for the same reason as rt_spark_far: eviction is oldest-out while the "
+                                                "impacts that matter are the ones in front of you." )
+    RT_CVAR( rt_arc_light,              1,      "the one short light per projectile impact, coloured from the arc's own "
+                                                "ramp. This is what makes the effect genuinely ray-traced -- the "
+                                                "particle quads are an additive raster overlay and light nothing." )
+    RT_CVAR( rt_arc_light_intensity,    220.f,  "intensity of a projectile impact's flash. Brighter than the spark "
+                                                "flash's 180: a plasma discharge is a bigger event than a bullet, and "
+                                                "blue and green both read dimmer than amber at equal intensity." )
+    RT_CVAR( rt_arc_light_life,         0.22f,  "seconds the projectile impact flash lasts. Matched to rt_arc_life so "
+                                                "the light and the particles die together -- a flash outliving its arcs "
+                                                "is the tell that made the first spark version look wrong." )
+    RT_CVAR( rt_arc_probe,              1.6f,   "multiplier on the projectile's own Speed, in map units, for the surface "
+                                                "probe. A dead projectile's last recorded position is up to a tic of "
+                                                "flight short of what it hit, and a FIXED distance cannot serve both: "
+                                                "UnmakerLaser is Speed 200 and 64PlasmaBall is Speed 40, a factor of "
+                                                "five. Deriving it from Speed is the only thing that works for both." )
+    RT_CVAR( rt_arc_probe_max,          512.f,  "hard ceiling on the probe above, MAP UNITS. Without it a fast "
+                                                "FastProjectile would probe through a wall into the next room and put "
+                                                "the arcs on the wrong surface entirely." )
+    RT_CVAR_NOARCH( rt_arc_debug,       0,      "1 prints every tracked projectile and every impact: the class matched, "
+                                                "the flavour chosen, whether the probe found a surface, and where. Same "
+                                                "reasoning as rt_spark_debug -- `the projectile was never tracked` and "
+                                                "`tracked but the probe missed` are identical on screen, and they have "
+                                                "completely different fixes." )
+
     RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
     RT_CVAR( rt_water_b,                255,    "water color Blue [0,255]" )

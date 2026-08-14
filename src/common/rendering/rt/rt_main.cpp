@@ -2127,6 +2127,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // Impact sparks, in this order: step the pool, draw it, then light it. The
     // draw has to follow the sim or the batch is a frame stale, and the lights
     // follow the draw only so the debug ladder's C/sent line counts both.
+    //
+    // The projectile walk goes FIRST, so an arc spawned by an impact this tic is
+    // stepped and drawn in the same frame rather than one late. It shares the
+    // spark pool, which is why it belongs to this block and not beside the smoke
+    // walk it deliberately does not hook into.
+    RT_UpdateProjectileImpacts();
     RT_UpdateSparks();
     RT_DrawSparks();
     RT_UploadSparkLights();
