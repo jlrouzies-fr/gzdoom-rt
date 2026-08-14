@@ -62,6 +62,55 @@ constexpr uint32_t RT_SPARK_RAMP[] = {
 };
 constexpr int RT_SPARK_RAMP_N = int( std::size( RT_SPARK_RAMP ) );
 
+// THE ARC RAMPS, and they are sampled the same way PUFF's was -- read out of the
+// PLTE of the projectile's OWN death sprite in D64RTR_v15.WAD, not invented.
+//
+// That is not tidiness for its own sake. It is the single decision that made the
+// spark colours stop needing tuning: a particle that indexes the palette of the
+// sprite playing at the same point, at the same moment, matches it by
+// construction and cannot drift out of agreement later. Every entry below is a
+// colour the game already puts on screen at a plasma or BFG impact.
+//
+// PLSE A0-F0, the player plasma ball's Death frames -- HUE-SHIFTED TOWARD BLUE,
+// and this is the one ramp on this page that is not straight off the sprite.
+//
+// The sprite's bright end is genuinely cyan: its top three entries are #52F7FF,
+// #18D6F7 and #009CDE, which have as much green in them as blue. On a 16-pixel
+// sprite playing for a fifth of a second that reads as "hot plasma"; drawn as
+// hairlines held on a wall it reads as TEAL, which was the note from play. The
+// difference is exposure -- the same colour sat in front of the eye for half a
+// second is judged as a colour rather than as a flash.
+//
+// So the dark half below is the sprite's own (#00397B down is already blue and
+// carries the match), and the bright half is pulled off the green axis. Recorded
+// as a deliberate art call rather than left to look like sampling drift: the
+// "match the source palette by construction" rule is still the default, this is
+// a considered exception to it, and the numbers to go back to are in the comment
+// above if the teal is ever wanted again.
+constexpr uint32_t RT_ARC_PLASMA_RAMP[] = {
+    0x8CB4FF, 0x4C7CFF, 0x2A55F0, 0x1436D2, 0x0A2AA8, 0x00397B, 0x002152, 0x001029,
+};
+constexpr int RT_ARC_PLASMA_RAMP_N = int( std::size( RT_ARC_PLASMA_RAMP ) );
+
+// BFE2 A0-F0, the BFG's own explosion sprite. White core, then the green the
+// weapon is entirely known for. Reaches pure white at the top where the plasma
+// ramp reaches cyan -- BFE2 really does carry FFFFFF and PLSE does not, so the
+// two impacts differ in more than hue.
+constexpr uint32_t RT_ARC_BFG_RAMP[] = {
+    0xFFFFFF, 0x31FF39, 0x10E710, 0x10CE00, 0x08A500, 0x087B00, 0x004200, 0x002100,
+};
+constexpr int RT_ARC_BFG_RAMP_N = int( std::size( RT_ARC_BFG_RAMP ) );
+
+// APLS A0-H0, the arachnotron's plasma. A GENUINELY DIFFERENT PALETTE from the
+// player's, and worth its own row for one table's cost: where PLSE is saturated
+// cyan-into-navy, APLS is a desaturated indigo that never leaves the blue-violet
+// family. Giving the monster the player's ramp would have been the same mistake
+// as handing three different torches one flame colour.
+constexpr uint32_t RT_ARC_ARACH_RAMP[] = {
+    0xF8F8F8, 0xD8D8F8, 0xB0B0F0, 0x9090E8, 0x7070E0, 0x5050D8, 0x3838A8, 0x282870, 0x101030,
+};
+constexpr int RT_ARC_ARACH_RAMP_N = int( std::size( RT_ARC_ARACH_RAMP ) );
+
 // DEBRIS gets its own ramp, and it is deliberately NOT a dimmed spark ramp: a
 // chip of wall is cool, dusty and slightly warm-grey, and it does not cool as it
 // falls because it was never hot. It darkens slightly as it tumbles out of the
@@ -337,6 +386,83 @@ enum class SparkKind : uint8_t
     Debris, // everything else: dull, OPAQUE ray-traced geometry, casts nothing
 };
 
+// NOTE ON WHAT IS *NOT* HERE. Projectile impact arcs were first built as a third
+// SparkKind -- particles thrown along the surface instead of off it. It was the
+// wrong construction and it is worth saying why, because the mistake is an easy
+// one to make twice: a ring of flying quads is a spark shower whatever direction
+// you aim it, and an electric remain is not made of moving fragments at all. It
+// is a MARK ON THE WALL that stays put and crackles. So arcs are not particles
+// and do not live in this pool; see ArcMark below.
+
+// WHICH PROJECTILE this came from, which is the only thing an arc needs to know
+// about its origin -- it selects the ramp and the flash colour and nothing else.
+enum class ArcFlavor : uint8_t
+{
+    Plasma, // the player's plasma rifle
+    Arach,  // the arachnotron's, which has its own palette
+    BFG,
+    COUNT,
+};
+
+struct ArcStyle
+{
+    const uint32_t* ramp;
+    int             rampN;
+    // ONE MULTIPLIER ON THE MARK'S SIZE AND DURATION -- width, reach and life
+    // together. The cvars are authored for the PLASMA RIFLE, which is the weapon
+    // these were tuned against; a flavour states only how it differs.
+    //
+    // Deliberately one number rather than three. A bigger discharge is bigger in
+    // every dimension at once, and three independent scales would let them drift
+    // into a shape no weapon actually has -- the same reason RT_DEBRIS_PROFILES
+    // keeps its rows as multipliers on a shared base rather than as absolutes.
+    float           scale;
+    const char*     name; // for rt_arc_debug only
+};
+
+constexpr ArcStyle RT_ARC_STYLES[ int( ArcFlavor::COUNT ) ] = {
+    // The reference. Every rt_arc_* default means "a plasma rifle impact".
+    { RT_ARC_PLASMA_RAMP, RT_ARC_PLASMA_RAMP_N, 1.0f, "plasma" },
+    // The arachnotron fires the same class of bolt, so it gets the same size --
+    // only the palette differs. A monster's shot reading smaller than the
+    // player's would be the effect telling the player something untrue about
+    // how hard it hits.
+    { RT_ARC_ARACH_RAMP, RT_ARC_ARACH_RAMP_N, 1.0f, "arachnotron" },
+    // DOUBLE. The BFG is the heaviest weapon in the game and its impact should
+    // not read as a plasma bolt in green.
+    { RT_ARC_BFG_RAMP, RT_ARC_BFG_RAMP_N, 2.0f, "bfg" },
+};
+
+const ArcStyle& ArcStyleFor( ArcFlavor f )
+{
+    const int i = int( f );
+    return RT_ARC_STYLES[ ( i >= 0 && i < int( ArcFlavor::COUNT ) ) ? i : 0 ];
+}
+
+// WHICH ACTORS ARC, matched by a substring of the class name.
+//
+// Substring rather than exact, because the WAD subclasses freely:
+// "PlasmaBall" covers 64PlasmaBall, 64ClassicPlasmaBall and
+// 64ClassicPlasmaBallNormal in one row.
+//
+// NO EXCLUSION ROWS ARE NEEDED, which is worth stating because the smoke table
+// needed two and the reason they differ is not obvious. The near misses are
+// 64PlasmaTrail, 64PlasmaRifle, 64BFG9000 and 64BFGExtra -- and none of them
+// contains "PlasmaBall", "ArachnotronPlasma" or "BFGBall" as a substring. The
+// keys were chosen to make that true; a lazier "Plasma" would have caught the
+// trail and the weapon both.
+struct ArcSource
+{
+    const char* cls;
+    ArcFlavor   flavor;
+};
+
+constexpr ArcSource RT_ARC_SOURCES[] = {
+    { "PlasmaBall", ArcFlavor::Plasma },
+    { "ArachnotronPlasma", ArcFlavor::Arach },
+    { "BFGBall", ArcFlavor::BFG },
+};
+
 // Pool ceilings. These bound the fixed arrays; the cvars bound how much of them
 // is used, so raising a cvar past its ceiling is clamped rather than corrupting.
 // THE POOL HAD TO GROW WITH THE LIFETIMES. Sparks went 1.1 s -> 5 s and debris
@@ -363,6 +489,11 @@ constexpr uint64_t RT_DEBRIS_MESH_ID = 0x1000000000000001ull;
 // The contact-occlusion decals. Well clear of the per-class debris IDs above,
 // which run to RT_DEBRIS_MESH_ID + SurfKind::COUNT.
 constexpr uint64_t RT_DEBRIS_AO_MESH_ID = 0x1000000000000100ull;
+
+// The projectile-impact scorches. Clear of the AO blobs above, which run to
+// RT_DEBRIS_AO_MESH_ID + rt_spark_debris_ao_max, and of everything below it.
+// One ID per mark, keyed on the mark's uid.
+constexpr uint64_t RT_ARC_BURN_MESH_ID = 0x1000000000001000ull;
 
 struct Spark
 {
@@ -407,10 +538,33 @@ struct SparkFlash
     FVector3 pos;   // METRES
     float    age;
     float    life;
+    // A flash carries its own colour rather than reading RT_SPARK_RAMP[0], so a
+    // plasma impact throws blue on the wall and a bullet throws amber. Resolved
+    // at spawn: the arc particles that produced it may all be dead by the time
+    // the light is uploaded, so there is nothing left to ask.
+    bool     isArc;
+    ArcFlavor arc;
 };
 
 std::array< Spark, RT_SPARK_HARDMAX >          s_sparks{};
 std::array< SparkFlash, RT_SPARK_FLASH_MAX >   s_flashes{};
+
+// THE POOL IS SHARED, SO THE MASTER GATE IS THE UNION OF TWO CVARS.
+//
+// Sim, draw and lights all used to test rt_spark alone. Arcs live in the same
+// pool, so leaving that in place would have made rt_spark -- which ships OFF --
+// silently switch off the arcs too. That is precisely the coupling
+// docs/plan-projectile-impact-fx.md 2 rejects for the smoke walk, and it would
+// have been just as invisible: the arcs would spawn, be integrated by nothing,
+// and be drawn by nothing.
+//
+// The two remain independent where it counts, at the SPAWN sites: a hitscan
+// impact still tests rt_spark and a projectile impact still tests rt_arc, so
+// each effect can be judged with the other out of the way.
+bool SparkSystemOn()
+{
+    return cvar::rt_spark || cvar::rt_arc;
+}
 
 int s_lastTic = -1;
 
@@ -1115,9 +1269,200 @@ void RT_SpawnImpactSparks( const DVector3& pos,
             fl.pos         = at + normal * 0.06f;
             fl.age         = 0.f;
             fl.life        = std::max( 0.02f, float{ cvar::rt_spark_light_life } );
+            fl.isArc       = false;
+            fl.arc         = ArcFlavor::Plasma; // unread when isArc is false
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// PROJECTILE IMPACT ARCS -- A MARK ON THE WALL, NOT PARTICLES.
+//
+// THE FIRST VERSION WAS PARTICLES AND IT WAS THE WRONG CONSTRUCTION. Arcs were
+// a third SparkKind, thrown along the surface plane instead of off it, on the
+// theory that a ring reads differently from a cone. It does not: reported from
+// play as "just spawn many particles, square / rectangle over the place". A
+// cloud of moving quads is a spark shower whichever direction you aim it,
+// because what the eye reads as "sparks" is not the direction of travel -- it is
+// that the fragments are discrete, separate, and MOVING.
+//
+// An electric remain is none of those things. It is a CONNECTED filigree that
+// stays where it was put and crackles in place. So the primitive here is not a
+// particle at all, it is a POLYLINE lying in the surface plane:
+//
+//   * one ArcMark per impact -- a point, a normal, an in-plane basis, a seed
+//   * `rt_arc_branches` polylines walking outward from that point, each
+//     `rt_arc_segments` steps long, each step turned by a random angle
+//   * every segment drawn as a THIN in-plane quad, `rt_arc_width` across
+//   * a small bright core at the impact -- the remains of the ball itself
+//
+// The random walk is what makes it read as lightning rather than as a starburst:
+// straight rays out of a centre look like a sun, and the eye needs the kinks.
+//
+// THE GEOMETRY IS NOT STORED, it is regenerated every frame from the mark's
+// seed. That is deliberate and not merely thrifty: it is what lets the filigree
+// FLICKER -- individual branches drop out and return between frames, which is
+// most of what sells it as electric -- while staying anchored to the same wall
+// and re-deriving the identical skeleton. A stored mesh would have to be either
+// static (dead) or rebuilt anyway.
+// ---------------------------------------------------------------------------
+namespace
+{
+
+// Ceilings on the per-mark filigree. The cvars bound how much is used, so
+// raising one past its ceiling clamps rather than corrupting.
+constexpr int      RT_ARC_MAX_BRANCH = 24;
+constexpr int      RT_ARC_MAX_SEG    = 16;
+// GREW WITH THE BURN, not with the arcs. The filigree lives half a second and a
+// dozen slots would always have covered it; the scorch lives 25 s, so this is
+// now the ceiling on how far back the wall damage goes rather than a headroom
+// figure. An ArcMark is ~64 bytes, so 96 of them is negligible.
+constexpr uint32_t RT_ARC_MARK_MAX   = 96;
+
+struct ArcMark
+{
+    FVector3  at;   // METRES, on the surface
+    FVector3  nrm;  // unit surface normal
+    FVector3  tan;  // the in-plane basis, FIXED AT SPAWN -- see below
+    FVector3  bit;
+    // ONE CLOCK, TWO LIFETIMES. `age` runs to `life`, which is the SCORCH's
+    // life -- the long one. The filigree reads the same age against
+    // rt_arc_life instead and simply stops drawing once it is past it.
+    //
+    // Two separate ages was the obvious alternative and it is worse: they would
+    // have to be advanced in lockstep by the same dt anyway, and the moment one
+    // is stepped and the other is not, a mark is showing a scorch whose arcs
+    // never expired or arcs on a scorch that has gone.
+    float     age;
+    float     life;
+    // The FILIGREE's own life, already scaled by the flavour. Stored per mark
+    // rather than read from the cvar at draw time, because a BFG mark and a
+    // plasma mark alive at the same moment need different ones -- reading the
+    // cvar would give whichever weapon fired last to both.
+    float     arcLife;
+    uint32_t  seed; // the whole filigree is re-derived from this every frame
+    // MONOTONIC AND NEVER REUSED, unlike the pool slot -- removal is
+    // swap-with-back, so a slot belongs to an unrelated mark the moment one
+    // dies. Every branch light's uniqueID is derived from this; see
+    // ArcGlowId_Base for why that distinction is load-bearing here.
+    uint32_t  uid;
+    ArcFlavor flavor;
+};
+
+std::array< ArcMark, RT_ARC_MARK_MAX > s_arcs{};
+uint32_t                               s_arcCount = 0;
+
+// BRANCH LIGHTS ARE COLLECTED FROM THE GEOMETRY THAT WAS ACTUALLY DRAWN, not
+// recomputed in the light pass. The draw already walks every branch, already
+// knows which ones the crackle dropped this frame, and already has the re-pathed
+// tip position -- recomputing all three in a second pass would be the same work
+// twice AND two places for the churn to disagree, which would show up as lights
+// sitting where no branch is. RT_DrawSparks fills this; RT_UploadSparkLights
+// drains it, and rt_main.cpp:2130 already runs them in that order.
+struct ArcLightCand
+{
+    FVector3 pos;
+    float    r, g, b;
+    float    k;  // 0..1, the branch's own fade x crackle
+    uint64_t id; // ArcGlowId_Base + uid * RT_ARC_MAX_BRANCH + branch
+};
+std::vector< ArcLightCand > s_arcLights;
+
+void RT_ClearArcMarks()
+{
+    s_arcCount = 0;
+}
+
+// `at` is METRES and on the surface; `normal` is a unit surface normal.
+void SpawnArcMark( const FVector3& at, const FVector3& normal, ArcFlavor flavor )
+{
+    const uint32_t cap =
+        std::min( RT_ARC_MARK_MAX, uint32_t( std::max( 0, int{ cvar::rt_arc_max } ) ) );
+    if( cap == 0 )
+    {
+        return;
+    }
+
+    uint32_t slot;
+    if( s_arcCount < cap )
+    {
+        slot = s_arcCount++;
+    }
+    else
+    {
+        // Oldest out. Marks all share one lifetime, so unlike the spark pool
+        // there is no kind to evict within and plain oldest-out is correct.
+        slot = 0;
+        for( uint32_t j = 1; j < s_arcCount; j++ )
+        {
+            if( s_arcs[ j ].age > s_arcs[ slot ].age )
+            {
+                slot = j;
+            }
+        }
+    }
+
+    ArcMark& m = s_arcs[ slot ];
+
+    // THE BASIS IS RESOLVED ONCE, HERE, AND STORED. Rebuilding it per frame from
+    // the normal would give the same vectors -- it is deterministic -- but it
+    // would also mean the filigree silently reorients if the derivation ever
+    // changed, and a mark that rotates on the wall between frames is the exact
+    // artefact this system cannot afford. Cheaper to store six floats.
+    FVector3 t = std::abs( normal.Z ) < 0.9f ? ( normal ^ FVector3{ 0, 0, 1 } )
+                                             : ( normal ^ FVector3{ 1, 0, 0 } );
+    if( t.LengthSquared() < 1e-8f )
+    {
+        t = FVector3{ 1, 0, 0 };
+    }
+    t.MakeUnit();
+
+    m.at   = at;
+    m.nrm  = normal;
+    m.tan  = t;
+    m.bit  = normal ^ t;
+    m.age = 0.f;
+    // SCALED BY THE WEAPON, and resolved here rather than at draw time: two
+    // marks from different weapons can be alive at once.
+    m.arcLife = std::max( 0.05f, float{ cvar::rt_arc_life } ) * ArcStyleFor( flavor ).scale;
+    // The SCORCH's life when there is one, otherwise just the arcs'. Never
+    // shorter than the arcs, or the mark would be evicted out from under a
+    // filigree that is still drawing.
+    m.life = m.arcLife;
+    if( cvar::rt_arc_burn )
+    {
+        m.life = std::max( m.life, std::max( 0.05f, float{ cvar::rt_arc_burn_life } ) );
+    }
+    m.flavor = flavor;
+
+    // The mark's IDENTITY. Every branch angle, every segment length and every
+    // flicker phase is hashed from this, so the same impact always draws the
+    // same skeleton and two impacts never draw the same one.
+    static uint32_t s_nextArcUid = 1;
+    m.uid                        = s_nextArcUid++;
+    m.seed                       = m.uid * 2654435761u + 0x9E3779B9u;
+
+    s_dbgSpawned++;
+}
+
+// Aged from the spark sim, which already owns the tic-delta machinery. Marks do
+// not move, so there is nothing to integrate -- only the clock.
+void AgeArcMarks( float dt )
+{
+    for( uint32_t i = 0; i < s_arcCount; )
+    {
+        ArcMark& m = s_arcs[ i ];
+        m.age += dt;
+        if( m.age >= m.life )
+        {
+            s_arcs[ i ] = s_arcs[ --s_arcCount ];
+            continue;
+        }
+        i++;
+    }
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Simulation
@@ -1210,22 +1555,325 @@ bool SparkHitWall( Spark& sp, const FVector3& from, const FVector3& to, float bo
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// The projectile-death walk that feeds the arcs.
+// ---------------------------------------------------------------------------
+
+struct ProjMark
+{
+    AActor*   mo;      // identity only; NEVER dereferenced after it stops being seen
+    FVector3  lastPos; // MAP UNITS, the last position while still in flight
+    FVector3  dir;     // unit, direction of travel
+    float     speed;   // MAP UNITS per tic, its actual last speed
+    ArcFlavor flavor;
+    int       lastTic;
+};
+std::vector< ProjMark > g_projs;
+
+// Which projectiles arc. The MF_MISSILE test is the load-bearing half and it is
+// FIRST for the same reason rt_smoke.cpp:453 puts it first: P_ExplodeMissile
+// clears the flag while the actor lives on, same class, through its whole death
+// animation. So losing the flag IS the impact -- it is a real edge on the right
+// frame, and it needs no DECORATE edit and no ZScript, which matters because
+// these classes belong to the WAD and may not be edited.
+const ArcSource* ArcSourceFor( AActor* mo )
+{
+    if( !mo || !mo->GetClass() || !( mo->flags & MF_MISSILE ) )
+    {
+        return nullptr;
+    }
+    const char* c = mo->GetClass()->TypeName.GetChars();
+    if( !c )
+    {
+        return nullptr;
+    }
+    for( const ArcSource& s : RT_ARC_SOURCES )
+    {
+        if( strstr( c, s.cls ) != nullptr )
+        {
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
+// A dead projectile's last recorded position is up to a tic of flight short of
+// whatever it hit, in mid air, with no normal and no surface. This recovers all
+// three by re-tracing the last leg. Returns false when there is nothing there --
+// a bolt that detonated on a monster or in open air, which is a legitimate
+// outcome and simply produces no arcs.
+bool ProbeImpactSurface( const ProjMark& m, FVector3* outAt, FVector3* outNrm, sector_t** outSec )
+{
+    // FROM THE PROJECTILE'S OWN SPEED, never a fixed distance. UnmakerLaser is
+    // Speed 200 and 64PlasmaBall is Speed 40: one fixed probe cannot serve both,
+    // and the failure is silent in both directions -- too short finds nothing
+    // for the fast one, too long punches through the wall into the next room for
+    // the slow one and puts the arcs on a surface the player never saw hit.
+    float len = std::max( 1.f, m.speed ) * std::max( 0.1f, float{ cvar::rt_arc_probe } );
+    len       = std::min( len, std::max( 1.f, float{ cvar::rt_arc_probe_max } ) );
+
+    sector_t* sec = primaryLevel->PointInSector( double( m.lastPos.X ), double( m.lastPos.Y ) );
+
+    const DVector3 start{ double( m.lastPos.X ), double( m.lastPos.Y ), double( m.lastPos.Z ) };
+    const DVector3 dir{ double( m.dir.X ), double( m.dir.Y ), double( m.dir.Z ) };
+
+    FTraceResults res{};
+    // The flags MUST NOT include TRACE_Impact or TRACE_PCross: those trigger
+    // SPAC_IMPACT and SPAC_PCROSS line specials, and renderer particles firing
+    // map specials would be a gameplay change and a netgame desync in a system
+    // the player cannot see. Empty ActorMask so the probe passes THROUGH
+    // monsters -- a bolt that killed something still hit the wall behind it, and
+    // stopping on the corpse would put the arcs in mid-air. TRACE_NoSky so a
+    // bolt that reached sky produces nothing.
+    if( !Trace( start,
+                sec,
+                dir,
+                double( len ),
+                ActorFlags::FromInt( 0 ),
+                ML_BLOCKEVERYTHING,
+                nullptr,
+                res,
+                TRACE_NoSky ) )
+    {
+        return false;
+    }
+
+    if( res.HitType == TRACE_HasHitSky )
+    {
+        return false;
+    }
+
+    FVector3 n;
+    if( res.HitType == TRACE_HitFloor )
+    {
+        n = FVector3{ 0, 0, 1 };
+    }
+    else if( res.HitType == TRACE_HitCeiling )
+    {
+        n = FVector3{ 0, 0, -1 };
+    }
+    else if( res.HitType == TRACE_HitWall && res.Line != nullptr )
+    {
+        // Same construction as SparkHitWall: the linedef perpendicular, flipped
+        // for the back side, then forced to oppose the direction of travel
+        // whichever way the geometry happens to be wound.
+        const double dx = res.Line->Delta().X;
+        const double dy = res.Line->Delta().Y;
+        n               = FVector3{ float( dy ), float( -dx ), 0.f };
+        if( n.LengthSquared() < 1e-8f )
+        {
+            return false;
+        }
+        n.MakeUnit();
+        if( res.Side != 0 )
+        {
+            n = -n;
+        }
+        if( ( m.dir | n ) > 0.f )
+        {
+            n = -n;
+        }
+    }
+    else
+    {
+        return false;
+    }
+
+    *outAt  = FVector3{ float( res.HitPos.X ) * ONEGAMEUNIT_IN_METERS,
+                       float( res.HitPos.Y ) * ONEGAMEUNIT_IN_METERS,
+                       float( res.HitPos.Z ) * ONEGAMEUNIT_IN_METERS };
+    *outNrm = n;
+    *outSec = res.Sector ? res.Sector : sec;
+    return true;
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// ITS OWN WALK, not a hook into the smoke one. See rt_internal.h for why: the
+// smoke walk is gated three deep and none of its gates mean anything to arcs.
+//
+// Runs once a TIC rather than once a frame. The event it is looking for is a
+// tic-long state change (MF_MISSILE clearing), so re-testing it at 200 fps buys
+// nothing -- the same reasoning rt_smoke.cpp applies to its monster gunners.
+// ---------------------------------------------------------------------------
+void RT_UpdateProjectileImpacts()
+{
+    if( !primaryLevel || !cvar::rt_arc )
+    {
+        g_projs.clear();
+        return;
+    }
+
+    const int  tic = primaryLevel->maptime;
+    static int s_lastProjTic = -1;
+
+    // A backwards or enormous jump is a level change, a load or a warp. Every
+    // AActor* held below belongs to the old level and must not be touched --
+    // dropping the marks is the only safe response, and the cost is that a
+    // projectile in flight across a save-load produces no arcs.
+    if( tic < s_lastProjTic || tic - s_lastProjTic > TICRATE )
+    {
+        g_projs.clear();
+    }
+    if( tic == s_lastProjTic )
+    {
+        return;
+    }
+    s_lastProjTic = tic;
+
+    auto it = primaryLevel->GetThinkerIterator< AActor >();
+    while( AActor* mo = it.Next() )
+    {
+        const ArcSource* src = ArcSourceFor( mo );
+        if( !src )
+        {
+            continue;
+        }
+
+        const FVector3 p{ float( mo->Pos().X ), float( mo->Pos().Y ), float( mo->Pos().Z ) };
+
+        // DIRECTION FROM Vel, not from differencing positions. A FastProjectile
+        // moves in substeps and its net per-tic displacement can be a poor guide
+        // to where it was actually pointing; Vel is what the playsim itself
+        // steered it by.
+        FVector3    v{ float( mo->Vel.X ), float( mo->Vel.Y ), float( mo->Vel.Z ) };
+        const float vlen = v.Length();
+
+        ProjMark* mark = nullptr;
+        for( ProjMark& r : g_projs )
+        {
+            if( r.mo == mo )
+            {
+                mark = &r;
+                break;
+            }
+        }
+
+        if( !mark )
+        {
+            if( vlen < 1e-4f )
+            {
+                continue; // not moving yet; nothing to aim a probe along
+            }
+            g_projs.push_back( ProjMark{ mo, p, v / vlen, vlen, src->flavor, tic } );
+            if( cvar::rt_arc_debug )
+            {
+                Printf( "rt_arc: tracking %s -> %s at %.0f %.0f %.0f (speed %.1f, tic %d)\n",
+                        mo->GetClass()->TypeName.GetChars(),
+                        RT_ARC_STYLES[ int( src->flavor ) ].name,
+                        p.X,
+                        p.Y,
+                        p.Z,
+                        vlen,
+                        tic );
+            }
+            continue;
+        }
+
+        mark->lastPos = p;
+        mark->lastTic = tic;
+        if( vlen > 1e-4f )
+        {
+            // Keep the LAST GOOD heading. A projectile whose velocity is zeroed
+            // on the tic it dies would otherwise leave the probe with no
+            // direction at all, which is the one case that must still work.
+            mark->dir   = v / vlen;
+            mark->speed = vlen;
+        }
+    }
+
+    // THE SWEEP IS THE IMPACT. Anything tracked last tic and not seen this one
+    // has either lost MF_MISSILE (it exploded) or left the thinker list. Its
+    // AActor* is not dereferenced here -- only the position, direction and
+    // speed recorded while it was alive.
+    for( size_t i = 0; i < g_projs.size(); )
+    {
+        ProjMark& m = g_projs[ i ];
+        if( m.lastTic == tic )
+        {
+            i++;
+            continue;
+        }
+
+        // The distance cull, before the trace rather than after: the probe is
+        // the only unbounded cost in this system, and an impact across the map
+        // should not pay for one. Same reasoning as rt_spark_far.
+        const auto&    vp = r_viewpoint;
+        const FVector3 eye{ float( vp.Pos.X ) * ONEGAMEUNIT_IN_METERS,
+                            float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
+                            float( vp.Pos.Z ) * ONEGAMEUNIT_IN_METERS };
+        const FVector3 lastM = m.lastPos * ONEGAMEUNIT_IN_METERS;
+        const float    far_m = std::max( 0.f, float{ cvar::rt_arc_far } );
+
+        if( ( lastM - eye ).LengthSquared() <= far_m * far_m )
+        {
+            FVector3  at{};
+            FVector3  n{};
+            sector_t* sec = nullptr;
+            if( ProbeImpactSurface( m, &at, &n, &sec ) )
+            {
+                (void)sec; // a mark does not move, so it needs no sector
+                SpawnArcMark( at, n, m.flavor );
+                if( cvar::rt_arc_debug )
+                {
+                    Printf( "rt_arc: IMPACT %s at %.2f %.2f %.2f  n %.2f %.2f %.2f (tic %d)\n",
+                            RT_ARC_STYLES[ int( m.flavor ) ].name,
+                            at.X,
+                            at.Y,
+                            at.Z,
+                            n.X,
+                            n.Y,
+                            n.Z,
+                            tic );
+                }
+            }
+            else if( cvar::rt_arc_debug )
+            {
+                // The distinction that costs a session if it is not printed:
+                // "the projectile was never tracked" and "tracked, but the probe
+                // found no surface" are identical on screen and have completely
+                // different fixes -- a class-match bug against a probe-length or
+                // geometry one.
+                Printf( "rt_arc: died with NO SURFACE (%s) at %.0f %.0f %.0f "
+                        "speed %.1f (tic %d) -- monster, mid-air or sky\n",
+                        RT_ARC_STYLES[ int( m.flavor ) ].name,
+                        m.lastPos.X,
+                        m.lastPos.Y,
+                        m.lastPos.Z,
+                        m.speed,
+                        tic );
+            }
+        }
+
+        m = g_projs.back();
+        g_projs.pop_back();
+    }
+}
 
 void RT_UpdateSparks()
 {
     if( !primaryLevel )
     {
         RT_ClearSparks();
+        RT_ClearArcMarks();
         return;
     }
 
-    if( !cvar::rt_spark )
+    if( !SparkSystemOn() )
     {
         g_sparkCount      = 0;
         g_sparkFlashCount = 0;
+        RT_ClearArcMarks();
         s_lastTic         = primaryLevel->maptime;
         return;
+    }
+
+    // Arcs off on their own still has to drop the marks, or the last filigree
+    // before the switch stays burnt onto the wall for the rest of the session.
+    if( !cvar::rt_arc )
+    {
+        RT_ClearArcMarks();
     }
 
     const int tic = primaryLevel->maptime;
@@ -1237,12 +1885,18 @@ void RT_UpdateSparks()
     if( steps < 0 || steps > TICRATE )
     {
         RT_ClearSparks();
+        RT_ClearArcMarks();
         s_lastTic = tic;
         return;
     }
     s_lastTic = tic;
 
     const float dt      = 1.f / float( TICRATE );
+
+    // The arc marks age on the same clock. They do not move, so this is the
+    // whole of their simulation -- there is no per-step integration to do and
+    // the multi-step loop below would only be advancing a counter.
+    AgeArcMarks( dt * float( steps ) );
     // Resolved per KIND inside the loop below: debris is heavier and deader than
     // a spark, and those two numbers are most of what separates a chip of wall
     // from a hot fragment before the colour is even read.
@@ -1444,6 +2098,10 @@ struct QuadBatch
 //   - emissive = 0, or the decal shader falls back to ldrEmis = albedo and the
 //     blob GLOWS.
 QuadBatch s_batchDebrisAo;
+// Scratch for one scorch fan. Reused per mark rather than accumulated: a decal
+// is uploaded one primitive at a time (pitfall 34), so there is never more than
+// a single fan in here.
+QuadBatch s_batchArcBurn;
 
 QuadBatch s_batchSpark;
 
@@ -1701,8 +2359,17 @@ void UploadAoBlob( const QuadBatch& b, uint64_t meshId )
 void RT_DrawSparks()
 {
     s_dbgQuads = 0;
+    // Cleared BEFORE the early return below, not after the walk. On a frame that
+    // draws nothing the branch lights must go too -- leaving last frame's
+    // candidates would keep lighting a wall whose arcs have expired.
+    s_arcLights.clear();
 
-    if( !cvar::rt_spark || g_sparkCount == 0 || !primaryLevel )
+    // BOTH populations, and the arc term is not redundant. Arcs live in their
+    // own pool, so with rt_spark off g_sparkCount is permanently 0 and the old
+    // `g_sparkCount == 0` return would have skipped the arc geometry for ever --
+    // the exact shape of bug the shared master gate was introduced to avoid, one
+    // level down.
+    if( !SparkSystemOn() || !primaryLevel || ( g_sparkCount == 0 && s_arcCount == 0 ) )
     {
         return;
     }
@@ -2170,6 +2837,512 @@ void RT_DrawSparks()
         }
     }
 
+    // -----------------------------------------------------------------------
+    // ARC MARKS. Regenerated from each mark's seed every frame -- see the
+    // ArcMark banner for why the geometry is not stored.
+    //
+    // They go into the SPARK batch rather than one of their own: same additive
+    // blend, same untextured white material, same mesh ID. A second batch would
+    // be a second uploadMeshPrimitive for no difference in state.
+    // -----------------------------------------------------------------------
+    if( cvar::rt_arc && s_arcCount > 0 )
+    {
+        const int   nbr   = std::clamp( int{ cvar::rt_arc_branches }, 1, RT_ARC_MAX_BRANCH );
+        const int   nseg  = std::clamp( int{ cvar::rt_arc_segments }, 1, RT_ARC_MAX_SEG );
+        // The PLASMA-RIFLE values. Each mark scales these by its own flavour
+        // inside the loop, so `reach` and `wid` there are per-weapon.
+        const float reachBase = std::max( 0.02f, float{ cvar::rt_arc_reach } );
+        const float widBase   = std::max( 0.001f, float{ cvar::rt_arc_width } );
+        const float jit   = std::max( 0.f, float{ cvar::rt_arc_jitter } );
+        const float flk   = std::clamp( float{ cvar::rt_arc_flicker }, 0.f, 1.f );
+        const float flkR  = std::max( 0.f, float{ cvar::rt_arc_flicker_rate } );
+        const float coreR = std::max( 0.f, float{ cvar::rt_arc_core } );
+        const float forkP = std::clamp( float{ cvar::rt_arc_fork }, 0.f, 1.f );
+        const float abr   = std::max( 0.f, float{ cvar::rt_arc_bright } );
+        const float churn = std::max( 0.f, float{ cvar::rt_arc_churn } );
+        const float crReach = std::max( 0.f, float{ cvar::rt_arc_creep_reach } );
+        const float arcLife = std::max( 0.05f, float{ cvar::rt_arc_life } );
+
+        const bool  wantBurn = cvar::rt_arc_burn;
+        const float burnRad  = std::max( 0.f, float{ cvar::rt_arc_burn_radius } );
+        const float burnStr  = std::clamp( float{ cvar::rt_arc_burn_strength }, 0.f, 1.f );
+        const float burnDist = std::max( 0.f, float{ cvar::rt_arc_burn_dist } );
+        const int   burnMax  = std::max( 0, int{ cvar::rt_arc_burn_max } );
+        int         burnEmitted = 0;
+        const float wander = std::max( 0.f, float{ cvar::rt_arc_wander } );
+        const bool  wantGlow = cvar::rt_arc_glow;
+
+        for( uint32_t ai = 0; ai < s_arcCount; ai++ )
+        {
+            const ArcMark&  m  = s_arcs[ ai ];
+            const ArcStyle& st = ArcStyleFor( m.flavor );
+
+            // THE SCORCH, on the mark's own long clock. Emitted BEFORE the
+            // filigree and outside its `t >= 1` early-out below, because it
+            // outlives the arcs by a factor of fifty -- that is the whole point
+            // of it, and putting it after the arc work would have quietly tied
+            // it back to the short life.
+            if( wantBurn && burnEmitted < burnMax && burnRad > 1e-4f && burnStr > 0.f )
+            {
+                const float bt = std::clamp( m.age / std::max( 1e-4f, m.life ), 0.f, 1.f );
+
+                // The distance test is the DECAL PROXIMITY one, not a cost cull:
+                // RsDecal.frag keeps a fragment only where the traced surface
+                // under it is within 5 cm, and at range a pixel footprint on a
+                // grazing wall exceeds that. Skipping it is what produced AO
+                // "lines" reaching away from settled debris.
+                if( ( m.at - eyeM ).LengthSquared() <= burnDist * burnDist )
+                {
+                    // HOLDS, THEN FADES. A scorch that starts fading the instant
+                    // it is made is a scorch you never see at full strength;
+                    // real soot sits and then weathers. Flat for the first 60%
+                    // of its life, then out over the last 40%.
+                    const float bfade =
+                        bt < 0.6f ? 1.f : std::clamp( ( 1.f - bt ) / 0.4f, 0.f, 1.f );
+
+                    s_batchArcBurn.verts.clear();
+                    s_batchArcBurn.idx.clear();
+
+                    const RgNormalPacked32 bn =
+                        rt.rgUtilPackNormal( m.nrm.X, m.nrm.Y, m.nrm.Z );
+                    // BLACK, and the alpha is how much albedo is removed. The
+                    // colour must be black rather than dark-grey: the decal
+                    // MULTIPLIES, so a grey centre lightens a dark wall.
+                    const RgColor4DPacked32 bc =
+                        rt.rgUtilPackColorFloat4D( 0.f, 0.f, 0.f, burnStr * bfade );
+                    const RgColor4DPacked32 br =
+                        rt.rgUtilPackColorFloat4D( 0.f, 0.f, 0.f, 0.f );
+
+                    // 1 mm off the wall, well inside the shader's 5 cm budget.
+                    const FVector3 bcen = m.at + m.nrm * 0.001f;
+
+                    s_batchArcBurn.verts.push_back( RgPrimitiveVertex{
+                        .position     = { bcen.X, bcen.Y, bcen.Z },
+                        .normalPacked = bn,
+                        .texCoord     = { 0.5f, 0.5f },
+                        .color        = bc,
+                    } );
+
+                    // A FAN with an opaque centre and a zero-alpha rim -- not a
+                    // ring and not a plateau. Either of those puts a visible
+                    // crease at every segment boundary.
+                    constexpr int kBurnSegs = 12;
+                    // Irregular radii, hashed off the mark: a perfect circle
+                    // reads as a decal sticker, and a burn is not round.
+                    for( int k = 0; k < kBurnSegs; k++ )
+                    {
+                        const float a2 = ( 2.f * rt_pi() * float( k ) ) / float( kBurnSegs );
+                        const float rr =
+                            burnRad * ( 0.72f + 0.5f * hash01( m.seed + uint32_t( k ) * 7919u ) );
+                        const FVector3 pv = bcen + m.tan * ( std::cos( a2 ) * rr ) +
+                                            m.bit * ( std::sin( a2 ) * rr );
+                        s_batchArcBurn.verts.push_back( RgPrimitiveVertex{
+                            .position     = { pv.X, pv.Y, pv.Z },
+                            .normalPacked = bn,
+                            .texCoord     = { 0.5f + 0.5f * std::cos( a2 ),
+                                              0.5f + 0.5f * std::sin( a2 ) },
+                            .color        = br,
+                        } );
+                    }
+                    for( int k = 0; k < kBurnSegs; k++ )
+                    {
+                        s_batchArcBurn.idx.push_back( 0 );
+                        s_batchArcBurn.idx.push_back( 1 + uint32_t( k ) );
+                        s_batchArcBurn.idx.push_back( 1 + uint32_t( ( k + 1 ) % kBurnSegs ) );
+                    }
+
+                    // ONE PRIMITIVE PER SCORCH, keyed on the mark's uid rather
+                    // than on a running counter. RTGL1 keeps one upload per ID
+                    // and it is the LATER one that loses, so a counter -- which
+                    // renumbers every mark whenever an older one is evicted --
+                    // would make scorches swap places. Pitfall 34.
+                    UploadAoBlob( s_batchArcBurn, RT_ARC_BURN_MESH_ID + uint64_t( m.uid % 4096u ) );
+                    burnEmitted++;
+                }
+            }
+
+            // THE FILIGREE'S OWN CLOCK, and the MARK's copy of it -- not m.life,
+            // which is the scorch's and far longer, and not the cvar, which
+            // would hand a plasma mark the BFG's life whenever a BFG fired last.
+            const float t = std::clamp( m.age / std::max( 1e-4f, m.arcLife ), 0.f, 1.f );
+            if( t >= 1.f )
+            {
+                continue; // arcs done; the scorch above carries on alone
+            }
+
+            // THE WEAPON'S SIZE MULTIPLIER. The cvars are authored for the
+            // plasma rifle; a BFG mark is twice the thing in every dimension.
+            const float mScale = st.scale;
+            const float reach  = reachBase * mScale;
+            const float wid    = widBase * mScale;
+
+            // INTERPOLATED, always -- rt_spark_style is not consulted here. The
+            // pixelated mode exists because a spark is a fragment the size of a
+            // texel and quantizing it is the whole look. An arc is a hairline,
+            // already far thinner than a texel, and stepping its colour through
+            // eight hard entries makes it read as a dashed line rather than as a
+            // discharge. This is the "do not over-apply retro styling" rule.
+            float ar, ag, ab;
+            {
+                const float    f  = t * float( st.rampN - 1 );
+                const int      i0 = std::clamp( int( f ), 0, st.rampN - 1 );
+                const int      i1 = std::min( i0 + 1, st.rampN - 1 );
+                const float    fr = f - float( i0 );
+                const uint32_t c0 = st.ramp[ i0 ];
+                const uint32_t c1 = st.ramp[ i1 ];
+                auto l_lerp = [ & ]( int shift ) {
+                    const float a0 = ( ( c0 >> shift ) & 0xFF ) / 255.f;
+                    const float a1 = ( ( c1 >> shift ) & 0xFF ) / 255.f;
+                    return a0 + ( a1 - a0 ) * fr;
+                };
+                ar = l_lerp( 16 );
+                ag = l_lerp( 8 );
+                ab = l_lerp( 0 );
+            }
+
+            const float fade = ( 1.f - t ) * ( 1.f - t );
+
+            // OFF THE SURFACE BY A CENTIMETRE. Coplanar with the wall the quads
+            // z-fight against it, which reads as the arcs flashing in and out at
+            // grazing angles -- and would be easy to misdiagnose as the flicker
+            // below misbehaving.
+            const FVector3         lift = m.nrm * 0.012f;
+            const RgNormalPacked32 anrm = rt.rgUtilPackNormal( m.nrm.X, m.nrm.Y, m.nrm.Z );
+
+            // One in-plane quad, from p to q, `hw` half-width either side.
+            auto l_seg = [ & ]( const FVector3& p, const FVector3& q, float hw, float alpha ) {
+                FVector3 d = q - p;
+                if( d.LengthSquared() < 1e-10f )
+                {
+                    return;
+                }
+                d.MakeUnit();
+                FVector3 perp = m.nrm ^ d;
+                if( perp.LengthSquared() < 1e-10f )
+                {
+                    return;
+                }
+                perp.MakeUnit();
+                perp *= hw;
+
+                const RgColor4DPacked32 acol =
+                    rt.rgUtilPackColorFloat4D( ar, ag, ab, std::clamp( alpha, 0.f, 1.f ) );
+
+                const FVector3 cr[ 4 ] = { p - perp, q - perp, q + perp, p + perp };
+                const float    uv[ 4 ][ 2 ] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+
+                const uint32_t base = uint32_t( s_batchSpark.verts.size() );
+                for( int k = 0; k < 4; k++ )
+                {
+                    s_batchSpark.verts.push_back( RgPrimitiveVertex{
+                        .position     = { cr[ k ].X, cr[ k ].Y, cr[ k ].Z },
+                        .normalPacked = anrm,
+                        .texCoord     = { uv[ k ][ 0 ], uv[ k ][ 1 ] },
+                        .color        = acol,
+                    } );
+                }
+                s_batchSpark.idx.push_back( base );
+                s_batchSpark.idx.push_back( base + 1 );
+                s_batchSpark.idx.push_back( base + 2 );
+                s_batchSpark.idx.push_back( base );
+                s_batchSpark.idx.push_back( base + 2 );
+                s_batchSpark.idx.push_back( base + 3 );
+                s_dbgQuads++;
+            };
+
+            // THE RANDOM WALK, and the kinks are the whole point. Straight rays
+            // out of a centre read as a starburst or a sun; what makes a
+            // discharge legible as one is that it changes direction at every
+            // step and no two branches agree.
+            // THE RE-PATH CLOCK. Quantizing the age is what turns "re-roll the
+            // walk" into visible motion instead of white noise: every hash below
+            // is stable for 1/rt_arc_churn of a second and then changes
+            // wholesale, so the branch VISIBLY jumps to a new path. Hashing
+            // against a continuous time would re-roll every frame, and at 100+
+            // fps the eye integrates that straight back into a smooth blur --
+            // the motion vanishes exactly when the most of it is added. Same
+            // trap as rt_arc_flicker_rate, and the same fix.
+            const uint32_t churnIdx =
+                churn > 0.f ? uint32_t( std::max( 0.f, m.age ) * churn ) : 0u;
+
+            auto l_walk = [ & ]( FVector3 p, float ang, int steps, uint32_t rs, float wscale ) {
+                const float seg = reach / float( nseg );
+                for( int s = 0; s < steps; s++ )
+                {
+                    // The churn index is mixed into EVERY per-step hash, so a
+                    // re-path changes the whole skeleton rather than nudging it.
+                    const uint32_t ss =
+                        rs + uint32_t( s ) * 40503u + churnIdx * 2246822519u;
+
+                    // RETRACTS FROM THE TIPS AS IT DIES, rather than the whole
+                    // filigree dimming uniformly. A discharge collapses back
+                    // toward its source; a uniform fade reads as someone turning
+                    // a dimmer down, which is the one thing electricity does not
+                    // do.
+                    const float along = float( s + 1 ) / float( nseg );
+                    if( along > 1.f - t * 0.85f )
+                    {
+                        break;
+                    }
+
+                    ang += ( hash01( ss ) * 2.f - 1.f ) * jit;
+                    const float    L = seg * ( 0.55f + 0.9f * hash01( ss * 7919u ) );
+                    const FVector3 d = m.tan * std::cos( ang ) + m.bit * std::sin( ang );
+                    const FVector3 q = p + d * L;
+
+                    // Tapered toward the tip in both width and brightness: a
+                    // constant-width polyline reads as a drawn line, and the
+                    // taper is what makes it read as energy dissipating.
+                    const float tip = 1.f - float( s ) / float( nseg );
+                    l_seg( p,
+                           q,
+                           wid * 0.5f * wscale * ( 0.45f + 0.55f * tip ),
+                           abr * fade * ( 0.30f + 0.70f * tip ) );
+
+                    p = q;
+                }
+                return p;
+            };
+
+            for( int b = 0; b < nbr; b++ )
+            {
+                const uint32_t bs = m.seed + uint32_t( b ) * 2654435761u;
+
+                // CRACKLE: a branch may be absent for a frame entirely, and that
+                // is more of what sells this as electric than any amount of
+                // brightness modulation. Quantizing the age means a branch stays
+                // out for a few frames rather than strobing every one, which at
+                // 100+ fps would average back out to "always on, slightly dim".
+                if( flk > 0.f )
+                {
+                    const uint32_t ph =
+                        uint32_t( std::max( 0.f, m.age ) * flkR * 12.f );
+                    if( hash01( bs ^ ( ph * 374761393u ) ) < flk * 0.35f )
+                    {
+                        continue;
+                    }
+                }
+
+                // Evenly spaced around the impact, then jittered by up to one
+                // full slot so the ring is not visibly regular.
+                //
+                // THE ROOT WANDERS, IT DOES NOT TELEPORT. The base angle keeps
+                // its per-branch offset for the mark's whole life and only
+                // drifts by +/- rt_arc_wander across a re-path. Re-rolling the
+                // root along with everything else was tried in the walk above
+                // and reads as noise: branches swap places around the ring
+                // between frames and the eye stops tracking any one of them.
+                // Anchored ends with a restless middle is what a real arc does.
+                const float ang0 =
+                    ( 2.f * rt_pi() * float( b ) ) / float( nbr ) +
+                    hash01( bs ) * ( 2.f * rt_pi() / float( nbr ) ) +
+                    ( hash01( bs + churnIdx * 668265263u ) * 2.f - 1.f ) * wander;
+
+                const FVector3 endp = l_walk( m.at + lift, ang0, nseg, bs, 1.f );
+
+                // THE BRANCH'S LIGHT, taken from where the branch actually
+                // ENDED this frame. Collected here rather than recomputed in
+                // the light pass: a branch the crackle dropped never reaches
+                // this line, so its light disappears with it for free, and the
+                // re-pathed position can never disagree with the drawn one.
+                if( wantGlow && abr > 0.f )
+                {
+                    // Lifted further off the wall than the quads are. A light
+                    // sitting 12 mm off a surface lights almost none of it --
+                    // the surface is nearly edge-on to it everywhere -- so the
+                    // spill would be a tight hot dot instead of a wash.
+                    // THE LIGHT TRACKS THE QUAD'S ALPHA, not the raw fade, and
+                    // that mismatch is why the light used to die early.
+                    //
+                    // A branch quad's alpha is clamp(rt_arc_bright * fade, 0, 1),
+                    // and at the shipping bright 3.0 that clamp holds it at FULL
+                    // brightness until fade drops below 1/3 -- i.e. the arcs look
+                    // constant for the first ~42% of the mark's life and only
+                    // then start dimming. The light was using `fade` directly,
+                    // which is already down to 0.25 by half-life. So the arcs
+                    // were still visibly bright while the light they cast had
+                    // all but gone, and the two came apart exactly where the eye
+                    // is most likely to notice.
+                    //
+                    // A GENTLER CURVE THAN THE QUADS', deliberately, and this is
+                    // the second correction to it. Matching the quad's alpha was
+                    // already better than the raw squared fade, but it still
+                    // read as dying early -- because `fade` is (1-t)^2 and even
+                    // clamped it is falling steeply through the back half.
+                    //
+                    // The light uses LINEAR (1-t) instead, so at the shipping
+                    // bright 3.0 it holds full until t=0.67 and then runs down
+                    // to nothing exactly as the last hairlines go. The rule the
+                    // earlier comment stated -- share one expression -- was the
+                    // right instinct for the wrong quantity: what has to agree
+                    // is when the two REACH ZERO, not the shape in between. A
+                    // light and an emissive quad are not judged the same way,
+                    // because one is being looked at and the other is lighting
+                    // a wall several metres across.
+                    s_arcLights.push_back( ArcLightCand{
+                        endp + m.nrm * 0.05f,
+                        ar,
+                        ag,
+                        ab,
+                        std::clamp( abr * ( 1.f - t ), 0.f, 1.f ),
+                        // Stride is 2 * RT_ARC_MAX_BRANCH, not RT_ARC_MAX_BRANCH:
+                        // the creepers below occupy the upper half of every
+                        // mark's block. Widening the stride and leaving the
+                        // branches in the lower half is what keeps the two from
+                        // overlapping -- and an overlap here is silent, since
+                        // RTGL1 simply keeps one upload per ID.
+                        ArcGlowId_Base +
+                            uint64_t( m.uid ) * uint64_t( RT_ARC_MAX_BRANCH * 2 ) +
+                            uint64_t( b ),
+                    } );
+                }
+
+                // A FORK. Real arcs branch, and a set of unbranched polylines
+                // still reads as a starburst however kinked each one is. Cheap
+                // version: a shorter, thinner child off the end of the parent.
+                if( forkP > 0.f && hash01( bs * 22695477u ) < forkP )
+                {
+                    l_walk( endp,
+                            ang0 + ( hash01( bs * 69069u ) * 2.f - 1.f ) * 1.2f,
+                            std::max( 1, nseg / 2 ),
+                            bs * 40503u + 17u,
+                            0.6f );
+                }
+            }
+
+            // CREEPERS: short arcs that are NOT attached to the core and that
+            // jump to a new place on the wall at every re-path.
+            //
+            // This is what makes the churn legible on the SURFACE. The radial
+            // branches move, but they all still leave one fixed point in a fixed
+            // number of directions, so their motion reads as wagging rather than
+            // as the wall being energised -- reported from play as "just a ball +
+            // arcs". A discharge that re-strikes somewhere it was not a moment
+            // ago is the thing that says the surface itself is live, and it costs
+            // one more walk per creeper.
+            //
+            // Their POSITION is hashed against churnIdx, not just their path, so
+            // they teleport rather than drift. Teleporting is correct here and is
+            // the opposite of the rule for the branch roots above: a root that
+            // jumps destroys the identity of a branch you were tracking, whereas
+            // a creeper has no identity to destroy -- it is a strike, and the
+            // next one is a different strike.
+            const int ncr = std::clamp( int{ cvar::rt_arc_creep }, 0, RT_ARC_MAX_BRANCH );
+            for( int c = 0; c < ncr; c++ )
+            {
+                const uint32_t cs =
+                    m.seed + 0x5F356495u + uint32_t( c ) * 2654435761u + churnIdx * 2246822519u;
+
+                // Crackle applies to creepers too, and harder: at any moment a
+                // good share of them should simply not be there. A full set
+                // present every frame reads as a texture rather than as
+                // sporadic discharge.
+                if( flk > 0.f && hash01( cs * 668265263u ) < flk * 0.5f )
+                {
+                    continue;
+                }
+
+                const float cang = hash01( cs ) * 2.f * rt_pi();
+                const float crad = std::sqrt( hash01( cs * 7919u ) ) * reach * crReach;
+                const FVector3 cp = m.at + lift + m.tan * ( std::cos( cang ) * crad ) +
+                                    m.bit * ( std::sin( cang ) * crad );
+
+                // Short, thin, and dimmed with distance from the impact, so the
+                // mark still has a clear centre of mass and does not turn into
+                // an even field of scribble.
+                const float falloff =
+                    std::clamp( 1.f - ( crad / std::max( 0.01f, reach * crReach ) ) * 0.6f,
+                                0.f,
+                                1.f );
+                const FVector3 cend = l_walk( cp,
+                                              hash01( cs * 22695477u ) * 2.f * rt_pi(),
+                                              std::max( 1, nseg / 2 ),
+                                              cs,
+                                              0.55f * falloff );
+
+                // CREEPERS LIGHT THE WALL TOO, and leaving them out was why the
+                // illumination stayed bunched around the centre while the
+                // visible discharge had spread well past it. The creepers are
+                // the outermost thing on the wall by design -- rt_arc_creep_reach
+                // is 1.35x the branches -- so lighting only the radial tips lit
+                // the one part of the mark that was never the point.
+                //
+                // Dimmer than a branch light, in the same proportion the creeper
+                // is drawn dimmer, so the wall's bright spot still agrees with
+                // the wall's bright geometry.
+                if( wantGlow && abr > 0.f )
+                {
+                    s_arcLights.push_back( ArcLightCand{
+                        cend + m.nrm * 0.05f,
+                        ar,
+                        ag,
+                        ab,
+                        std::clamp( abr * ( 1.f - t ) * 0.6f * falloff, 0.f, 1.f ),
+                        // A DISJOINT ID RANGE from the branches above: the
+                        // stride is 2 * RT_ARC_MAX_BRANCH and creepers sit in
+                        // the upper half. Overlapping them would mean RTGL1
+                        // keeping one of the pair and silently dropping the
+                        // other, with no error anywhere.
+                        ArcGlowId_Base +
+                            uint64_t( m.uid ) * uint64_t( RT_ARC_MAX_BRANCH * 2 ) +
+                            uint64_t( RT_ARC_MAX_BRANCH ) + uint64_t( c ),
+                    } );
+                }
+            }
+
+            // THE CORE -- the remains of the ball itself, sitting on the wall.
+            // Shrinks and dies FASTER than the filigree (the cube against the
+            // arcs' square), so what is left at the end is the last few
+            // hairlines rather than a bright dot with nothing attached.
+            if( coreR > 0.f )
+            {
+                const float cfade = ( 1.f - t ) * ( 1.f - t ) * ( 1.f - t );
+                const float cr    = coreR * ( 0.35f + 0.65f * ( 1.f - t ) );
+                const FVector3 c  = m.at + lift;
+
+                const RgColor4DPacked32 ccol = rt.rgUtilPackColorFloat4D(
+                    ar, ag, ab, std::clamp( abr * cfade, 0.f, 1.f ) );
+
+                // An in-plane disc rather than a camera-facing one: it is a mark
+                // ON the wall and must foreshorten with it. Seen edge-on it
+                // nearly vanishes, which is correct -- a camera-facing core
+                // would stay a full circle at grazing angles and give away that
+                // nothing is really lying on the surface.
+                constexpr int kCoreSegs = 10;
+                const uint32_t cbase = uint32_t( s_batchSpark.verts.size() );
+                s_batchSpark.verts.push_back( RgPrimitiveVertex{
+                    .position     = { c.X, c.Y, c.Z },
+                    .normalPacked = anrm,
+                    .texCoord     = { 0.5f, 0.5f },
+                    .color        = ccol,
+                } );
+                // Rim alpha at zero, so the core has no cut edge.
+                const RgColor4DPacked32 rimcol =
+                    rt.rgUtilPackColorFloat4D( ar, ag, ab, 0.f );
+                for( int k = 0; k < kCoreSegs; k++ )
+                {
+                    const float a2 = ( 2.f * rt_pi() * float( k ) ) / float( kCoreSegs );
+                    const FVector3 pv =
+                        c + m.tan * ( std::cos( a2 ) * cr ) + m.bit * ( std::sin( a2 ) * cr );
+                    s_batchSpark.verts.push_back( RgPrimitiveVertex{
+                        .position     = { pv.X, pv.Y, pv.Z },
+                        .normalPacked = anrm,
+                        .texCoord     = { 0.5f + 0.5f * std::cos( a2 ),
+                                          0.5f + 0.5f * std::sin( a2 ) },
+                        .color        = rimcol,
+                    } );
+                }
+                for( int k = 0; k < kCoreSegs; k++ )
+                {
+                    s_batchSpark.idx.push_back( cbase );
+                    s_batchSpark.idx.push_back( cbase + 1 + uint32_t( k ) );
+                    s_batchSpark.idx.push_back( cbase + 1 + uint32_t( ( k + 1 ) % kCoreSegs ) );
+                }
+                s_dbgQuads++;
+            }
+        }
+    }
+
     UploadBatch( s_batchSpark, RT_SPARK_MESH_ID, true, nullptr, RG_PACKED_COLOR_WHITE );
 
     for( int i = 0; i < s_debrisBucketCount; i++ )
@@ -2322,6 +3495,86 @@ void UploadSparkGlowLights()
     }
 }
 
+// THE ARCS' TRACED HALF, and the answer to "can those arcs emit light".
+//
+// The branch quads cannot: they are TRANSLUCENT with emissive > 0, which
+// RasterizedDataCollector::ToPipelineState turns ADDITIVE, and an additive
+// rasterized overlay lives outside the acceleration structure. It adds to the
+// screen and contributes nothing to any surface, reflection or bounce. So the
+// arcs glow on screen and light nothing -- unless a real analytic light is put
+// where they are, which is what this does.
+//
+// The candidates were collected during the DRAW, so they are exactly the
+// branches that were visible: the crackle and the re-path are already applied
+// and cannot drift out of step with the geometry.
+void UploadArcBranchLights()
+{
+    if( !cvar::rt_arc || !cvar::rt_arc_glow || s_arcLights.empty() )
+    {
+        return;
+    }
+
+    const float gi = std::max( 0.f, float{ cvar::rt_arc_glow_intensity } );
+    const int   gmax = std::max( 0, int{ cvar::rt_arc_glow_max } );
+    if( gi <= 0.f || gmax == 0 )
+    {
+        return;
+    }
+
+    const auto&    vp = r_viewpoint;
+    const FVector3 eye{ float( vp.Pos.X ) * ONEGAMEUNIT_IN_METERS,
+                        float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
+                        float( vp.Pos.Z ) * ONEGAMEUNIT_IN_METERS };
+
+    // NEAREST-FIRST, then truncate -- the RT_UploadFlameLights pattern. A plasma
+    // rifle held down is 32 marks x 9 branches of candidates and the cap is what
+    // makes per-branch lights affordable at all (rt-lighting-practices.md 20).
+    // Sorting a COPY matters: the id is the light's identity and must not be
+    // reassigned by the sort.
+    if( s_arcLights.size() > size_t( gmax ) )
+    {
+        std::partial_sort( s_arcLights.begin(),
+                           s_arcLights.begin() + gmax,
+                           s_arcLights.end(),
+                           [ & ]( const ArcLightCand& a, const ArcLightCand& b ) {
+                               return ( a.pos - eye ).LengthSquared() <
+                                      ( b.pos - eye ).LengthSquared();
+                           } );
+        s_arcLights.resize( size_t( gmax ) );
+    }
+
+    for( const ArcLightCand& c : s_arcLights )
+    {
+        if( c.k <= 0.001f )
+        {
+            continue;
+        }
+
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = rt.rgUtilPackColorFloat4D( c.r, c.g, c.b, 1.0f ),
+            .intensity = gi * c.k,
+            .position  = { c.pos.X, c.pos.Y, c.pos.Z },
+            .radius    = 0.04f,
+        };
+        auto info = RgLightInfo{
+            .sType = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            // THE EXTENSION HANGS OFF pNext, AND OMITTING IT IS SILENT-ISH:
+            // RTGL1 warns once and DROPS the light, every other field being
+            // valid. That shipped broken once already on the spark glows, and
+            // the symptom was "the sparks cast no light".
+            .pNext        = &sph,
+            .uniqueID     = c.id,
+            .isExportable = false,
+        };
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+
+        s_dbgLights++;
+    }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2331,20 +3584,17 @@ void RT_UploadSparkLights()
 {
     s_dbgLights = 0;
 
-    if( !cvar::rt_spark )
+    if( !SparkSystemOn() )
     {
         return;
     }
 
     UploadSparkGlowLights();
+    UploadArcBranchLights();
 
-    if( !cvar::rt_spark_light || g_sparkFlashCount == 0 )
-    {
-        return;
-    }
-
-    const float intensity = std::max( 0.f, float{ cvar::rt_spark_light_intensity } );
-    if( intensity <= 0.f )
+    // EITHER flash source may be on. The per-flash test below is what keeps them
+    // apart; this only skips the walk when neither can produce anything.
+    if( ( !cvar::rt_spark_light && !cvar::rt_arc_light ) || g_sparkFlashCount == 0 )
     {
         return;
     }
@@ -2371,7 +3621,18 @@ void RT_UploadSparkLights()
 
     for( uint32_t i = 0; i < g_sparkFlashCount; i++ )
     {
+        // Whichever source is switched off contributes no CANDIDATES, so it also
+        // spends none of the budget below. Filtering after the sort would let a
+        // disabled source crowd out an enabled one.
+        if( s_flashes[ i ].isArc ? !cvar::rt_arc_light : !cvar::rt_spark_light )
+        {
+            continue;
+        }
         cand.push_back( Cand{ float( ( s_flashes[ i ].pos - eye ).LengthSquared() ), i } );
+    }
+    if( cand.empty() )
+    {
+        return;
     }
 
     const size_t budget =
@@ -2397,11 +3658,20 @@ void RT_UploadSparkLights()
             continue;
         }
 
-        // The hot end of PUFF's own ramp, so the light and the particles agree.
-        const uint32_t rgb = RT_SPARK_RAMP[ 0 ];
+        // The hot end of the ramp the particles are using, so the light and the
+        // particles agree -- amber for a bullet, cyan for plasma, white-green for
+        // the BFG. Read from the flash's own recorded flavour rather than from a
+        // particle: by the time a flash is uploaded its arcs may all be dead.
+        const uint32_t rgb =
+            fl.isArc ? ArcStyleFor( fl.arc ).ramp[ 0 ] : RT_SPARK_RAMP[ 0 ];
         const float    kR  = ( ( rgb >> 16 ) & 0xFF ) / 255.f;
         const float    kG  = ( ( rgb >> 8 ) & 0xFF ) / 255.f;
         const float    kB  = ( rgb & 0xFF ) / 255.f;
+
+        const float intensity =
+            std::max( 0.f,
+                      fl.isArc ? float{ cvar::rt_arc_light_intensity }
+                               : float{ cvar::rt_spark_light_intensity } );
 
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
@@ -2446,6 +3716,20 @@ void SparkReport( const char* why )
             s_dbgLights,
             int{ cvar::rt_spark_light_max },
             s_dbgTraces );
+
+    // ARCS SHARE THE POOL, so the live count above lumps them in with sparks and
+    // chips. Breaking them out is the difference between "arcs are not spawning"
+    // and "arcs are spawning and not visible" -- the same distinction the ladder
+    // exists for, one level down.
+    if( cvar::rt_arc )
+    {
+        Printf( "  arcs: %u mark(s) live of %d, %zu projectile(s) tracked right now.\n"
+                "    Tracked 0 while shooting plasma means the CLASS MATCH failed;\n"
+                "    tracked but no marks means the PROBE found no surface. Different fixes.\n",
+                s_arcCount,
+                int{ cvar::rt_arc_max },
+                g_projs.size() );
+    }
 
     if( cvar::rt_spark_debris_ao )
     {

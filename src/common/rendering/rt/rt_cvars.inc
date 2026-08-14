@@ -2988,7 +2988,7 @@
     // sound for a particle thrown off a wall and simply does not transfer to a
     // mark held ON one, because the two are looked at for different lengths of
     // time. Where an argument and the screen disagree, the screen wins.
-    RT_CVAR( rt_arc_life,               2.0f,   "seconds a mark lasts. LONGER THAN THE PARTICLE VERSION'S 0.25, and "
+    RT_CVAR( rt_arc_life,               2.5f,   "seconds a mark lasts. LONGER THAN THE PARTICLE VERSION'S 0.25, and "
                                                 "the reason the PLSE argument no longer binds: 64PlasmaBall's death "
                                                 "animation runs ~0.23 s, which was the right ceiling for particles "
                                                 "flying away from the impact -- they had to be gone before the flash "
@@ -3016,10 +3016,10 @@
     RT_CVAR( rt_arc_segments,           5,      "steps in each branch's random walk. This is what makes an arc read as "
                                                 "lightning rather than as a starburst: at 1 every branch is a straight "
                                                 "ray out of the centre, which is a sun. The kinks are the effect." )
-    RT_CVAR( rt_arc_reach,              0.55f,  "metres a branch covers end to end, before the per-step length jitter. "
+    RT_CVAR( rt_arc_reach,              0.35f,  "metres a branch covers end to end, before the per-step length jitter. "
                                                 "The scale of the whole mark -- roughly 17 map units at the default, so "
                                                 "a scar about a third the height of a door." )
-    RT_CVAR( rt_arc_width,              0.012f, "metres, the width of a branch at its base; it tapers to about half "
+    RT_CVAR( rt_arc_width,              0.024f, "metres, the width of a branch at its base; it tapers to about half "
                                                 "that at the tip. THIN IS THE POINT -- this was reported as looking "
                                                 "like 'square / rectangle' particles when it was built as quads, and a "
                                                 "hairline is what separates an arc from a fragment." )
@@ -3132,7 +3132,7 @@
     RT_CVAR( rt_arc_light_intensity,    220.f,  "intensity of a projectile impact's flash. Brighter than the spark "
                                                 "flash's 180: a plasma discharge is a bigger event than a bullet, and "
                                                 "blue and green both read dimmer than amber at equal intensity." )
-    RT_CVAR( rt_arc_light_life,         2.0f,   "seconds the projectile impact flash lasts. MATCHED TO rt_arc_life so "
+    RT_CVAR( rt_arc_light_life,         2.5f,   "seconds the projectile impact flash lasts. MATCHED TO rt_arc_life so "
                                                 "the mark stays lit until it has completely faded.\n"
                                                 "This shipped at 0.22 on the argument that the flash is the moment of "
                                                 "impact and the mark is what is left over, so the two SHOULD come "
