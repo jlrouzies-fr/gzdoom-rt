@@ -34,10 +34,15 @@
 // Not pulled in by p_local.h, and tier 2 of the collision needs Trace() --
 // the same function P_LineAttack itself uses.
 #include "p_trace.h"
+// FBitmap (the decoded texture) and averageColor(). rt_internal.h pulls in
+// texturemanager.h but neither of these.
+#include "bitmap.h"
+#include "palutil.h"
 
 #include <array>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 
 // The shared internals (RG_CHECK, ONEGAMEUNIT_IN_METERS, the light-ID bases)
 // come in unqualified, as in every other RT feature file.
@@ -68,8 +73,16 @@ constexpr int RT_SPARK_RAMP_N = int( std::size( RT_SPARK_RAMP ) );
 // classification exists to make debris worth looking at. Until then a neutral
 // ramp is honest, and a WRONG per-surface colour would be worse than a neutral
 // one.
+// THESE ARE ALBEDOS, NOT PIXEL COLOURS, and that is why the first set read far
+// too bright. Debris is ray-traced geometry now, so the ramp is what the path
+// tracer MULTIPLIES the room's light by -- a value of 0.60 (0x9A) is a white
+// laboratory tile, not a chip of wall. Real rock and concrete sit around
+// 0.20-0.35, and the top of each ramp is chosen there. The old numbers were
+// picked while debris was still a rasterized overlay, where the ramp WAS the
+// final colour and 0.60 was reasonable; the move to traced geometry silently
+// changed what they mean. Reported from play as "too bright colors".
 constexpr uint32_t RT_DEBRIS_RAMP[] = {
-    0x9A9088, 0x827A72, 0x6B645E, 0x554F4A, 0x403B37, 0x2C2825, 0x1A1817,
+    0x484440, 0x3D3A36, 0x33302D, 0x282623, 0x1E1C1A, 0x151412, 0x0E0D0C,
 };
 constexpr int RT_DEBRIS_RAMP_N = int( std::size( RT_DEBRIS_RAMP ) );
 
@@ -80,18 +93,115 @@ constexpr int RT_DEBRIS_RAMP_N = int( std::size( RT_DEBRIS_RAMP ) );
 // costs nothing and is already better than one grey for everything, now that the
 // labeller distinguishes them.
 constexpr uint32_t RT_CONCRETE_RAMP[] = {
-    0xC9C2B6, 0xB0A99D, 0x958E83, 0x77716A, 0x5A5550, 0x3E3A36, 0x24221F,
+    0x5A554D, 0x4E4941, 0x423E37, 0x36322D, 0x2A2723, 0x1E1C19, 0x14120F,
 };
 constexpr int RT_CONCRETE_RAMP_N = int( std::size( RT_CONCRETE_RAMP ) );
+
+// Per-class fallback ramps. These are what a chip looks like BEFORE the hit
+// texture's own colour is blended over them (rt_spark_debris_tint), so they only
+// fully show on a texture whose average could not be read. All are albedos in
+// the 0.2-0.35 band for the reason above.
+constexpr uint32_t RT_WOOD_RAMP[] = {
+    0x6B5334, 0x5C4830, 0x4D3D2A, 0x3F3224, 0x31281D, 0x241D15, 0x17130E,
+};
+constexpr int RT_WOOD_RAMP_N = int( std::size( RT_WOOD_RAMP ) );
+
+constexpr uint32_t RT_DIRT_RAMP[] = {
+    0x4A3B2A, 0x403325, 0x362B20, 0x2B231A, 0x211B14, 0x17130E, 0x0F0C09,
+};
+constexpr int RT_DIRT_RAMP_N = int( std::size( RT_DIRT_RAMP ) );
+
+// Blood. Darker and less saturated than the sprite art, because this is an
+// ALBEDO the room lights rather than a painted pixel -- a 0.8-red droplet under
+// a bright lamp reads as neon.
+constexpr uint32_t RT_FLESH_RAMP[] = {
+    0x6E1512, 0x5E120F, 0x4E0F0D, 0x3F0C0A, 0x300908, 0x220706, 0x160404,
+};
+constexpr int RT_FLESH_RAMP_N = int( std::size( RT_FLESH_RAMP ) );
+
+// Fluid barely uses its ramp: its whole point is to be the colour of the liquid
+// it came out of, so its profile drives the tint to 1 and this is only the
+// fallback for a texture that could not be sampled.
+constexpr uint32_t RT_FLUID_RAMP[] = {
+    0x40564A, 0x384C42, 0x304139, 0x28362F, 0x1F2A25, 0x161E1A, 0x0E1310,
+};
+constexpr int RT_FLUID_RAMP_N = int( std::size( RT_FLUID_RAMP ) );
+
+// ---------------------------------------------------------------------------
+// THE COLOUR OF THE WALL YOU JUST SHOT
+//
+// A chip should be the colour of what it was chipped off, and the whole reason
+// that is now possible is the HitTexture fix: the hook derives the wall texture
+// itself, so a valid FTextureID reaches this file where before every impact
+// arrived with an empty one.
+//
+// Averaged with gzdoom's own averageColor() over the texture's BGRA bitmap --
+// the same call FGameTexture::GetGlowColor uses. NOTE the third argument:
+// GetGlowColor passes 153, which NORMALIZES the result so the peak channel hits
+// that value, brightening a dull texture into a saturated glow hue. That is
+// exactly wrong here. An albedo wants the TRUE mean, so this passes 0.
+//
+// CACHED PER TEXTURE, and it has to be: GetBgraBitmap decodes the whole image,
+// which is far too expensive to do per impact, let alone per chip. Computed once
+// on first hit and kept -- a level has a few dozen distinct wall textures.
+std::unordered_map< int, uint32_t > s_texAvgCache;
+
+uint32_t AverageTextureColor( FTextureID tex )
+{
+    if( !tex.isValid() )
+    {
+        return 0x808080;
+    }
+
+    const int key = tex.GetIndex();
+    if( auto it = s_texAvgCache.find( key ); it != s_texAvgCache.end() )
+    {
+        return it->second;
+    }
+
+    uint32_t out = 0x808080;
+
+    if( FGameTexture* gt = TexMan.GetGameTexture( tex ) )
+    {
+        if( FTexture* base = gt->GetTexture() )
+        {
+            FBitmap bmp = base->GetBgraBitmap( nullptr );
+            const int n = bmp.GetWidth() * bmp.GetHeight();
+            if( n > 0 )
+            {
+                // maxout 0 -> the honest mean. See the note above.
+                const PalEntry c =
+                    averageColor( reinterpret_cast< const uint32_t* >( bmp.GetPixels() ), n, 0 );
+                out = ( uint32_t( c.r ) << 16 ) | ( uint32_t( c.g ) << 8 ) | uint32_t( c.b );
+            }
+        }
+    }
+
+    s_texAvgCache[ key ] = out;
+    return out;
+}
 
 // The surface classes the renderer distinguishes. Anything upstream invents that
 // is not in this list degrades to Other -- i.e. debris -- rather than erroring,
 // so the labelling pipeline can grow a class without breaking the game.
+// THE SURFACE CLASSES, in the order the profile table below is indexed. Adding
+// one is: a value here, a name in the two functions under it, and a row in
+// RT_DEBRIS_PROFILES. Nothing else in the file switches on the class.
+//
+// `Other` is last and is the fallback: a class the labeller invents that this
+// build does not know parses to Other and therefore SPARKS, which is the
+// shipped behaviour. A new label can never make the game look broken, only
+// un-upgraded.
 enum class SurfKind : uint8_t
 {
-    Metal,     // hot sparks
-    Concrete,  // pale grey debris
-    Other,     // darker neutral debris
+    Metal,     // hot sparks -- no debris at all
+    Concrete,  // grey chips
+    Wood,      // long thin splinters
+    Dirt,      // small dull crumbs, barely bounce
+    Flesh,     // blood droplets
+    Fluid,     // splash droplets, the fluid's own colour
+    Other,     // unknown / unclassified -> sparks
+    COUNT
 };
 
 SurfKind ParseSurfKind( const FString& s )
@@ -102,10 +212,11 @@ SurfKind ParseSurfKind( const FString& s )
         // version of this file, where listing a texture at all meant metal.
         return SurfKind::Metal;
     }
-    if( s.CompareNoCase( "concrete" ) == 0 )
-    {
-        return SurfKind::Concrete;
-    }
+    if( s.CompareNoCase( "concrete" ) == 0 ) return SurfKind::Concrete;
+    if( s.CompareNoCase( "wood" ) == 0 )     return SurfKind::Wood;
+    if( s.CompareNoCase( "dirt" ) == 0 )     return SurfKind::Dirt;
+    if( s.CompareNoCase( "flesh" ) == 0 )    return SurfKind::Flesh;
+    if( s.CompareNoCase( "fluid" ) == 0 )    return SurfKind::Fluid;
     return SurfKind::Other;
 }
 
@@ -115,8 +226,109 @@ const char* SurfKindName( SurfKind k )
     {
         case SurfKind::Metal: return "metal";
         case SurfKind::Concrete: return "concrete";
+        case SurfKind::Wood: return "wood";
+        case SurfKind::Dirt: return "dirt";
+        case SurfKind::Flesh: return "flesh";
+        case SurfKind::Fluid: return "fluid";
         default: return "other";
     }
+}
+
+// Which classes throw debris at all. Metal and Other spark -- see the opt-in
+// rule: a texture must be positively labelled something else to change.
+bool SurfThrowsDebris( SurfKind k )
+{
+    return k != SurfKind::Metal && k != SurfKind::Other;
+}
+
+// PER-CLASS DEBRIS, as MULTIPLIERS on the rt_spark_debris_* cvars.
+//
+// Same shape and the same reason as RT_SMOKE_PROFILES: tuning a cvar still moves
+// every class together, and a row only states how that class DIFFERS. A row of
+// all 1s would be plain concrete.
+//
+// The four axes that actually separate these at a glance, in order of how much
+// they carry: ASPECT (a splinter is not a crumb), GRAVITY and BOUNCE (dirt drops
+// dead, a wood chip floats down), COUNT, and only then colour -- which mostly
+// comes from the hit texture anyway.
+struct DebrisProfile
+{
+    const uint32_t* ramp;
+    int             rampN;
+    // Sprite to stamp on the quad, or nullptr for a flat colour. Left nullptr
+    // everywhere for now ON PURPOSE: an RTGL1 material only exists once gzdoom
+    // has actually drawn that texture, so naming a sprite the level has not
+    // shown yet gets the 1x1 white fallback -- white blood is worse than red
+    // untextured. Wire BLUD here only after confirming it resolves.
+    const char*     texture;
+    float           count;
+    float           size;
+    float           life;
+    float           speed;
+    float           gravity;
+    float           bounce;
+    float           friction;
+    float           aspectLo;   // ABSOLUTE, not a multiplier: shape is the class
+    float           aspectHi;
+    float           spin;
+    float           tint;       // x rt_spark_debris_tint
+    float           albedo;     // x rt_spark_debris_albedo
+};
+
+// Indexed by SurfKind. Metal and Other are present but never used (they spark),
+// and are filled with the concrete row so an indexing mistake is dull rather
+// than undefined.
+constexpr DebrisProfile RT_DEBRIS_PROFILES[ int( SurfKind::COUNT ) ] = {
+    // Metal -- unused, sparks.
+    { RT_CONCRETE_RAMP, RT_CONCRETE_RAMP_N, nullptr,
+      1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.55f, 1.65f, 1.f, 1.f, 1.f },
+
+    // CONCRETE: the reference row. Blocky chips, heavy, barely bouncy.
+    { RT_CONCRETE_RAMP, RT_CONCRETE_RAMP_N, nullptr,
+      1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.55f, 1.65f, 1.f, 1.f, 1.f },
+
+    // WOOD: SPLINTERS. The aspect range is the whole read -- long and thin, and
+    // never square. Lighter than stone so it falls slower and further, tumbles
+    // much faster (a flat splinter catches air), and bounces a little more.
+    { RT_WOOD_RAMP, RT_WOOD_RAMP_N, nullptr,
+      1.1f, 1.15f, 1.f, 1.15f, 0.62f, 1.5f, 0.8f, 0.12f, 0.35f, 2.2f, 1.f, 1.1f },
+
+    // DIRT: crumbs. Many, small, and they DO NOT BOUNCE -- dirt hits and stops,
+    // which is what separates it from concrete at a glance. High friction so the
+    // few that do skid stop immediately.
+    //
+    // LIFE 1.0, i.e. the full rt_spark_debris_life like concrete and wood. It was
+    // 0.55 on the reasoning that loose earth does not lie around as debris; in
+    // play that just made dirt vanish while the chips beside it stayed, which
+    // reads as the effect failing rather than as a material difference. The
+    // three solid classes now share one lifetime and differ only in how they
+    // move, which is the axis that actually carries them.
+    { RT_DIRT_RAMP, RT_DIRT_RAMP_N, nullptr,
+      1.8f, 0.6f, 1.f, 0.85f, 1.15f, 0.12f, 2.2f, 0.7f, 1.4f, 1.f, 1.f, 0.9f },
+
+    // FLESH: blood droplets. Round-ish, wet, and they SPLAT rather than bounce.
+    // Slower and fatter than a chip, and short-lived: a droplet in flight is a
+    // moment, and the lasting mark is the blood decal system's job, not this.
+    { RT_FLESH_RAMP, RT_FLESH_RAMP_N, nullptr,
+      1.6f, 0.85f, 0.35f, 0.9f, 1.25f, 0.05f, 2.5f, 0.8f, 1.25f, 0.5f, 0.75f, 1.15f },
+
+    // FLUID: a splash. The most droplets of anything, small and fast, thrown
+    // wide, gone quickly. tint 1.18 pushes rt_spark_debris_tint past 1 so it
+    // CLAMPS at full texture colour -- "coloured the same as the texture" is the
+    // requirement, so the neutral ramp must not show through at all. The albedo
+    // is raised too: a liquid reads brighter than rubble.
+    { RT_FLUID_RAMP, RT_FLUID_RAMP_N, nullptr,
+      2.4f, 0.5f, 0.3f, 1.35f, 1.f, 0.08f, 2.2f, 0.75f, 1.3f, 1.f, 1.18f, 1.5f },
+
+    // Other -- unused, sparks.
+    { RT_CONCRETE_RAMP, RT_CONCRETE_RAMP_N, nullptr,
+      1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.55f, 1.65f, 1.f, 1.f, 1.f },
+};
+
+const DebrisProfile& ProfileFor( SurfKind k )
+{
+    const int i = int( k );
+    return RT_DEBRIS_PROFILES[ ( i >= 0 && i < int( SurfKind::COUNT ) ) ? i : int( SurfKind::Other ) ];
 }
 
 enum class SparkKind : uint8_t
@@ -127,7 +339,13 @@ enum class SparkKind : uint8_t
 
 // Pool ceilings. These bound the fixed arrays; the cvars bound how much of them
 // is used, so raising a cvar past its ceiling is clamped rather than corrupting.
-constexpr uint32_t RT_SPARK_HARDMAX  = 1024;
+// THE POOL HAD TO GROW WITH THE LIFETIMES. Sparks went 1.1 s -> 5 s and debris
+// 1.4 s -> 20 s, and live count is spawn rate x lifetime, so the same firing
+// makes roughly five times the sparks and fourteen times the chips. At the old
+// 1024 a couple of seconds of chaingun filled the pool and the eviction rule
+// became the thing you were watching. A Spark is ~72 bytes, so 4096 is ~290 KB
+// -- irrelevant next to being able to honour the lifetimes that were asked for.
+constexpr uint32_t RT_SPARK_HARDMAX  = 4096;
 constexpr uint32_t RT_SPARK_FLASH_MAX = 64;
 
 // A single fixed mesh ID for the batched quad primitive. Same reasoning as
@@ -155,6 +373,17 @@ struct Spark
     // The class of the surface this came off, so debris can be coloured by what
     // it was chipped from rather than all alike.
     SurfKind  surf;
+    // REALISTIC-style debris only: a chip is not a neat square. `phase` is its
+    // starting orientation, `spin` how fast it tumbles, `aspect` how far from
+    // square it is. Three cheap per-particle randoms are what turn a cloud of
+    // identical pixels into rubble; the pixelated style ignores all of them
+    // because there a chip is deliberately one square texel.
+    float     phase;
+    float     spin;
+    float     aspect;
+    // DEBRIS: the average colour of the texture it was chipped off, resolved
+    // once at spawn rather than per frame. 0xRRGGBB.
+    uint32_t  baseRgb;
     // The surface normal this came off. Used as DEBRIS's shading normal: the
     // quad itself is camera-facing so a chip is never edge-on and invisible, but
     // a camera-facing NORMAL would make the lighting swing as the player turns,
@@ -504,12 +733,26 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         const SurfKind pSurf   = SurfaceKindOf( hitTexture, &pName, &pListed );
         const bool     pDebris = ( cvar::rt_spark_debris && pSurf == SurfKind::Concrete );
 
-        Printf( "rt_spark surface: '%s' -> %s%s   (%s)\n",
+        // THE SAMPLED COLOUR IS PART OF THE PROBE, because "the tint does not
+        // work" has two completely different causes that look identical on
+        // screen: the average came back grey (the sampling failed, and
+        // AverageTextureColor's fallback is 0x808080), or it came back coloured
+        // and the tint maths washed it out. Printing the value separates them
+        // without a single guess at a magnitude.
+        FString pCol;
+        if( SurfThrowsDebris( pSurf ) )
+        {
+            const uint32_t avg = AverageTextureColor( hitTexture );
+            pCol.Format( "  avg=#%06X%s", avg, avg == 0x808080u ? " (FALLBACK/grey)" : "" );
+        }
+
+        Printf( "rt_spark surface: '%s' -> %s%s   (%s)%s\n",
                 pName.IsEmpty() ? "?" : pName.GetChars(),
                 SurfKindName( pSurf ),
                 pListed ? "" : " [UNLISTED]",
                 !cvar::rt_spark ? "sparks OFF"
-                                : ( pDebris ? "debris" : "sparks" ) );
+                                : ( pDebris ? "debris" : "sparks" ),
+                pCol.GetChars() );
     }
 
     if( !cvar::rt_spark )
@@ -545,7 +788,7 @@ void RT_SpawnImpactSparks( const DVector3& pos,
     // positively labelled `concrete` to behave differently, so metal, other and
     // anything the labeller has not reached all keep the shipped spark, and the
     // effect can only ever improve as the labelling advances.
-    const SparkKind kind = ( cvar::rt_spark_debris && surf == SurfKind::Concrete )
+    const SparkKind kind = ( cvar::rt_spark_debris && SurfThrowsDebris( surf ) )
                                ? SparkKind::Debris
                                : SparkKind::Spark;
     (void)metal;
@@ -626,8 +869,14 @@ void RT_SpawnImpactSparks( const DVector3& pos,
 
     const bool dbr = ( kind == SparkKind::Debris );
 
-    const uint32_t want = uint32_t( std::max(
-        0, dbr ? int{ cvar::rt_spark_debris_count } : int{ cvar::rt_spark_count } ) );
+    // The class row. Multipliers on the debris cvars, so a class states only how
+    // it differs -- see RT_DEBRIS_PROFILES. Sparks ignore it entirely.
+    const DebrisProfile& prof = ProfileFor( surf );
+
+    const uint32_t want =
+        dbr ? uint32_t( std::max( 0, int( std::lround(
+                  float( std::max( 0, int{ cvar::rt_spark_debris_count } ) ) * prof.count ) ) ) )
+            : uint32_t( std::max( 0, int{ cvar::rt_spark_count } ) );
     const uint32_t cap =
         std::min( RT_SPARK_HARDMAX, uint32_t( std::max( 0, int{ cvar::rt_spark_max } ) ) );
     if( want == 0 || cap == 0 )
@@ -635,16 +884,21 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         return;
     }
 
-    // Debris is slower and shorter-lived than a spark, and heavier (the gravity
-    // and bounce differences are applied in the sim, per kind). Spread and the
-    // cone are shared: a chip comes off a wall the same way a spark does.
-    const float speed = std::max(
-        0.f, dbr ? float{ cvar::rt_spark_debris_speed } : float{ cvar::rt_spark_speed } );
+    // Spread and the cone are shared: a chip, a droplet and a spark all come off
+    // a wall the same way. Everything else about the shape is the class row.
+    const float speed =
+        std::max( 0.f,
+                  dbr ? float{ cvar::rt_spark_debris_speed } * prof.speed
+                      : float{ cvar::rt_spark_speed } );
     const float spread = std::clamp( float{ cvar::rt_spark_spread }, 0.f, 90.f );
-    const float life   = std::max(
-        0.05f, dbr ? float{ cvar::rt_spark_debris_life } : float{ cvar::rt_spark_life } );
-    const float size = std::max(
-        0.002f, dbr ? float{ cvar::rt_spark_debris_size } : float{ cvar::rt_spark_size } );
+    const float life =
+        std::max( 0.05f,
+                  dbr ? float{ cvar::rt_spark_debris_life } * prof.life
+                      : float{ cvar::rt_spark_life } );
+    const float size =
+        std::max( 0.002f,
+                  dbr ? float{ cvar::rt_spark_debris_size } * prof.size
+                      : float{ cvar::rt_spark_size } );
 
     // An orthonormal basis around the reflected direction, so the cone can be
     // built without a trig call per spark.
@@ -665,16 +919,36 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         }
         else
         {
-            // Oldest-out: the spark about to be overwritten is the one closest
-            // to vanishing anyway, and an impact that silently produced nothing
-            // because the array was full is the more confusing failure.
-            slot = 0;
-            for( uint32_t j = 1; j < g_sparkCount; j++ )
+            // OLDEST OF ITS OWN KIND, not oldest overall, and the difference is
+            // load-bearing once sparks and debris have very different lifetimes.
+            //
+            // Sparks live ~5 s and debris ~20 s in one shared pool. A plain
+            // oldest-out rule therefore evicts DEBRIS almost every time -- it is
+            // reliably the older population -- so chips would be culled within a
+            // second or two of spawning and their 20 s life would be a number
+            // that never happened. Evicting within the kind bounds each
+            // population by its own spawn rate instead, so neither can starve
+            // the other. Same shape as the ambient-first rule in
+            // RT_SpawnSmokePuffs, and for the same reason.
+            slot                 = UINT32_MAX;
+            uint32_t oldestAny   = 0;
+            for( uint32_t j = 0; j < g_sparkCount; j++ )
             {
-                if( s_sparks[ j ].age > s_sparks[ slot ].age )
+                if( s_sparks[ j ].age > s_sparks[ oldestAny ].age )
+                {
+                    oldestAny = j;
+                }
+                if( s_sparks[ j ].kind == kind &&
+                    ( slot == UINT32_MAX || s_sparks[ j ].age > s_sparks[ slot ].age ) )
                 {
                     slot = j;
                 }
+            }
+            // None of this kind alive yet: fall back to the oldest of all, so a
+            // first chip can still be born into a pool full of sparks.
+            if( slot == UINT32_MAX )
+            {
+                slot = oldestAny;
             }
         }
 
@@ -696,12 +970,26 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         sp.vel     = dir * ( speed * ( 0.55f + 0.45f * rnd01() ) );
         sp.age     = 0.f;
         sp.life    = life * ( 0.7f + 0.6f * rnd01() );
-        sp.size    = size * ( 0.7f + 0.6f * rnd01() );
+        // Debris spreads much wider than a spark: 0.4x..1.9x against 0.7x..1.3x.
+        // Rubble is visibly assorted; sparks off one impact are not.
+        sp.size = size * ( dbr ? ( 0.4f + 1.5f * rnd01() ) : ( 0.7f + 0.6f * rnd01() ) );
         sp.sec     = sec;
         sp.settled = false;
         sp.kind    = kind;
         sp.surf    = surf;
         sp.nrm     = normal;
+        // Rubble randomness. Debris also gets a much wider SIZE spread than a
+        // spark (below): chips off a wall come in obviously different sizes,
+        // and uniform ones read as manufactured.
+        sp.phase  = rnd01() * 2.f * rt_pi();
+        sp.spin   = rnd11() * 3.2f * ( dbr ? prof.spin : 1.f );
+        // ASPECT IS THE CLASS, not a multiplier: a splinter is 0.12-0.35 and a
+        // crumb is 0.7-1.4, and no amount of scaling one produces the other.
+        sp.aspect = dbr ? ( prof.aspectLo + rnd01() * ( prof.aspectHi - prof.aspectLo ) )
+                        : ( 0.55f + rnd01() * 1.1f );
+        // Resolved here, once per impact, because the lookup decodes a bitmap on
+        // first sight of a texture. Sparks never read it.
+        sp.baseRgb = dbr ? AverageTextureColor( hitTexture ) : 0u;
         // The spark's identity, for its glow light's uniqueID. Monotonic and
         // never reused, so a light can never be inherited by a different spark.
         static uint32_t s_nextSid = 1;
@@ -912,9 +1200,16 @@ void RT_UpdateSparks()
 
             const FVector3 from = sp.pos;
 
-            const bool  isDbr = ( sp.kind == SparkKind::Debris );
-            const float kGrav = isDbr ? gravityD : gravity;
-            const float kBnce = isDbr ? bounceD : bounce;
+            // Per CLASS, not merely per kind: dirt drops dead where a wood
+            // splinter floats down, and that difference is most of what tells
+            // them apart in motion.
+            const bool           isDbr = ( sp.kind == SparkKind::Debris );
+            const DebrisProfile& pr    = ProfileFor( sp.surf );
+            const float          kGrav = isDbr ? gravityD * pr.gravity : gravity;
+            const float          kBnce =
+                isDbr ? std::clamp( bounceD * pr.bounce, 0.f, 1.f ) : bounce;
+            const float kFric =
+                isDbr ? std::clamp( fric * pr.friction, 0.f, 1.f ) : fric;
 
             sp.vel.Z -= kGrav * dt;
             sp.vel *= std::max( 0.f, 1.f - drag * dt );
@@ -934,7 +1229,7 @@ void RT_UpdateSparks()
                 {
                     tracesLeft--;
                     s_dbgTraces++;
-                    if( SparkHitWall( sp, from, sp.pos, kBnce, fric ) )
+                    if( SparkHitWall( sp, from, sp.pos, kBnce, kFric ) )
                     {
                         nowSec = sp.sec;
                     }
@@ -971,8 +1266,8 @@ void RT_UpdateSparks()
                             if( sp.vel.Z < 0.f )
                             {
                                 sp.vel.Z = -sp.vel.Z * kBnce;
-                                sp.vel.X *= ( 1.f - fric );
-                                sp.vel.Y *= ( 1.f - fric );
+                                sp.vel.X *= ( 1.f - kFric );
+                                sp.vel.Y *= ( 1.f - kFric );
                             }
                         }
                         else if( sp.pos.Z > zc )
@@ -981,8 +1276,8 @@ void RT_UpdateSparks()
                             if( sp.vel.Z > 0.f )
                             {
                                 sp.vel.Z = -sp.vel.Z * kBnce;
-                                sp.vel.X *= ( 1.f - fric );
-                                sp.vel.Y *= ( 1.f - fric );
+                                sp.vel.X *= ( 1.f - kFric );
+                                sp.vel.Y *= ( 1.f - kFric );
                             }
                         }
                     }
@@ -995,6 +1290,14 @@ void RT_UpdateSparks()
                         sp.pos.Z   = zf;
                         sp.vel     = FVector3{ 0, 0, 0 };
                         sp.settled = true;
+                        // Freeze the tumble where it landed. Baking the current
+                        // angle into `phase` and clearing `spin` keeps the draw
+                        // expression uniform, so a chip does not snap back to
+                        // its birth orientation the instant it comes to rest --
+                        // which, at a 20 s life, would be the most visible thing
+                        // debris does.
+                        sp.phase += sp.spin * sp.age;
+                        sp.spin = 0.f;
                     }
                 }
             }
@@ -1041,9 +1344,13 @@ struct QuadBatch
 };
 
 QuadBatch s_batchSpark;
-QuadBatch s_batchDebris;
+// ONE BATCH PER CLASS. They could all share one while every profile has a null
+// texture, but the moment a class names a sprite (blood, say) a batch can only
+// carry one material -- so the split is here from the start rather than being a
+// refactor the first textured class forces. At most COUNT+1 uploads a frame.
+QuadBatch s_batchDebris[ int( SurfKind::COUNT ) ];
 
-void UploadBatch( const QuadBatch& b, uint64_t meshId, bool additive )
+void UploadBatch( const QuadBatch& b, uint64_t meshId, bool additive, const char* texName )
 {
     if( b.verts.empty() )
     {
@@ -1106,7 +1413,7 @@ void UploadBatch( const QuadBatch& b, uint64_t meshId, bool additive )
         .indexCount           = uint32_t( b.idx.size() ),
         // No texture: RTGL1 samples its 1x1 white, so the colour is entirely the
         // vertex colour. That is what makes a spark one flat pixel.
-        .pTextureName = nullptr,
+        .pTextureName = texName,
         .textureFrame = 0,
         .color        = RG_PACKED_COLOR_WHITE,
         .emissive     = additive ? 1.f : 0.f,
@@ -1157,8 +1464,11 @@ void RT_DrawSparks()
 
     s_batchSpark.verts.clear();
     s_batchSpark.idx.clear();
-    s_batchDebris.verts.clear();
-    s_batchDebris.idx.clear();
+    for( QuadBatch& b : s_batchDebris )
+    {
+        b.verts.clear();
+        b.idx.clear();
+    }
 
     const RgNormalPacked32 nrm = rt.rgUtilPackNormal( -fwd.X, -fwd.Y, -fwd.Z );
 
@@ -1166,17 +1476,14 @@ void RT_DrawSparks()
     {
         const Spark& sp = s_sparks[ i ];
 
-        const bool isDbr = ( sp.kind == SparkKind::Debris );
-        QuadBatch& batch = isDbr ? s_batchDebris : s_batchSpark;
+        const bool           isDbr = ( sp.kind == SparkKind::Debris );
+        const DebrisProfile& pr    = ProfileFor( sp.surf );
 
-        const uint32_t* ramp  = RT_SPARK_RAMP;
-        int             rampN = RT_SPARK_RAMP_N;
-        if( isDbr )
-        {
-            const bool concrete = ( sp.surf == SurfKind::Concrete );
-            ramp                = concrete ? RT_CONCRETE_RAMP : RT_DEBRIS_RAMP;
-            rampN               = concrete ? RT_CONCRETE_RAMP_N : RT_DEBRIS_RAMP_N;
-        }
+        QuadBatch& batch =
+            isDbr ? s_batchDebris[ int( sp.surf ) % int( SurfKind::COUNT ) ] : s_batchSpark;
+
+        const uint32_t* ramp  = isDbr ? pr.ramp : RT_SPARK_RAMP;
+        const int       rampN = isDbr ? pr.rampN : RT_SPARK_RAMP_N;
 
         const float t = std::clamp( sp.age / std::max( 1e-4f, sp.life ), 0.f, 1.f );
 
@@ -1214,6 +1521,61 @@ void RT_DrawSparks()
             r = l_lerp( 16 );
             g = l_lerp( 8 );
             b = l_lerp( 0 );
+        }
+
+        // A CHIP TAKES THE COLOUR OF THE WALL IT CAME OFF.
+        //
+        // The built-in ramp is kept as the AGE CURVE rather than thrown away:
+        // the texture average supplies the hue, and the ramp supplies how much
+        // that hue darkens over the chip's life. Replacing the ramp outright
+        // would give every chip one flat colour for 20 seconds; using only the
+        // ramp gives grey rubble off a rust-red wall. This is the same "keep the
+        // art, add shading on top" rule the material work follows.
+        //
+        // NORMALISED TO A TARGET ALBEDO, not used raw. A Doom wall texture
+        // averages wherever its art happens to sit -- some are near-white -- and
+        // an albedo of 0.8 is the mistake that made the first debris ramps read
+        // as "too bright colors". rt_spark_debris_albedo pins the LUMINANCE and
+        // lets the texture supply only the hue, so a pale wall and a dark one
+        // produce chips of the same believable darkness in different colours.
+        if( isDbr && sp.baseRgb != 0u )
+        {
+            // The class scales both, and fluid pushes tint past 1 so it CLAMPS at
+            // full texture colour -- see its row.
+            const float tint =
+                std::clamp( float{ cvar::rt_spark_debris_tint } * pr.tint, 0.f, 1.f );
+            if( tint > 0.f )
+            {
+                float tr = ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f;
+                float tg = ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f;
+                float tb = ( sp.baseRgb & 0xFF ) / 255.f;
+
+                const float lum = 0.2126f * tr + 0.7152f * tg + 0.0722f * tb;
+                if( lum > 0.01f )
+                {
+                    const float target =
+                        std::clamp( float{ cvar::rt_spark_debris_albedo } * pr.albedo, 0.02f, 1.f );
+                    const float k = target / lum;
+                    tr = std::min( 1.f, tr * k );
+                    tg = std::min( 1.f, tg * k );
+                    tb = std::min( 1.f, tb * k );
+                }
+
+                // The ramp's own darkening, as a fraction of its first entry, so
+                // a chip still fades with age whatever colour it took.
+                const uint32_t r0    = ramp[ 0 ];
+                const float    l0    = ( ( r0 >> 16 ) & 0xFF ) / 255.f;
+                const float    lnow  = r;   // the ramp value resolved just above
+                const float    curve = l0 > 0.01f ? std::clamp( lnow / l0, 0.f, 1.f ) : 1.f;
+
+                tr *= curve;
+                tg *= curve;
+                tb *= curve;
+
+                r += ( tr - r ) * tint;
+                g += ( tg - g ) * tint;
+                b += ( tb - b ) * tint;
+            }
         }
 
         // DEBRIS IS RAY-TRACED GEOMETRY, and that is what makes it take the
@@ -1266,7 +1628,31 @@ void RT_DrawSparks()
         FVector3 ex = right * half;
         FVector3 ey = up * half;
 
-        if( !pixel && streak > 1.f )
+        if( isDbr && !pixel )
+        {
+            // RUBBLE, NOT PIXELS. A chip gets its own orientation, its own
+            // tumble and its own aspect ratio, so a burst reads as assorted
+            // fragments rather than as a grid of identical squares. It costs
+            // three floats per particle and one sin/cos per frame.
+            //
+            // The tumble is deliberately SLOW relative to the spin of a real
+            // fragment: at 20 s of life a fast spin turns into a flicker as the
+            // quad passes edge-on-ish every rotation, and a flickering chip
+            // reads as a rendering fault rather than as motion. A settled chip
+            // stops turning: the sim bakes its final angle into `phase` and
+            // zeroes `spin`, so this expression stays uniform and the chip does
+            // not SNAP back to its birth orientation the moment it lands.
+            const float ang = sp.phase + sp.spin * sp.age;
+            const float ca  = std::cos( ang );
+            const float sa  = std::sin( ang );
+
+            const FVector3 rx = right * ca + up * sa;
+            const FVector3 ry = up * ca - right * sa;
+
+            ex = rx * ( half * sp.aspect );
+            ey = ry * ( half / std::max( 0.2f, sp.aspect ) );
+        }
+        else if( !pixel && streak > 1.f )
         {
             // A REAL SPARK IS A STREAK, because it moves far within one exposure.
             // Project its velocity onto the screen basis and stretch the quad
@@ -1361,8 +1747,17 @@ void RT_DrawSparks()
         s_dbgQuads++;
     }
 
-    UploadBatch( s_batchSpark, RT_SPARK_MESH_ID, true );
-    UploadBatch( s_batchDebris, RT_DEBRIS_MESH_ID, false );
+    UploadBatch( s_batchSpark, RT_SPARK_MESH_ID, true, nullptr );
+    for( int k = 0; k < int( SurfKind::COUNT ); k++ )
+    {
+        // Distinct mesh IDs per class: RTGL1 keeps only one upload per ID, and
+        // it is the LATER one that loses, so a shared ID would silently drop
+        // every class after the first.
+        UploadBatch( s_batchDebris[ k ],
+                     RT_DEBRIS_MESH_ID + uint64_t( k ),
+                     false,
+                     RT_DEBRIS_PROFILES[ k ].texture );
+    }
 }
 
 // ---------------------------------------------------------------------------

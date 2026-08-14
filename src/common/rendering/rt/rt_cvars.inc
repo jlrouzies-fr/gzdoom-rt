@@ -2454,7 +2454,7 @@
                                                 "separate impacts, so the per-impact count is NOT the thing that bounds "
                                                 "a super-shotgun -- rt_spark_max is. Raise this for a denser burst from "
                                                 "one bullet; raise rt_spark_max if a shotgun visibly starves." )
-    RT_CVAR( rt_spark_life,             1.1f,   "spark lifetime in seconds. A settled spark (rt_spark_rest) spends the "
+    RT_CVAR( rt_spark_life,             5.0f,   "spark lifetime in seconds. A settled spark (rt_spark_rest) spends the "
                                                 "remainder of its life lying still on the floor glowing down the palette "
                                                 "ramp, so this is the ember-linger knob. It also stretches the RAMP, which "
                                                 "is indexed by age/life -- doubling it makes a spark stay on each PUFF "
@@ -2475,7 +2475,7 @@
     RT_CVAR( rt_spark_drag,             1.6f,   "velocity damping per second. Air resistance on something this small is "
                                                 "large, and the drag is what makes a spark decelerate into its settle "
                                                 "rather than skidding at launch speed until it dies." )
-    RT_CVAR( rt_spark_size,             0.055f, "edge of the square, in METRES, before rt_spark_grid quantizes it. One "
+    RT_CVAR( rt_spark_size,             0.02f, "edge of the square, in METRES, before rt_spark_grid quantizes it. One "
                                                 "spark is one flat single-coloured quad -- that IS the pixel. There is no "
                                                 "texture and no falloff, so this is the only size knob." )
     RT_CVAR( rt_spark_grid,             0.03125f, "world-space snapping in METRES for both a spark's SIZE and its POSITION "
@@ -2500,7 +2500,7 @@
                                                 "palette RGB is deliberately NOT scaled -- the top of the PUFF ramp is "
                                                 "already f8f8b0, and multiplying it would clip the ramp to white and throw "
                                                 "away the match to the sprite that the whole look is built on." )
-    RT_CVAR( rt_spark_max,              640,    "live sparks across the whole level. The pool is a fixed array and"
+    RT_CVAR( rt_spark_max,              2000,    "live sparks across the whole level. The pool is a fixed array and"
                                                 "overflow is oldest-out, so this bounds memory and the per-frame vertex "
                                                 "build, not the spawn rate. Uploads are one batched primitive, so the "
                                                 "draw cost of a full pool is a single rgUploadMeshPrimitive." )
@@ -2573,7 +2573,7 @@
                                                 "effect wanted is a moving highlight travelling over the wall, not a "
                                                 "second flash chasing the first. Fades with the spark's own age curve so "
                                                 "the light and the dot go out together." )
-    RT_CVAR( rt_spark_style,            0,      "0 = PIXELATED, 1 = REALISTIC. Two looks, one particle system. Pixelated "
+    RT_CVAR( rt_spark_style,            1,      "0 = PIXELATED, 1 = REALISTIC. Two looks, one particle system. Pixelated "
                                                 "snaps position and size to rt_spark_grid and quantizes colour to the "
                                                 "seven PUFF palette entries with no blending, so a spark is a chunky "
                                                 "square that steps -- it matches the sprite art it fires alongside. "
@@ -2602,7 +2602,7 @@
                                                 "entirely wrong. Off is the before. See docs/plan-impact-fx.md." )
     RT_CVAR( rt_spark_debris_count,     6,      "chips per impact on a non-metal surface. Fewer than sparks: stone throws "
                                                 "a handful of visible fragments where metal throws a shower." )
-    RT_CVAR( rt_spark_debris_life,      1.4f,   "chip lifetime in seconds. Longer than a spark's -- debris does not burn "
+    RT_CVAR( rt_spark_debris_life,      20.f,   "chip lifetime in seconds. Longer than a spark's -- debris does not burn "
                                                 "out, it falls, lands and stays until it is culled." )
     RT_CVAR( rt_spark_debris_speed,     3.4f,   "initial speed, m/s. Slower than a spark: a chip is knocked loose, not "
                                                 "ejected as burning metal." )
@@ -2612,6 +2612,25 @@
                                                 "from a spark at a glance, before the colour is even read." )
     RT_CVAR( rt_spark_debris_bounce,    0.22f,  "restitution for chips. Below a spark's -- stone does not bounce, it "
                                                 "clatters once and settles." )
+    RT_CVAR( rt_spark_debris_tint,      0.85f,  "how much of the HIT TEXTURE's own average colour a chip takes, 0..1. "
+                                                "0 = the built-in neutral ramp only; 1 = fully the colour of the wall it "
+                                                "was chipped off. This is only possible because the wall texture now "
+                                                "reaches the renderer at all -- trace.HitTexture is not filled in for "
+                                                "walls by core Trace(), and until the hook derived it every impact "
+                                                "arrived with an empty FTextureID. The average is gzdoom's own "
+                                                "averageColor() over the texture bitmap, CACHED per texture because it "
+                                                "decodes the whole image, and resolved once at spawn rather than per "
+                                                "frame. The ramp is still used as the AGE CURVE -- the texture gives the "
+                                                "hue, the ramp gives how it darkens -- so a chip does not sit at one "
+                                                "flat colour for twenty seconds." )
+    RT_CVAR( rt_spark_debris_albedo,    0.30f,  "target LUMINANCE for a texture-tinted chip, before the room lights it. "
+                                                "The texture average is normalised to this and only its HUE is kept, "
+                                                "which is the whole reason the tint is safe to turn up: Doom wall art "
+                                                "averages wherever it happens to sit and some textures are near-white, "
+                                                "so using the mean raw would put an albedo of 0.8 on a lump of concrete "
+                                                "-- exactly the mistake that made the first debris ramps read as too "
+                                                "bright. Rock and concrete sit around 0.20-0.35 in reality. Raise it if "
+                                                "chips read as silhouettes, lower it if they read as chalk." )
     RT_CVAR_NOARCH( rt_spark_surface_debug, 1,  "1 prints the TEXTURE NAME of every surface an impact lands on, and how "
                                                 "it classified. This is the tool for building "
                                                 "rt/data/spark_surfaces.txt, and it exists because there is no other way "
