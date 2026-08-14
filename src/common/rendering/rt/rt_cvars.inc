@@ -2460,11 +2460,28 @@
                                                 "different densities -- a bulb lattice is ~16 lights on one pane, an inset lamp "
                                                 "is one per sector -- and 20 of rt-lighting-practices.md is the standing warning "
                                                 "about what happens when a dense family is turned on wholesale." )
-    RT_CVAR( rt_volume_shaft_max,       16,     "how many fixtures are handed to the shader per frame, nearest first. Hard "
-                                                "ceiling is RG_MAX_SHAFT_LIGHTS (32) -- the indices ride in the global uniform. "
+    RT_CVAR( rt_volume_shaft_bands,     4,      "SPLIT THE SLOT BUDGET ACROSS DISTANCE BANDS instead of simply taking the "
+                                                "nearest rt_volume_shaft_max fixtures. 1 = the old nearest-first behaviour.\n"
+                                                "\n"
+                                                "This is what 'the shafts do not reach' actually was. Nearest-N with a 3 m "
+                                                "dedupe sounds like coverage and is not: sixteen points at 3 m spacing fill a "
+                                                "disc of radius ~7 m around the camera, and a Doom 64 lamp room offers HUNDREDS "
+                                                "of candidates (bulb lattice every 16 units, faux panels every 32, the "
+                                                "perimeter walk every 64). Every slot went to the ceiling directly overhead, so "
+                                                "a lamp ten metres down the corridor was never SENT -- not dim, absent, with no "
+                                                "shader knob able to touch it. Two rounds of brightness tuning went past that, "
+                                                "because the symptom looks exactly like a falloff problem.\n"
+                                                "\n"
+                                                "Each band gets its share of the slots, leftovers roll forward, and a final "
+                                                "sweep hands anything unspent back to the nearest candidates -- so an empty "
+                                                "corridor loses nothing. Watch rt_volume_shaft_verbose's 'reach a..b m' field: "
+                                                "that number, missing from the first version of the line, is the one that "
+                                                "answers this." )
+    RT_CVAR( rt_volume_shaft_max,       32,     "how many fixtures are handed to the shader per frame. Hard "
+                                                "ceiling is RG_MAX_SHAFT_LIGHTS (64) -- the indices ride in the global uniform. "
                                                 "This is NOT the per-froxel cost: that is rt_volume_shaft_trace. Raising this "
                                                 "only widens the set the per-cell radiance cull gets to choose from." )
-    RT_CVAR( rt_volume_shaft_trace,     3,      "hard cap on shadow rays per FROXEL, and therefore the actual budget. The "
+    RT_CVAR( rt_volume_shaft_trace,     4,      "hard cap on shadow rays per FROXEL, and therefore the actual budget. The "
                                                 "volume is a 64-slice grid, so one ray per cell per light is ~900k rays; in a "
                                                 "typical cell only one or two lamps survive rt_volume_shaft_mincontrib, so this "
                                                 "is rarely reached. Raise it only after measuring." )
@@ -2520,10 +2537,15 @@
                                                 "splitting the knob means finding that out cannot retune the moon or the nine "
                                                 "fogged maps. NOTE the moon lesson: lowering asymmetry is DIMMER, not flatter -- "
                                                 "the forward peak is what carries a shaft (moon-and-sky-leaks.md 5.5)." )
-    RT_CVAR( rt_volume_shaft_maxdist,   1024.f, "MAP UNITS: drop a fixture further than this from the camera before it is even "
+    RT_CVAR( rt_volume_shaft_maxdist,   1920.f, "MAP UNITS: drop a fixture further than this from the camera before it is even "
                                                 "sorted. Independent of rt_ceiling_edge_maxdist (3072), which decides whether "
                                                 "the LIGHT exists at all -- a lamp across the level should still light its room, "
-                                                "it just has no business spending a shadow ray in every froxel to do it." )
+                                                "it just has no business spending a shadow ray in every froxel to do it.\n"
+                                                "\n"
+                                                "1920 = 60 m = rt_volume_far, i.e. the reach of the froxel volume itself, "
+                                                "which is the only honest limit: past it there is no medium to scatter in. It "
+                                                "was 1024 (32 m), which was not the thing stopping shafts from reaching -- see "
+                                                "rt_volume_shaft_bands -- but there is no reason to be tighter than the volume." )
     RT_CVAR( rt_volume_shaft_mingap,    96.f,   "MAP UNITS: minimum separation between two shaft lights. A lamp pane is ~16 "
                                                 "point lights on a 16-unit lattice, so without this ONE pane takes the whole "
                                                 "rt_volume_shaft_max budget and produces a single blob rather than a beam, while "
@@ -2540,6 +2562,73 @@
                                                 "read and no amount of retuning will help. Same philosophy as rt_smoke_debug 4." )
     RT_CVAR( rt_volume_shaft_verbose,   false,  "periodic console dump of the shaft list: how many candidates each family "
                                                 "offered, how many survived the gap/distance culls, and what was actually sent." )
+
+    // --- Dust motes in the air ----------------------------------------------
+    // The sparkle half of a light shaft. The froxel medium supplies the smooth
+    // haze; specks drifting through a beam are what the eye reads as "there is
+    // air here". Real traced geometry, lit by the scene -- see rt_dust.cpp.
+    RT_CVAR( rt_dust,                   true,   "dust motes floating in the air: tiny quads on a hashed world lattice, drawn "
+                                                "as REAL TRACED GEOMETRY so each one is lit by whatever reaches it and "
+                                                "shadowed by whatever does not. That is the whole effect -- a speck is bright "
+                                                "inside a light shaft and invisible outside it, so the beam draws itself and "
+                                                "the dark stays dark.\n"
+                                                "\n"
+                                                "NOT emissive (that is fireflies -- a mote carrying its own light glows in a "
+                                                "pitch-black room) and NOT rasterized (RTGL1 keeps a translucent primitive out "
+                                                "of the acceleration structure and shades it not at all, i.e. fullbright). "
+                                                "Both mistakes look like dust in a screenshot of a lit room and like nonsense "
+                                                "everywhere else.\n"
+                                                "\n"
+                                                "Stateless: no pool, no spawning, no ageing. Dust is a property of the room, "
+                                                "not an event, so the motes sit on a lattice fixed in WORLD space and the "
+                                                "frame draws the cells near the camera. Walking away and back shows the same "
+                                                "dust, and no budget can quietly run out." )
+    RT_CVAR( rt_dust_density,           0.10f,  "motes per CUBIC METRE. The cell spacing is derived from this and from "
+                                                "rt_dust_max, coarser of the two winning, so this is a request rather than a "
+                                                "guarantee -- which is what makes rt_dust_max a real hard bound instead of a "
+                                                "cull applied after the work is already done." )
+    RT_CVAR( rt_dust_max,               900,    "hard cap on motes drawn per frame. It sets the cell spacing rather than "
+                                                "trimming a list, so raising rt_dust_far can never cost more than this allows "
+                                                "-- the dust just thins with reach instead of multiplying." )
+    RT_CVAR( rt_dust_far,               12.f,   "METRES: how far dust is drawn. Cost is bounded by rt_dust_max whatever this "
+                                                "says, so the trade is density against reach, not framerate. Motes shrink out "
+                                                "over the last quarter rather than fading -- see rt_dust_size." )
+    RT_CVAR( rt_dust_near,              0.5f,   "METRES: no dust closer than this to the camera. A mote at arm length is a "
+                                                "lit card across a quarter of the screen, which is the one place the angular "
+                                                "size trick below fails." )
+    RT_CVAR( rt_dust_size,              0.008f, "METRES: a mote world size, and the FLOOR of the two size terms. Note it "
+                                                "cannot be faded out at range: below RTGL1 0.98 alpha threshold the whole "
+                                                "batch is demoted to the rasterized overlay and goes fullbright, so distance "
+                                                "is handled by SHRINKING, exactly as debris is." )
+    RT_CVAR( rt_dust_size_ang,          0.0022f, "ANGULAR size in radians, and the reason dust is visible at all. A real mote "
+                                                "is tens of microns; even a generous 8 mm speck at 10 m covers about a fifth "
+                                                "of a pixel, which under an upscaler is not a dim speck but a shimmering one. "
+                                                "A mote is drawn at whichever is LARGER of rt_dust_size and this, so it stays "
+                                                "a constant few pixels at any distance. Every particle system does this; it is "
+                                                "the difference between dust and noise. 0 = honest world size, and expect "
+                                                "sparkle." )
+    RT_CVAR_COLOR( rt_dust_color,       0xC8C8C8, "hue of the dust (hex). Its BRIGHTNESS comes from rt_dust_albedo -- the two "
+                                                "are split the same way debris colours are, so recolouring cannot silently "
+                                                "change how light or dark the motes read." )
+    RT_CVAR( rt_dust_albedo,            0.9f,   "albedo the dust is normalised to. High on purpose: a mote is a bright speck, "
+                                                "and this is an ALBEDO the path tracer shades, not a final pixel -- in an "
+                                                "unlit room 1.0 is still black." )
+    RT_CVAR( rt_dust_drift,             0.35f,  "METRES of wobble around a mote home position. A Lissajous path rather than a "
+                                                "velocity: integrating a drift would need per-mote state and would carry motes "
+                                                "out of their cells, which is what makes a lattice system pop. Three sines "
+                                                "with incommensurate periods stay bounded, cost nothing, and read as slow air "
+                                                "movement -- which is what dust in still air actually does." )
+    RT_CVAR( rt_dust_speed,             0.25f,  "rate of that wobble. Driven by MAPTIME, so dust stops with a paused game: it "
+                                                "is in the world, not on the camera. Vertical is deliberately slower and "
+                                                "shallower than lateral -- a mote bobbing up and down as fast as it drifts "
+                                                "sideways reads as a bug." )
+    RT_CVAR( rt_dust_cone,              -0.25f, "skip motes whose direction from the camera has a forward dot below this. A "
+                                                "CONE rather than a frustum on purpose: a frustum would be tighter and would "
+                                                "also delete every mote a mirror or water surface reflects, which is a visible "
+                                                "hole. -1 draws the whole sphere." )
+    RT_CVAR( rt_dust_debug,             false,  "periodic console line: motes drawn, the derived cell spacing, and the mote "
+                                                "size at the near and far ends. The cell spacing is the useful one -- it says "
+                                                "whether rt_dust_density or rt_dust_max is deciding the look." )
     RT_CVAR( rt_illum_volume,           false,  "sample the traced illumination volume (RtVolumetric.rgen output) when shading "
                                                 "RASTERIZED translucent primitives, instead of the RTGL1 default "
                                                 "max(1, avgLuminance). OFF: tried as a way to dim ghost sprites in dark rooms "
@@ -2838,35 +2927,85 @@
                                                 "surface where a plasma bolt or BFG ball died. Independent of rt_spark -- "
                                                 "the two systems share a particle pool but not a switch, so hitscan sparks "
                                                 "can stay off while arcs are on." )
-    RT_CVAR( rt_arc_count,              18,     "arc particles per projectile impact. Higher than rt_spark_count because "
-                                                "an arc reads as a RING rather than as a shower: too few and the eye sees "
-                                                "individual dots leaving the impact instead of a discharge spreading over "
-                                                "the wall." )
-    RT_CVAR( rt_arc_life,               0.25f,  "seconds an arc particle lives. SHORT ON PURPOSE, and the number is not "
-                                                "arbitrary: 64PlasmaBall's own death animation (PLSE A-F) runs 16 tics "
-                                                "~= 0.23 s. Much past that and the arcs outlive the flash they came from, "
-                                                "so the impact reads as two separate events rather than one." )
-    RT_CVAR( rt_arc_speed,              7.0f,   "m/s along the SURFACE, away from the impact point. Faster than a spark: "
-                                                "an arc is a discharge racing over the wall, not debris being thrown off "
-                                                "it, and the speed is most of what separates the two reads." )
-    RT_CVAR( rt_arc_spread,             0.30f,  "how far out of the surface PLANE an arc is allowed to stray, 0..1. "
-                                                "0 = a perfectly flat ring crawling on the wall, which reads as a decal "
-                                                "and is too tidy; 1 = a hemisphere, which is just a spark shower in blue. "
-                                                "The value is the whole difference between the two effects, so this is "
-                                                "the first knob to reach for if an arc stops looking electric." )
-    RT_CVAR( rt_arc_size,               0.022f, "metres, edge of an arc particle. Marginally larger than a spark at the "
-                                                "shipping 0.02 -- an arc is hotter and shorter-lived, so it can afford "
-                                                "the size without becoming a blob." )
-    RT_CVAR( rt_arc_bright,             3.0f,   "how hard an arc ADDS to the screen. Read rt_spark_bright first: this is "
-                                                "the same vertex-ALPHA lever and it is subject to the same ceiling. "
-                                                "Higher than the spark's 2.0 because an electric discharge is the "
-                                                "brightest thing in the room for a quarter of a second." )
-    RT_CVAR( rt_arc_drag,               3.5f,   "velocity damping per second for arcs. Much heavier than rt_spark_drag: "
-                                                "an arc should decelerate visibly as it crawls, so the ring expands fast "
-                                                "and then stalls rather than flying away at a constant rate." )
-    RT_CVAR( rt_arc_gravity,            2.0f,   "m/s^2 on an arc particle. Nearly weightless -- an electric remain is not "
-                                                "falling debris -- but not zero, so arcs off a ceiling drift down and the "
-                                                "effect does not read as pinned to the surface." )
+    RT_CVAR( rt_arc_life,               0.5f,   "seconds a mark lasts. LONGER THAN THE PARTICLE VERSION'S 0.25, and "
+                                                "the reason the PLSE argument no longer binds: 64PlasmaBall's death "
+                                                "animation runs ~0.23 s, which was the right ceiling for particles "
+                                                "flying away from the impact -- they had to be gone before the flash "
+                                                "they belonged to. A mark is a REMAIN; it is supposed to outlast the "
+                                                "event and be the thing still there when the flash has gone." )
+    RT_CVAR( rt_arc_bright,             3.0f,   "how hard a mark ADDS to the screen. Read rt_spark_bright first: this "
+                                                "is the same vertex-ALPHA lever and subject to the same 8-bit ceiling, "
+                                                "so a value above 1 does not raise the peak, it WIDENS it -- the arcs "
+                                                "hold full brightness for a while instead of dimming from birth. That "
+                                                "is what is wanted here: a discharge is flat-out bright and then "
+                                                "gone." )
+    RT_CVAR( rt_arc_max,                32,     "how many impact MARKS may be alive at once. A mark is a whole filigree, "
+                                                "not a particle, so this is a much smaller number than rt_spark_max and "
+                                                "means something different: 32 simultaneous plasma scars, each drawing "
+                                                "its own branches. Oldest-out." )
+    RT_CVAR( rt_arc_branches,           9,      "polylines radiating from the impact point. THE COUNT IS A LEGIBILITY "
+                                                "KNOB, not a density one: too few and the mark reads as a scratch, too "
+                                                "many and the kinks average out into a disc and it reads as a splat. "
+                                                "Odd numbers help -- an even ring tends to look mirrored." )
+    RT_CVAR( rt_arc_segments,           5,      "steps in each branch's random walk. This is what makes an arc read as "
+                                                "lightning rather than as a starburst: at 1 every branch is a straight "
+                                                "ray out of the centre, which is a sun. The kinks are the effect." )
+    RT_CVAR( rt_arc_reach,              0.55f,  "metres a branch covers end to end, before the per-step length jitter. "
+                                                "The scale of the whole mark -- roughly 17 map units at the default, so "
+                                                "a scar about a third the height of a door." )
+    RT_CVAR( rt_arc_width,              0.012f, "metres, the width of a branch at its base; it tapers to about half "
+                                                "that at the tip. THIN IS THE POINT -- this was reported as looking "
+                                                "like 'square / rectangle' particles when it was built as quads, and a "
+                                                "hairline is what separates an arc from a fragment." )
+    RT_CVAR( rt_arc_jitter,             0.55f,  "RADIANS of turn allowed at each step of the walk, either way. 0 gives "
+                                                "straight rays (a starburst); much above 1 and branches curl back on "
+                                                "themselves and the mark loses its outward read." )
+    RT_CVAR( rt_arc_fork,               0.55f,  "chance that a branch spawns a shorter, thinner child off its end. "
+                                                "Real discharges branch, and without forks a set of polylines still "
+                                                "reads as a starburst however kinked each one is." )
+    RT_CVAR( rt_arc_flicker,            0.6f,   "how much the filigree CRACKLES, 0..1. Branches drop out for a few "
+                                                "frames at a time and return. This is more of what sells the effect as "
+                                                "electric than any brightness value -- and it is only possible because "
+                                                "the geometry is regenerated from a seed each frame rather than stored." )
+    RT_CVAR( rt_arc_flicker_rate,       1.0f,   "how fast the crackle above cycles. The age is QUANTIZED by this, so a "
+                                                "branch stays out for several frames rather than strobing every one -- "
+                                                "at 100+ fps a per-frame coin flip averages back out to 'always on, "
+                                                "slightly dimmer', which is not a flicker at all." )
+    RT_CVAR( rt_arc_churn,              18.f,   "TIMES PER SECOND THE BRANCHES RE-PATH. This is what makes an arc read "
+                                                "as ALIVE rather than as a drawn shape that fades: real electricity "
+                                                "never holds one path, it re-strikes constantly between the same two "
+                                                "anchors. Every kink angle and segment length is hashed against a "
+                                                "quantized age, so the skeleton is rebuilt wholesale this many times a "
+                                                "second while the branch ROOTS stay put -- anchored ends, restless "
+                                                "middle, which is exactly how a real arc behaves.\n"
+                                                "QUANTIZED, NOT PER-FRAME, and that is the whole reason this is a rate "
+                                                "rather than a bool: re-rolling every frame at 100+ fps is white noise, "
+                                                "and the eye integrates white noise back into a smooth blur -- the "
+                                                "motion disappears exactly when you add the most of it. The same trap "
+                                                "as rt_arc_flicker_rate. 0 = a frozen skeleton (arm: arc-still)." )
+    RT_CVAR( rt_arc_wander,             0.35f,  "how far a branch's ROOT ANGLE drifts between re-paths, radians. Small "
+                                                "on purpose: at 0 the branches re-path but always leave the core in the "
+                                                "same nine directions, which reads as mechanical; too high and they "
+                                                "swap places around the ring between frames, which reads as noise "
+                                                "rather than as one arc moving. The anchors should WANDER, not teleport." )
+    RT_CVAR( rt_arc_glow,               1,      "ARCS CAST LIGHT. One short spherical light per visible branch, at the "
+                                                "branch tip, coloured from the same ramp and following the same crackle "
+                                                "-- a branch that flickers out takes its light with it, for free, "
+                                                "because the lights are collected from the geometry that was actually "
+                                                "drawn rather than recomputed. This is what makes the effect genuinely "
+                                                "ray-traced: the branch QUADS are an additive rasterized overlay, "
+                                                "outside the acceleration structure, and light nothing at all." )
+    RT_CVAR( rt_arc_glow_max,           10,     "global cap on live branch lights, NEAREST-FIRST. A plasma rifle is a "
+                                                "rapid-fire weapon and 32 marks x 9 branches is 288 candidate lights, "
+                                                "which is the arithmetic rt-lighting-practices.md 20 exists to stop. "
+                                                "The cap is what makes per-branch lights affordable at all." )
+    RT_CVAR( rt_arc_glow_intensity,     45.f,   "intensity of one branch light. Much dimmer than the impact flash: "
+                                                "there are up to rt_arc_glow_max of them at once and they are meant to "
+                                                "read as the filigree SPILLING onto the wall, not as a second flash." )
+    RT_CVAR( rt_arc_core,               0.07f,  "metres, radius of the bright core left at the impact point -- the "
+                                                "remains of the ball itself. Dies FASTER than the branches (cubed "
+                                                "against their squared), so the last thing on the wall is a few "
+                                                "hairlines rather than a dot with nothing attached. 0 = no core." )
     RT_CVAR( rt_arc_far,                40.f,   "metres beyond which a projectile impact spawns NO arcs. A SPAWN cull, "
                                                 "for the same reason as rt_spark_far: eviction is oldest-out while the "
                                                 "impacts that matter are the ones in front of you." )
@@ -2876,9 +3015,12 @@
     RT_CVAR( rt_arc_light_intensity,    220.f,  "intensity of a projectile impact's flash. Brighter than the spark "
                                                 "flash's 180: a plasma discharge is a bigger event than a bullet, and "
                                                 "blue and green both read dimmer than amber at equal intensity." )
-    RT_CVAR( rt_arc_light_life,         0.22f,  "seconds the projectile impact flash lasts. Matched to rt_arc_life so "
-                                                "the light and the particles die together -- a flash outliving its arcs "
-                                                "is the tell that made the first spark version look wrong." )
+    RT_CVAR( rt_arc_light_life,         0.22f,  "seconds the projectile impact flash lasts. DELIBERATELY SHORTER than "
+                                                "rt_arc_life, which is the one place the two are meant to disagree: the "
+                                                "flash is the moment of impact and the mark is what is left afterwards, "
+                                                "so the light going out while the filigree is still crackling on the "
+                                                "wall is the effect working, not a mismatch. A flash that outlived its "
+                                                "own mark would read as a lamp." )
     RT_CVAR( rt_arc_probe,              1.6f,   "multiplier on the projectile's own Speed, in map units, for the surface "
                                                 "probe. A dead projectile's last recorded position is up to a tic of "
                                                 "flight short of what it hit, and a FIXED distance cannot serve both: "

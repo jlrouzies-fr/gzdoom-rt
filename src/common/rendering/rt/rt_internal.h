@@ -290,6 +290,20 @@ constexpr uint64_t LavaLightId_Base      = 1ull << 47;
 // which is worse for ReSTIR than a light dying. Tied to the spark, a glow is born
 // and dies with it and never jumps.
 constexpr uint64_t SparkGlowId_Base      = 1ull << 49;
+// Lights carried by ARC BRANCHES -- one per visible branch of a projectile impact
+// mark. NOT a new bit: bit 50 is GunGlowLightId and bit 49 is the last one free,
+// so this shares bit 49 with the spark glows above and stays disjoint from them
+// by ARITHMETIC. A spark glow is SparkGlowId_Base + a monotonic uint32, so it can
+// never reach 1<<40; starting the arcs there leaves the spark range 256x the room
+// it can use and still lands far below 1<<50.
+//
+// The low bits are markUid * RT_ARC_MAX_BRANCH + branchIndex. The mark's uid is
+// monotonic and never reused, so a branch light keeps ONE id for the whole life
+// of the mark it belongs to -- which matters more here than anywhere else in this
+// file, because an arc branch re-paths ~18 times a second and its light MOVES
+// with it. A moving light with a stable id is a light RTGL1 can track; the same
+// motion under a rotating id is the whole set dying and respawning every frame.
+constexpr uint64_t ArcGlowId_Base        = SparkGlowId_Base + ( 1ull << 40 );
 // Impact-spark flashes. Bit 48, one clear bit above the lava range: a lava ID is
 // LavaLightId_Base + secIndex * LavaSlotsPerSector + cell, and secIndex * 65536 at
 // any sector count a Doom map can hold stays far below 1<<48, so the two cannot
@@ -565,6 +579,11 @@ void RT_ShaftLightOffer( uint64_t     id,
 // RT_ShaftLightsBegin(); empty when the feature is off.
 const std::vector< uint64_t >& RT_ShaftLightsSelect();
 
+// rt_dust.cpp -- dust motes in the air. One batched primitive per frame, and no
+// state at all: the motes live on a hashed lattice fixed in WORLD space and this
+// draws the cells near the camera, so it is a pure function of (camera, time).
+void RT_DrawDust();
+
 // rt_smoke.cpp
 void RT_UpdateSmokePuffs();
 
@@ -573,6 +592,14 @@ void RT_UpdateSmokePuffs();
 // point is NOT here: it is called from playsim (P_LineAttack) and so lives at
 // global scope, exactly as RT_SpawnFluid does -- see rt_sparks.cpp.
 void RT_UpdateSparks();
+// PROJECTILE IMPACT ARCS. Its own walk of the thinker list, once a tic, and its
+// own master cvar -- NOT a hook into the smoke walk, which returns early when
+// rt_smoke is off, again when its five sub-cvars are off, and a third time for
+// any class outside RT_PROJECTILE_SMOKE (which contains no plasma and no BFG).
+// Hooking it would have made plasma arcs vanish when rocket trails were turned
+// off. The cost is one extra AActor iteration per TIC, against the smoke walk's
+// one per FRAME, so this is the cheaper of the two that already ship.
+void RT_UpdateProjectileImpacts();
 void RT_DrawSparks();
 void RT_UploadSparkLights();
 void RT_ClearSparks();

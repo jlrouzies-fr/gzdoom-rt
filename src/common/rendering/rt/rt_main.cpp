@@ -2135,6 +2135,9 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UpdateProjectileImpacts();
     RT_UpdateSparks();
     RT_DrawSparks();
+    // Dust motes. After the sparks so both batches are built in one place, and
+    // stateless -- there is nothing to step, so there is no Update half.
+    RT_DrawDust();
     RT_UploadSparkLights();
     RT_SparkDebugTick();
     RT_DebugNearbyWallTextures();

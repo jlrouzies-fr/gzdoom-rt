@@ -139,11 +139,9 @@ const std::vector< uint64_t >& RT_ShaftLightsSelect()
         return g_selected;
     }
 
-    // Nearest first, and the ORDER IS PART OF THE CONTRACT: the shader walks the
-    // list until it has spent rt_volume_shaft_trace shadow rays, so whatever is
-    // first gets the budget. Sorting by distance rather than by intensity is the
-    // right call for a medium -- a bright lamp two rooms away scatters into
-    // froxels the camera cannot see, while a dim one overhead fills the screen.
+    // Nearest first. This is the order the SHADER also relies on when its ray
+    // budget runs out, so it is part of the contract -- but it is NOT how the
+    // slots are handed out; see the bands below.
     std::sort( g_offers.begin(), g_offers.end(), []( const ShaftOffer& a, const ShaftOffer& b ) {
         return a.dist2 < b.dist2;
     } );
@@ -162,18 +160,18 @@ const std::vector< uint64_t >& RT_ShaftLightsSelect()
     const double gap2 = gap * gap;
 
     std::vector< const ShaftOffer* > kept;
+    std::vector< bool >              taken( g_offers.size(), false );
     kept.reserve( size_t( maxLights ) );
 
-    for( const ShaftOffer& o : g_offers )
-    {
-        if( int( kept.size() ) >= maxLights )
+    auto l_tryTake = [ & ]( size_t i ) {
+        if( taken[ i ] || int( kept.size() ) >= maxLights )
         {
-            break;
+            return false;
         }
+        const ShaftOffer& o = g_offers[ i ];
 
         if( gap2 > 0.0 )
         {
-            bool tooClose = false;
             for( const ShaftOffer* k : kept )
             {
                 const double dx = o.x - k->x;
@@ -181,17 +179,77 @@ const std::vector< uint64_t >& RT_ShaftLightsSelect()
                 const double dz = o.z - k->z;
                 if( dx * dx + dy * dy + dz * dz < gap2 )
                 {
-                    tooClose = true;
-                    break;
+                    return false;
                 }
-            }
-            if( tooClose )
-            {
-                continue;
             }
         }
 
+        taken[ i ] = true;
         kept.push_back( &o );
+        return true;
+    };
+
+    // DISTANCE BANDS, and this is what "the shafts do not reach" actually was.
+    //
+    // Taking the nearest N with a fixed 3 m gap sounds like coverage and is not.
+    // Sixteen points at 3 m spacing fill a disc of radius ~7 m around the
+    // camera -- and a Doom 64 lamp room offers HUNDREDS of them (bulb lattice at
+    // 16 units, faux panels every 32, the perimeter walk every 64). So every
+    // slot went to the ceiling directly overhead and a lamp ten metres down the
+    // corridor was never SENT AT ALL. Not dim: absent, with no shader knob able
+    // to touch it. Two rounds of tuning brightness went past this because the
+    // symptom -- "it works near a lamp and dies a few metres away" -- is what a
+    // falloff problem looks like too.
+    //
+    // So the budget is split across distance bands instead: each band gets its
+    // own share of the slots, and a near ceiling can no longer starve the far
+    // half of the room. Leftovers roll forward, and the sweep at the end gives
+    // anything still unspent back to the nearest candidates -- so an empty
+    // corridor loses nothing.
+    const int bands = std::clamp( int{ cvar::rt_volume_shaft_bands }, 1, 8 );
+    const double maxDist =
+        std::max( 16.0, double( float{ cvar::rt_volume_shaft_maxdist } ) );
+
+    int bandKept[ 8 ] = {};
+
+    if( bands > 1 )
+    {
+        for( int b = 0; b < bands; b++ )
+        {
+            // Slots for this band = its share, PLUS whatever earlier bands did
+            // not use. Computed from what is actually in `kept` rather than
+            // tracked separately, so the two cannot disagree.
+            const int share  = ( maxLights * ( b + 1 ) ) / bands;
+            const double lo  = maxDist * double( b ) / double( bands );
+            const double hi  = maxDist * double( b + 1 ) / double( bands );
+            const double lo2 = lo * lo;
+            const double hi2 = hi * hi;
+
+            for( size_t i = 0; i < g_offers.size(); i++ )
+            {
+                if( int( kept.size() ) >= share )
+                {
+                    break;
+                }
+                const double d2 = g_offers[ i ].dist2;
+                if( d2 < lo2 || d2 >= hi2 )
+                {
+                    continue;
+                }
+                if( l_tryTake( i ) )
+                {
+                    bandKept[ b ]++;
+                }
+            }
+        }
+    }
+
+    // The sweep: fill whatever the bands left over, nearest first. This is also
+    // the whole algorithm when bands == 1, which is the old behaviour and what
+    // tools/arms/lampshaft-noband.cfg restores.
+    for( size_t i = 0; i < g_offers.size() && int( kept.size() ) < maxLights; i++ )
+    {
+        l_tryTake( i );
     }
 
     g_selected.reserve( kept.size() );
@@ -205,16 +263,37 @@ const std::vector< uint64_t >& RT_ShaftLightsSelect()
         static int s_tick;
         if( ( ++s_tick % 60 ) == 0 )
         {
-            // OFFERED vs SENT, split by family, is the whole point of this line.
-            // A single total cannot tell "the bulb lattice ate the budget" from
-            // "nothing qualified", and those want opposite fixes.
+            // THE FARTHEST SENT LIGHT IS THE NUMBER THAT MATTERS, and it was
+            // missing from the first version of this line -- which is why two
+            // rounds were spent on brightness knobs while the answer ("nothing
+            // beyond seven metres is even in the list") was never printed.
+            // Offered-vs-sent alone cannot show it: 16 of 300 looks like a
+            // healthy cap doing its job.
+            double near2 = 1.e30, far2 = 0.0;
+            for( const ShaftOffer* k : kept )
+            {
+                near2 = std::min( near2, k->dist2 );
+                far2  = std::max( far2, k->dist2 );
+            }
+            const double nearU = kept.empty() ? 0.0 : std::sqrt( near2 );
+            const double farU  = kept.empty() ? 0.0 : std::sqrt( far2 );
+
             Printf( "rt_volume_shafts: sent %d of %d offered (cap %d, gap %.0fu, "
-                    "within %.0fu) | inset %d | edge/lattice %d | solo %d\n",
+                    "within %.0fu) | reach %.0f..%.0fu = %.1f..%.1f m | "
+                    "bands %d/%d/%d/%d | inset %d | edge/lattice %d | solo %d\n",
                     int( g_selected.size() ),
                     int( g_offers.size() ),
                     maxLights,
                     gap,
                     float{ cvar::rt_volume_shaft_maxdist },
+                    nearU,
+                    farU,
+                    nearU * ONEGAMEUNIT_IN_METERS,
+                    farU * ONEGAMEUNIT_IN_METERS,
+                    bandKept[ 0 ],
+                    bandKept[ 1 ],
+                    bandKept[ 2 ],
+                    bandKept[ 3 ],
                     g_offered[ 0 ],
                     g_offered[ 1 ],
                     g_offered[ 2 ] );
