@@ -17,9 +17,11 @@
 //   - Rasterized dust is FULLBRIGHT. RTGL1 keeps a TRANSLUCENT primitive out of
 //     the acceleration structure and shades it not at all, which is exactly the
 //     trap the spark batch lives with on purpose and debris was moved off
-//     (rt_sparks.cpp). So these are opaque, alpha 1, no flags -- RTGL1's rule
-//     for entering the AS -- and their vertex colour is an ALBEDO the path
-//     tracer shades, not a final pixel.
+//     (rt_sparks.cpp). So these are opaque with alpha 1 and no BLEND flag,
+//     which is RTGL1's rule for entering the AS, and their vertex colour is an
+//     ALBEDO the path tracer shades rather than a final pixel. (The one flag
+//     they do carry, NO_MOTION_VECTORS, is about the denoiser and does not
+//     affect that -- see the streaks note below.)
 //   - Which also means a mote is correctly SHADOWED. A speck in the shadow of
 //     the grating that makes the shaft goes dark, and that is free.
 //
@@ -58,6 +60,30 @@
 // merely local: the same forward bias RtVolumetric.rgen uses, so a mote between
 // you and the lamp flares and one lit from behind you does not -- which is why
 // a shaft is strong looking into it and weak from the side.
+//
+// THE STREAKS: A BATCHED FIELD HAS NO MOTION VECTORS, AND MUST SAY SO.
+//
+// screen/pointyTriangles.png -- long pale wedges fanning out from the screen
+// centre, over a field of blocky squares. The squares are the motes; the wedges
+// were the denoiser smearing them.
+//
+// RTGL1 matches a primitive to its previous-frame self by uniqueObjectID and
+// then takes vertex i of this frame against vertex i of the last one
+// (GeomInfoManager::FindPrevFrameData -> prevBaseVertexIndex). That is right for
+// a mesh whose vertices mean the same thing every frame, and this batch is the
+// opposite: the walk below is a CAMERA-RELATIVE cell sweep with a distance cull
+// and a cone cull, so vertex i is a different mote as soon as the player moves
+// and the vertex count changes with them. Every mote therefore reported a
+// world-space delta of metres, drawn from whichever unrelated mote happened to
+// occupy its slot last frame -- and a huge screen-space motion vector fanning
+// out from the centre is exactly what a camera turn smears into.
+//
+// RG_MESH_PRIMITIVE_NO_MOTION_VECTORS is the answer and it is not a workaround:
+// this field genuinely has no per-vertex correspondence between frames, so the
+// honest thing is to say so and let the denoiser treat every mote as new. The
+// alternative -- world-oriented motes with stable identity -- costs two or three
+// quads each to stay visible from any angle and buys motion vectors for
+// something that is a few pixels across and moves at a centimetre a second.
 //
 // See docs/plan-light-shafts.md.
 
@@ -190,6 +216,24 @@ void RT_DrawDust()
     const float sizeA = std::max( 0.f, float{ cvar::rt_dust_size_ang } );
     const float cone  = std::clamp( float{ cvar::rt_dust_cone }, -1.f, 1.f );
 
+    // PER-MOTE VARIATION, and the reason it matters more than it sounds.
+    //
+    // Every mote had exactly one albedo and exactly one size, so a lit field
+    // came out as a uniform sheet of identical squares -- reported as "too flat
+    // / brown, not enough gray / black parts". That is not a lighting problem:
+    // real dust is a mixture, mostly dark grit with a few bright flecks, and it
+    // is the SPREAD that reads as dust rather than as a texture.
+    //
+    // Two knobs rather than one shared "variety", because brightness and size
+    // are different looks and a single dial would move a settled one to reach
+    // the other.
+    const float varA = std::clamp( float{ cvar::rt_dust_variance }, 0.f, 1.f );
+    const float varS = std::clamp( float{ cvar::rt_dust_size_var }, 0.f, 1.f );
+
+    // How much of the far end motes shrink out over, as a fraction of the reach.
+    // Was hardcoded at the last quarter; reported as fading too fast.
+    const float fadeFrac = std::clamp( float{ cvar::rt_dust_fade }, 0.01f, 1.f );
+
     // The albedo. Normalised to rt_dust_albedo the same way debris colours are:
     // the hex supplies the HUE and this pins the brightness, so recolouring dust
     // cannot silently make it lighter or darker.
@@ -288,7 +332,7 @@ void RT_DrawDust()
 
     const float far2   = farM * farM;
     const float near2  = nearM * nearM;
-    const float fadeAt = farM * 0.75f;
+    const float fadeAt = farM * ( 1.f - fadeFrac );
 
     int emitted = 0;
 
@@ -426,6 +470,13 @@ void RT_DrawDust()
                 // the mote's world size and a constant number of pixels.
                 float half = 0.5f * std::max( sizeW, len * sizeA );
 
+                // Size spread. Uniform, unlike the brightness below: a dust
+                // field wants a range of sizes, not a heap of tiny ones.
+                if( varS > 0.f )
+                {
+                    half *= 1.f - varS * ( 1.f - DustHash01( cx, cy, cz, 12 ) );
+                }
+
                 // Shrink out over the last quarter of the range instead of
                 // fading: the alpha is not available to us (see `col`).
                 if( len > fadeAt )
@@ -442,11 +493,28 @@ void RT_DrawDust()
                 // a mote outside a shaft would also delete it from reflections
                 // and from the ordinary lighting a room legitimately gives it,
                 // and "barely visible" is not "absent".
-                RgColor4DPacked32 mcol = col;
+                float k = 1.f;
                 if( gateOn )
                 {
-                    const float k = shaftFloor + ( 1.f - shaftFloor ) * shaftW;
-                    mcol          = rt.rgUtilPackColorFloat4D( hue.X * k, hue.Y * k, hue.Z * k, 1.f );
+                    k = shaftFloor + ( 1.f - shaftFloor ) * shaftW;
+                }
+
+                // Brightness spread, SQUARED so the distribution is skewed dark:
+                // a uniform draw gives as many bright motes as dim ones and
+                // still reads as a sheet. Squaring puts most of the field near
+                // the dark end with a few flecks catching the light, which is
+                // what dust actually looks like -- and it is the grey and black
+                // that were missing.
+                if( varA > 0.f )
+                {
+                    const float u = DustHash01( cx, cy, cz, 11 );
+                    k *= 1.f - varA * ( 1.f - u * u );
+                }
+
+                RgColor4DPacked32 mcol = col;
+                if( k < 0.999f )
+                {
+                    mcol = rt.rgUtilPackColorFloat4D( hue.X * k, hue.Y * k, hue.Z * k, 1.f );
                 }
 
                 const FVector3 ex = right * half;
@@ -547,7 +615,13 @@ void RT_DrawDust()
         // the lamp -- which is the entire effect. TRANSLUCENT here would make it
         // a rasterized overlay and therefore fullbright, i.e. glowing dust in a
         // dark room.
-        .flags                = RgMeshPrimitiveFlags( 0 ),
+        // NO_MOTION_VECTORS -- see the header. Without it the denoiser reads
+        // vertex i against a completely different mote's previous position and
+        // smears the field into radial wedges. Verified live: the flag reaches
+        // GeomInfoManager::FindPrevFrameData, which returns nullptr for it and
+        // leaves prevBaseVertexIndex at UINT32_MAX, i.e. "no history" rather
+        // than "wrong history".
+        .flags                = RG_MESH_PRIMITIVE_NO_MOTION_VECTORS,
         .primitiveIndexInMesh = 0,
         .pVertices            = s_verts.data(),
         .vertexCount          = uint32_t( s_verts.size() ),

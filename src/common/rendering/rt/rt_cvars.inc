@@ -2635,6 +2635,28 @@
                                                 "CONE rather than a frustum on purpose: a frustum would be tighter and would "
                                                 "also delete every mote a mirror or water surface reflects, which is a visible "
                                                 "hole. -1 draws the whole sphere." )
+    RT_CVAR( rt_dust_variance,          0.75f,  "HOW MUCH MOTES DIFFER IN BRIGHTNESS, 0..1. 0 gives every mote the same "
+                                                "albedo, which is what made a lit field read as a uniform sheet -- reported "
+                                                "as too flat and brown, with not enough gray and black parts. That is not a "
+                                                "lighting problem: real dust is a MIXTURE, mostly dark grit with a few bright "
+                                                "flecks, and it is the spread that reads as dust rather than as a texture.\n"
+                                                "\n"
+                                                "The draw is SQUARED, so the distribution is skewed dark. A uniform draw gives "
+                                                "as many bright motes as dim ones and still comes out as a sheet; squaring puts "
+                                                "most of the field near the dark end with a few flecks catching the light. "
+                                                "Hashed from the cell like everything else here, so a mote keeps its brightness "
+                                                "forever and the field does not boil." )
+    RT_CVAR( rt_dust_size_var,          0.6f,   "HOW MUCH MOTES DIFFER IN SIZE, 0..1. Uniform rather than skewed, unlike "
+                                                "rt_dust_variance: a dust field wants a range of sizes, not a heap of tiny "
+                                                "ones. Kept a separate knob from the brightness spread on purpose -- they are "
+                                                "different looks, and one dial would move a settled one to reach the other." )
+    RT_CVAR( rt_dust_fade,              0.25f,  "fraction of rt_dust_far over which motes SHRINK OUT, 0.01..1. 0.25 fades over "
+                                                "the last quarter of the range; 1 shrinks them the whole way from the camera "
+                                                "outward. Shrinking rather than fading because a mote cannot be faded: below "
+                                                "RTGL1 0.98 alpha threshold the whole batch is demoted to the rasterized "
+                                                "overlay and goes fullbright. Was hardcoded at 0.25 and reported as fading too "
+                                                "fast -- note that raising rt_dust_far moves the fade band with it, so the two "
+                                                "are worth trying together." )
     RT_CVAR( rt_dust_shaft_floor,       0.08f,  "HOW VISIBLE DUST IS WHERE THERE IS NO SHAFT. An albedo multiplier: 1 keeps "
                                                 "the ungated behaviour (a mote is as visible anywhere the room lights it), 0 "
                                                 "makes dust exist only inside beams. 0.08 is 'barely'.\n"
@@ -3000,7 +3022,7 @@
                                                 "hold full brightness for a while instead of dimming from birth. That "
                                                 "is what is wanted here: a discharge is flat-out bright and then "
                                                 "gone." )
-    RT_CVAR( rt_arc_max,                64,     "how many impact MARKS may be alive at once. A mark is a whole filigree "
+    RT_CVAR( rt_arc_max,                160,     "how many impact MARKS may be alive at once. A mark is a whole filigree "
                                                 "plus a scorch, not a particle, so this is a much smaller number than "
                                                 "rt_spark_max and means something different: 64 simultaneous plasma "
                                                 "scars. Oldest-out.\n"
@@ -3048,17 +3070,71 @@
                                                 "with an opaque centre and a zero-alpha rim, one primitive per mark, "
                                                 "emissive pinned at 0. Every trap on that path applies here and is "
                                                 "already solved there; see docs/sprite-shadows-and-ao.md." )
-    RT_CVAR( rt_arc_burn_life,          120.f,   "seconds a scorch lasts. FIFTY TIMES the arcs' own life, and that ratio "
-                                                "is the point -- a mark that fades with the discharge is part of the "
-                                                "effect, one that is still there when you walk back through the room is "
-                                                "a record of what you did. Bounded by rt_arc_max rather than by taste: "
-                                                "the oldest scorch is evicted when the pool fills, so a long firefight "
-                                                "keeps the most recent ones." )
-    RT_CVAR( rt_arc_burn_radius,        0.40f,  "metres, radius of the scorch. Comfortably WIDER than the core "
+    RT_CVAR( rt_arc_burn_blobs,         9,      "how many overlapping fans make up one scorch. 1 = a single clean disc, "
+                                                "which is what the shape used to be and reads as a flat wash.\n"
+                                                "THIS IS THE SHAPE, and it was settled in tools\\impact-lab.ps1 rather "
+                                                "than argued about. A RING mesh -- centre, rings, rim -- shows hard "
+                                                "light/dark wedges radiating outward, because of the two triangles in "
+                                                "each ring quad one gets corner alphas (A,B,B) and the other (A,B,A) "
+                                                "and they alternate visibly. That is true at any ring count, which is "
+                                                "why going from 2 rings to 5 changed nothing (screen/worseCh.png).\n"
+                                                "A single FAN has no such artefact -- every triangle is identical, one "
+                                                "centre at full alpha and two rim vertices at zero -- but it is also "
+                                                "featureless. So a mark is a big fan plus this many smaller offset "
+                                                "ones, each with its own darkness. They blend per fragment, so the "
+                                                "result is blotchy where they pile up and ashy where one lies alone, "
+                                                "with no triangle ever able to disagree with its neighbour." )
+    RT_CVAR( rt_arc_burn_mottle,        0.7f,   "how blotchy ONE scorch is, 0..1. Not to be confused with "
+                                                "rt_arc_burn_color_var, which varies whole marks against each other; "
+                                                "this varies the inside of a single one.\n"
+                                                "Reported from play as 'too flat / brown, not enough gray / black "
+                                                "parts', and that is exactly what a per-mark-only variation gives you: "
+                                                "no two scorches alike, but each of them one flat wash, which at half a "
+                                                "metre across reads as a brown sticker. Real soot is heavy and BLACK "
+                                                "where the heat sat, ashy GREY around that, and barely tinted where it "
+                                                "only scorched.\n"
+                                                "So this pulls every vertex independently toward black and toward grey, "
+                                                "hashed on (mark, ring, segment), and jitters its alpha as well so the "
+                                                "edge is ragged rather than a clean circle. It has a second effect "
+                                                "worth knowing about: a crease between two triangles is far harder to "
+                                                "see when neither is a flat colour, so this and the ring count fix the "
+                                                "same artefact from opposite directions." )
+    RT_CVAR( rt_arc_burn_color_var,     0.65f,  "how much scorches differ from each other in colour, 0..1. 0 = every "
+                                                "burn exactly rt_arc_burn_color.\n"
+                                                "ONE TINT REPEATED READS AS A STAMP, and the eye picks up the "
+                                                "repetition long before it questions the shape. Two independent axes "
+                                                "off each mark's own seed: LUMINANCE (how hard this one charred) and "
+                                                "SATURATION (soot is brown, ash is grey, and this crosses between "
+                                                "them, past 1 for the occasional distinctly brown one). Between them "
+                                                "they cover warm brown through neutral grey to near black, which is "
+                                                "the range real burns actually occupy." )
+    RT_CVAR( rt_arc_burn_life,          0.f,    "seconds a scorch lasts. 0 = FOREVER, and that is the default.\n"
+                                                "Forever really means 'until the pool evicts it': what bounds how far "
+                                                "back the wall damage goes is rt_arc_max, not a clock. A burn has no "
+                                                "reason to weather on the timescale of a firefight, and a scorch "
+                                                "quietly disappearing while you were still in the room was what made "
+                                                "the effect read as a decal rather than as damage. A positive value "
+                                                "restores the old behaviour: hold for 60% of it, then fade." )
+    RT_CVAR( rt_arc_burn_radius,        0.50f,  "metres, radius of the scorch. Comfortably WIDER than the core "
                                                 "(rt_arc_core) and narrower than the branches reach: a burn the size of "
                                                 "the whole filigree reads as a stain, and one the size of the core "
                                                 "reads as a bullet hole." )
-    RT_CVAR( rt_arc_burn_strength,      0.90f,  "fraction of the wall's albedo removed at the scorch centre, falling to "
+    RT_CVAR_COLOR( rt_arc_burn_color,   0x0A0807, "WHAT THE SCORCH DARKENS TOWARD (hex), and it must not be black.\n"
+                                                "The decal blends into the albedo buffer with a plain SRC_ALPHA / "
+                                                "ONE_MINUS_SRC_ALPHA lerp (DecalManager.cpp:599), so the result is "
+                                                "  albedo = colour * strength + original * (1 - strength).\n"
+                                                "With a BLACK colour at strength 0.9 that leaves 0.1 x the original "
+                                                "and nothing else -- a surface which by construction cannot reflect "
+                                                "anything. Every light aimed at it then does nothing, however bright: "
+                                                "the rocket embers sitting in their own scorch had their glow "
+                                                "swallowed for exactly this reason, and no intensity value could have "
+                                                "recovered it, because ten times almost nothing is still almost "
+                                                "nothing.\n"
+                                                "Real soot is not a void -- it reflects roughly 4-10% and carries a "
+                                                "slight warm cast. This default is a dark warm charcoal, which reads "
+                                                "as burnt AND leaves the embers something to light. Set it to 000000 "
+                                                "to get the old behaviour back and see the effect disappear." )
+    RT_CVAR( rt_arc_burn_strength,      1.00f,  "fraction of the wall's albedo removed at the scorch centre, falling to "
                                                 "0 at the rim. NOT the darkness you see: it multiplies albedo, so what "
                                                 "reaches the screen is already scaled by the room's light. Reasoning "
                                                 "about it as a screen overlay under-shoots -- that is exactly how "
@@ -3069,7 +3145,7 @@
                                                 "grazing wall exceeds that -- which is what produced the AO 'lines' "
                                                 "reaching away from settled debris. Same limit, same reason, and "
                                                 "rt_spark_debris_ao_dist bounds it at 20 for the same geometry." )
-    RT_CVAR( rt_arc_burn_max,           48,     "how many scorches may be uploaded per frame, nearest-first. Each is "
+    RT_CVAR( rt_arc_burn_max,           96,     "how many scorches may be uploaded per frame, nearest-first. Each is "
                                                 "its own decal primitive -- batching them into one is what produced "
                                                 "the AO 'lines', and the sprite AO this is modelled on uploads one per "
                                                 "actor -- so this is an upload count, not a memory bound." )
@@ -3153,6 +3229,151 @@
                                                 "reasoning as rt_spark_debug -- `the projectile was never tracked` and "
                                                 "`tracked but the probe missed` are identical on screen, and they have "
                                                 "completely different fixes." )
+
+    // ROCKET IMPACT EMBERS. The third thing the projectile hook feeds, after the
+    // arcs and the scorch: scattered coals thrown out of the blast, cooling
+    // through the explosion sprite's own palette and each breathing a thread of
+    // smoke while it is still hot.
+    //
+    // THE ONLY IMPACT IN THE GAME THAT GETS SMOKE. Plasma and the Unmaker
+    // deliberately get none -- that was a scope call, not an oversight, and
+    // adding smoke to them later would take the rocket's identity away.
+    RT_CVAR( rt_ember,                  1,      "master for ROCKET IMPACT EMBERS: cooling coals scattered by a rocket "
+                                                "blast, each trailing a thin wisp of smoke. Independent of rt_spark "
+                                                "and rt_arc -- they share the particle pool but not a switch." )
+    RT_CVAR( rt_ember_count,            5,      "embers per rocket impact. SINGLE DIGITS BY DESIGN. These were first "
+                                                "built as a spray of a dozen-plus flying particles and that was the "
+                                                "wrong construction twice over -- an ember is not a fragment in flight, "
+                                                "and a scorch the size of a dinner plate with fourteen glowing spots in "
+                                                "it reads as a light-up sign rather than as something still burning." )
+    RT_CVAR( rt_ember_life,             7.0f,   "seconds the embers glow before going black. LONG -- this is what is "
+                                                "still there after the explosion has cleared, which is the entire point "
+                                                "of the effect. The scorch under them lives far longer again "
+                                                "(rt_arc_burn_life), so a cold mark is left behind afterwards." )
+    RT_CVAR( rt_ember_scatter,          0.8f,   "how far the embers spread across the scorch, as a fraction of its "
+                                                "radius. Below 1 they sit inside the churn, which is where something "
+                                                "still burning belongs; above 1 they spill onto clean wall and stop "
+                                                "reading as part of the same event." )
+    RT_CVAR( rt_ember_size,             0.03f,  "metres, edge of one ember. Small: these are hot SPOTS in the burn, not "
+                                                "coals lying on top of it." )
+    RT_CVAR( rt_ember_bright,           2.0f,   "how hard an ember ADDS to the screen. Read rt_spark_bright first -- "
+                                                "same vertex-alpha lever, same 8-bit ceiling. Dimmer than an arc on "
+                                                "purpose: a discharge is the brightest thing in the room for an "
+                                                "instant, an ember smoulders for seconds." )
+    RT_CVAR( rt_ember_glow_intensity,   55.f,   "HOW MUCH LIGHT an ember casts. Its own knob rather than the arcs' -- "
+                                                "the two were sharing rt_arc_glow_intensity, which meant tuning a "
+                                                "plasma discharge silently moved what a rocket's embers throw on the "
+                                                "floor.\n"
+                                                "THIS IS THE REACH KNOB TOO, and rt_ember_glow_radius is not. A "
+                                                "spherical light falls off with the inverse square of distance, so how "
+                                                "far its light is still visible is set by how bright it starts. If the "
+                                                "embers are not lighting far enough, this is the value to raise." )
+    RT_CVAR( rt_ember_halo,             0.f,    "SOFT ADDITIVE GLOW around each ember, as a multiple of its size. 0 = "
+                                                "off, WHICH IS THE DEFAULT: it was tried against the problem below "
+                                                "and it reads as an ugly painted-on disc. The real fix was to stop the "
+                                                "scorch being pure black -- see rt_arc_burn_color -- so a burnt wall "
+                                                "has something left to bounce with. Kept only because it is the one "
+                                                "lever that works if a future decal really does go to zero albedo.\n"
+                                                "THIS EXISTS BECAUSE THE SCORCH EATS THE EMBER'S LIGHT, and no light "
+                                                "value can fix that. A decal works by MULTIPLYING the wall's albedo -- "
+                                                "at rt_arc_burn_strength 0.9 the surface under the burn reflects a "
+                                                "tenth of what it did. The ember's analytic light is still being cast "
+                                                "and still being traced correctly; there is simply almost nothing left "
+                                                "for it to bounce off, so the glow vanishes exactly where the embers "
+                                                "are and reappears on clean wall outside the scorch. Raising the "
+                                                "intensity does not help: ten times almost nothing is still almost "
+                                                "nothing.\n"
+                                                "The halo is ADDITIVE, so it adds to the screen without consulting the "
+                                                "albedo at all and reads over the black burn. It is screen glow only "
+                                                "and lights nothing -- rt_ember_glow_intensity remains the real light, "
+                                                "and it is still what illuminates the undarkened wall around the mark." )
+    RT_CVAR( rt_ember_halo_alpha,       0.35f,  "how strong the halo above is at its centre, falling to nothing at its "
+                                                "rim. Low on purpose: it is standing in for light bouncing off a "
+                                                "surface that has been burnt black, and a bright one turns each ember "
+                                                "into a headlight. Raise it if the embers read as flat dots on the "
+                                                "scorch; lower it if the burn starts to look like it is glowing rather "
+                                                "than the embers in it." )
+    RT_CVAR( rt_ember_glow_radius,      0.10f,  "the SIZE OF THE EMITTER, in metres -- not how far the light reaches. "
+                                                "Worth being blunt about, because 'radius' reads like reach and "
+                                                "treating it that way is a documented trap in this project "
+                                                "(rt_dynlight_rsoft, where a bigger radius is DIMMER).\n"
+                                                "What it actually changes: a larger sphere gives softer shadow edges "
+                                                "and a gentler falloff very close in, because the surface can see more "
+                                                "of the emitter. A few centimetres suits something ember-sized; a large "
+                                                "value makes a coal light the wall like a lamp shade and reads wrong. "
+                                                "For reach, use rt_ember_glow_intensity." )
+    RT_CVAR( rt_ember_flicker,          0.55f,  "how much an ember BREATHES, 0..1. A real coal does not cool smoothly, "
+                                                "it pulses as the draught over it changes, and that irregularity is "
+                                                "most of what says the thing is still burning rather than being a "
+                                                "painted orange dot.\n"
+                                                "TWO SINES AT INCOMMENSURATE RATES, per ember, plus a per-ember phase. "
+                                                "One sine is a heartbeat and the eye locks onto its period at once; two "
+                                                "that never line up read as unpredictable for one extra multiply. "
+                                                "Weighted so the bright end is narrow and the dim end broad -- a coal "
+                                                "spends more of its time dull than glowing, and an even sine reads as a "
+                                                "pulsing lamp. The pulse drives brightness, a few percent of size, and "
+                                                "the light it casts, so all three agree." )
+    RT_CVAR( rt_ember_flicker_rate,     1.6f,   "how fast the breath above cycles, roughly in Hz. Driven off the "
+                                                "mark's AGE rather than the frame clock, so the glow cannot depend on "
+                                                "frame rate the way a per-frame random would. Much above ~4 it stops "
+                                                "reading as breathing and starts reading as electrical noise." )
+    RT_CVAR( rt_ember_far,              40.f,   "metres beyond which a rocket impact leaves no embers. A SPAWN cull, "
+                                                "for the reason rt_spark_far is. Read INSTEAD of rt_arc_far for rocket "
+                                                "impacts, so turning the arcs' cull down cannot silently stop distant "
+                                                "rockets from smouldering." )
+    RT_CVAR( rt_ember_burn_scale,       3.4f,   "the rocket's floor scorch, as a multiple of rt_arc_burn_radius. It is "
+                                                "the SAME decal the plasma arcs leave, wider and with the filigree "
+                                                "switched off -- a rocket blast is not electric. Everything else about "
+                                                "the scorch (life, darkness, the distance cull) is the rt_arc_burn_* "
+                                                "group, deliberately shared: one kind of wall damage, one set of knobs." )
+
+    RT_CVAR( rt_ember_smoke,            1,      "each ember breathes a thin thread of smoke while it is still hot. "
+                                                "ALSO NEEDS rt_smoke -- these are real puffs in the froxel volume, not "
+                                                "a private particle system, so with the smoke system off there is "
+                                                "nothing for them to spawn into." )
+    RT_CVAR( rt_ember_smoke_every,      0.30f,  "seconds between an ember's wisps, jittered 0.7x..1.3x per wisp. The "
+                                                "jitter is not decoration: without it every ember from one blast puffs "
+                                                "in unison forever, because they were all created on the same tic." )
+    RT_CVAR( rt_ember_smoke_delay,      0.65f,  "seconds before an ember's FIRST wisp. THE FIX FOR DOUBLE SMOKE, and "
+                                                "it is designed in rather than tuned later: the rocket's own death "
+                                                "burst goes off at this same point on this same frame, so embers "
+                                                "breathing from t=0 give one opaque ball with the embers invisible "
+                                                "inside it. The delay lets the burst begin to thin first." )
+    RT_CVAR( rt_ember_smoke_hot,        0.55f,  "fraction of an ember's life over which it still smokes. A black ember "
+                                                "is a piece of grit, and smoke still coming off one is the tell that "
+                                                "the two were never really connected." )
+    RT_CVAR( rt_ember_smoke_lift,       2.0f,   "how far off the surface a wisp is born, in MULTIPLES OF ITS OWN "
+                                                "RADIUS. THIS IS THE FIX FOR 'the smoke is inside the wall', and it is "
+                                                "a multiple rather than a distance because three things stack up and "
+                                                "all of them scale with the radius:\n"
+                                                "  1. the parcel is a SPHERE, so a centre one radius out is only just "
+                                                "touching the surface;\n"
+                                                "  2. RT_SpawnSmokePuffs jitters the birthplace by +/- 0.6 x radius on "
+                                                "ALL THREE AXES -- including straight into the wall, so some parcels "
+                                                "were born with their centres inside it;\n"
+                                                "  3. rising alone does not help on a VERTICAL surface: the parcel just "
+                                                "climbs the wall still half buried. See rt_ember_smoke_drift.\n"
+                                                "Below about 1.6 the jitter starts putting parcels back inside." )
+    RT_CVAR( rt_ember_smoke_drift,      0.35f,  "m/s a wisp moves AWAY from the surface as it rises. The other half of "
+                                                "the inside-the-wall fix. An ambient emitter can have zero speed "
+                                                "because it stands in open air; an ember is stuck to a wall, and with "
+                                                "no outward velocity its smoke hugs that wall for its whole life. The "
+                                                "direction blends the surface normal with world up, so on a FLOOR "
+                                                "(where the normal is up) it degenerates to straight up on its own and "
+                                                "needs no special case." )
+    RT_CVAR( rt_ember_smoke_radius,     0.06f,  "metres, radius of one ember wisp. Near the PISTOL's 0.07 by design -- "
+                                                "the reference for this whole profile is the muzzle filament, not a "
+                                                "flame or a burst." )
+    RT_CVAR( rt_ember_smoke_life,       1.1f,   "multiplier on rt_smoke_life for an ember wisp. The pistol's value." )
+    RT_CVAR( rt_ember_smoke_density,    0.55f,  "multiplier on rt_smoke_density for an ember wisp. Thinner than the "
+                                                "pistol's 0.90: there are a dozen embers and one barrel." )
+    RT_CVAR( rt_ember_smoke_max,        10,     "how many ember wisps may be spawned per TIC across all embers. "
+                                                "Several rockets landing together would otherwise have every ember in "
+                                                "the pool breathe on the same tic, which is a wall of smoke rather "
+                                                "than a dozen threads -- the density failure this feature was "
+                                                "specifically warned about. The wisps are also marked AMBIENT, so "
+                                                "rt_smoke_ambient_budget bounds them again and they cannot starve the "
+                                                "player's own muzzle smoke." )
 
     RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
