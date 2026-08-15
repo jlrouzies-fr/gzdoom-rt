@@ -2491,6 +2491,53 @@
                                                 "the screen raw, which is what makes smoke boil under a flashlight. "
                                                 "Blurring costs almost nothing visually because scattering is "
                                                 "low-frequency; XY only, since Z is the integration axis. 0 = stock." )
+    // --- The froxel depth gate (docs/plan-light-shafts.md 4d) ----------------
+    RT_CVAR( rt_volume_depthgate,       true,   "STOP THE VOLUME LIGHTING AIR THE CAMERA CANNOT SEE. Weights each froxel by "
+                                                "how much of it lies IN FRONT OF the geometry visible in its own screen "
+                                                "column, so a lamp in the next room can no longer bleed its lit air "
+                                                "through the wall between you.\n"
+                                                "\n"
+                                                "IT IS NOT A VISIBILITY FIX AND THE SHADOW RAYS WERE NEVER WRONG. "
+                                                "RtVolumetric.rgen already traces one shadow ray per shaft light per "
+                                                "froxel, the wall is in INSTANCE_MASK_WORLD_0 which IS the shadow mask, "
+                                                "back-face culling is off for volume rays, and the froxels in front of "
+                                                "the wall are properly dark. The leak also survives rt_cpu_cullmode 2 -- "
+                                                "the whole map in the acceleration structure -- so it is not a missing "
+                                                "occluder either. Both were measured before this was written.\n"
+                                                "\n"
+                                                "What actually leaks: g_volumetric is a PREFIX SUM from the camera "
+                                                "outward stored at cell CENTRES and read TRILINEARLY at the surface's "
+                                                "distance, so a wall collects part of the cell BEHIND it -- where the "
+                                                "froxel legitimately sees the lamp. And the sample's z is CLAMPED to "
+                                                "[0,1] while slice 0's centre sits at about 0.47 m at rt_volume_far 60, "
+                                                "so a surface nearer than that collects slice 0 WHOLESALE. That is why "
+                                                "the leak peaks with your face against the wall, and why no per-LIGHT "
+                                                "test can reach it: the wall falls INSIDE a cell shaded for its far "
+                                                "side.\n"
+                                                "\n"
+                                                "Sky columns are never gated, so the moon's shafts through a ceiling "
+                                                "opening are untouched. Density is not gated either -- only what the "
+                                                "medium ADDS -- so fog extinction is unchanged. "
+                                                "A/B: tools/arms/leak-gate*.cfg." )
+    RT_CVAR( rt_volume_depthgate_bias,  0.f,    "METRES of slack beyond the surface before a froxel starts being weighted "
+                                                "down. 0 centres the ramp on the surface itself, which is the physical "
+                                                "reading: a cell the surface bisects contributes the half of itself that "
+                                                "is in front. Raise it to let a little back through if a wall contact "
+                                                "reads too dark." )
+    RT_CVAR( rt_volume_depthgate_feather, 1.f,  "width of that ramp in FROXEL SLICES (a slice is rt_volume_far / 64, so "
+                                                "0.94 m at the shipping reach). 1 = a straddling cell contributes about "
+                                                "half. Larger is softer and leaks more; 0 would be a hard cut that paints "
+                                                "the froxel grid onto every surface, so it is clamped to 0.01 in RTGL -- "
+                                                "drawing the grid is the artefact this feature removes, not one to add." )
+    RT_CVAR( rt_volume_depthgate_taps,  5,      "depth taps across a froxel column's screen FOOTPRINT; the MAXIMUM wins. "
+                                                "1 = centre only, 5 = centre + four corners.\n"
+                                                "One column covers renderWidth/160 x renderHeight/88 pixels -- about "
+                                                "12x12 at 1080p -- and those pixels can see very different depths. The "
+                                                "max means a cell dies only when it is behind EVERYTHING in the "
+                                                "footprint, which is what keeps air genuinely visible past a thin "
+                                                "foreground edge alive. Under-culling is the safe direction here: the "
+                                                "centre tap alone cuts a hard edge along every silhouette. Drop to 1 only "
+                                                "to measure what the four extra fetches cost." )
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             60.f,   "max distance of the scattering volume, in metres, and therefore the RENDER DISTANCE OF SMOKE: the froxel grid is camera-fitted, so a puff past this plane is not represented at all. 30 -> 60 to double it. THE COST IS RESOLUTION: the grid is 64 slices whatever the reach, so the slice thickness goes 0.47 -> 0.94 m and puffs get coarser and noisier. It is NO LONGER A DENSITY KNOB -- it was one, silently, because the shader applies scattering per CELL: 30 -> 60 halved how many cells a given metre of air occupies and so halved the medium, which is what took the moon's shafts down on MAP01 after the smoke work. rt_main.cpp now normalises rt_volume_scatter per METRE against a 30 m reference, so a value means the same thing at any reach and only the far haze extends. A FOGGED map is unaffected either way -- it uses rt_fog_far / rt_fog_density, which keep the per-cell contract RT_FOG_PRESETS is tuned in." )
     RT_CVAR( rt_volume_scatter,         1.f,    "density of the global medium, PER METRE -- rt_main.cpp scales it by rt_volume_far/30 before upload, so it does not change meaning when the reach moves (see rt_volume_far). Unfogged maps only: a fogged map takes rt_fog_density instead. This is the medium the moon's light shafts are scattered out of, so it is the first knob for shafts that read too weak -- rt_volume_lintensity is the second, and brightens the lit shaft without thickening the haze around it. tools/arms/moon-*.cfg are the A/B." )

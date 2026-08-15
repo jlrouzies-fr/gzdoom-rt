@@ -2720,6 +2720,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .ditherRadiusZ = std::max( 0.f, float{ cvar::rt_volume_dither_z } ),
         .spatialBlur   = std::clamp( float{ cvar::rt_volume_blur }, 0.f, 1.f ),
         .lightNearFade = fog.on ? std::max( 0.f, float{ cvar::rt_fog_light_near } ) : 0.f,
+        // THE FROXEL DEPTH GATE. Stops the volume lighting air the camera cannot
+        // see -- see rt_volume_depthgate, and docs/plan-light-shafts.md 4d for
+        // why this is not a visibility fix and why no per-light test could have
+        // worked. Applies to fogged maps too: the mechanism is the trilinear
+        // read of a prefix sum and it does not care which medium filled the
+        // cell.
+        .depthGate        = bool{ cvar::rt_volume_depthgate } ? 1.f : 0.f,
+        .depthGateBias    = std::max( 0.f, float{ cvar::rt_volume_depthgate_bias } ),
+        .depthGateFeather = std::max( 0.f, float{ cvar::rt_volume_depthgate_feather } ),
+        .depthGateTaps    = uint32_t( int{ cvar::rt_volume_depthgate_taps } >= 5 ? 5 : 1 ),
     };
 
     auto texture_params = RgDrawFrameTexturesParams{
