@@ -374,6 +374,13 @@ bool SparkHitWall( Spark& sp, const FVector3& from, const FVector3& to, float bo
 // ---------------------------------------------------------------------------
 
 constexpr int      RT_ARC_MAX_BRANCH = 24;
+// EMBERS GET THEIR OWN CEILING, and it is not the branch count. Coals used to
+// borrow RT_ARC_MAX_BRANCH because both are "how many things hang off a mark",
+// but they are not the same question: 24 filigree branches is already a dense
+// electric mess, while a barrel wants fifty coals in a wide bed of char and
+// every one of them is a cheap quad off a hash. Sharing the constant meant
+// raising rt_barrel_ember_scale past ~4.8 silently did nothing.
+constexpr int      RT_ARC_MAX_EMBER  = 96;
 constexpr int      RT_ARC_MAX_SEG    = 16;
 // GREW AGAIN WITH "FOREVER". Once rt_arc_burn_life defaults to 0 the only thing
 // that ever removes a scorch is eviction, so this is no longer headroom -- it IS
@@ -399,7 +406,32 @@ struct ArcMark
     bool      arcs;
     float     burnScale; // multiplier on rt_arc_burn_radius
     ImpactFx  fx;
-    float     nextSmoke; // ember marks only
+    float     nextSmoke;  // ember marks only
+    // HOW MANY COALS, as a multiplier on rt_ember_count, RESOLVED AT SPAWN.
+    // A rocket and an exploding barrel leave the same KIND of mark and should
+    // share every knob that describes one -- except this: a barrel is a much
+    // bigger fire and wants a much fuller scorch. Carried per mark rather than
+    // read from a cvar at draw time because two marks of different kinds can be
+    // alive at once, which is the same reason burnScale is here.
+    float     emberScale;
+    // Draw this mark's coals with the authored ember art rather than as flat
+    // quads. Per mark rather than a global cvar because it was asked for
+    // BARRELS -- a rocket's five coals are a different judgement, and one
+    // switch for both is the coupling this file keeps having to undo.
+    bool      emberArt;
+    // Multiplier on rt_ember_size. Same reasoning as emberScale: a barrel's
+    // coals sit in a scorch several times a rocket's width, and a coal sized
+    // for the rocket's mark is a speck in it.
+    float     emberSize;
+    // Multiplier on rt_ember_bright. Fifty coals at the rocket's brightness is
+    // fifty blown-out white squares -- the additive peak is per coal, so raising
+    // the COUNT without lowering this turns a bed of embers into a light box.
+    float     emberBright;
+    // Multiplier on rt_ember_scatter. A barrel's coals already spread wider
+    // than a rocket's for free -- EmberPos scatters across the mark's OWN burn
+    // radius, and a barrel's scorch is several times a rocket's -- so this is
+    // the extra push past the char, for coals thrown clear of the burn.
+    float     emberScatter;
 };
 
 extern std::array< ArcMark, RT_ARC_MARK_MAX > s_arcs;
@@ -416,9 +448,21 @@ void AgeArcMarks( float dt );
 void SpawnArcMark( const FVector3& at,
                    const FVector3& normal,
                    ArcFlavor       flavor,
-                   bool            withArcs  = true,
-                   float           burnScale = 1.f,
-                   ImpactFx        fx        = ImpactFx::Arc );
+                   bool            withArcs   = true,
+                   float           burnScale  = 1.f,
+                   ImpactFx        fx         = ImpactFx::Arc,
+                   float           emberScale = 1.f,
+                   bool            emberArt    = false,
+                   float           emberSize    = 1.f,
+                   float           emberBright  = 1.f,
+                   float           emberScatter = 1.f );
+
+// HOW MANY COALS THIS MARK HAS. Shared by the draw and the smoke so the two
+// agree BY CONSTRUCTION rather than by both being handed the same expression --
+// exactly the split EmberPos exists to prevent. Get this wrong in one place and
+// embers past the smaller count breathe smoke while drawing nothing, which on
+// screen is smoke coming out of bare floor.
+int EmberCountFor( const ArcMark& m );
 
 // Where a mark's embers sit, in world metres. SHARED by the draw and the smoke
 // so the two agree by construction rather than by both being handed the same
@@ -454,6 +498,26 @@ void BarrelForgetAll();
 // the `barrel_here` lab command wants it without an actor.
 void SpawnBarrelShards( const FVector3& at, const FVector3& up );
 
+// THE AUTHORED PIECES. Cut-out PNGs under rt/mat/d64rt/barrel/, resolved by
+// RTGL1 from the material name -- see the long note in rt_barrel.cpp. Scanned
+// and registered once, from the DRAW (rgProvideOriginalTexture wants a live
+// renderer). With none present the count is 0 and the draw falls back to
+// generated plate.
+void        ScanShardArt();
+int         ShardArtCount();
+const char* ShardArtName( int i );
+float       ShardArtAspect( int i ); // width / height of the source image
+
+// THE EMBER ART, registered by the same scan. One image of scattered coals at
+// rt/mat/d64rt/embers/embers.png; nullptr when it is not installed, in which
+// case a coal falls back to the flat quad it has always been.
+const char* EmberArtName();
+float       EmberArtAspect();
+
+// One primitive per piece of art, so the ids must not tread on the debris
+// buckets (which run from RT_DEBRIS_MESH_ID + 0..31).
+constexpr int RT_BARREL_ART_SLOTS = 8;
+
 // ---------------------------------------------------------------------------
 // Geometry batching and lights -- rt_spark_draw.cpp
 // ---------------------------------------------------------------------------
@@ -485,11 +549,17 @@ extern std::vector< ArcLightCand > s_arcLights;
 
 // A batched primitive. `additive` picks the TRANSLUCENT+emissive path, which
 // RTGL1 turns into a real additive blend.
-void UploadBatch( const QuadBatch&  b,
-                  uint64_t          meshId,
-                  bool              additive,
-                  const char*       texName,
-                  RgColor4DPacked32 primColor );
+// `extra` is OR'd into the flags. It exists for RG_MESH_PRIMITIVE_ALPHA_TESTED,
+// which the barrel plate needs and nothing else here does: a textured cut-out's
+// SHAPE is its alpha channel, so without it every piece renders as the full
+// rectangle its art sits in.
+void UploadBatch( const QuadBatch&    b,
+                  uint64_t            meshId,
+                  bool                additive,
+                  const char*         texName,
+                  RgColor4DPacked32   primColor,
+                  RgMeshPrimitiveFlags extra = RgMeshPrimitiveFlags( 0 ),
+                  float               emissive = -1.f );
 
 // ONE PRIMITIVE PER BLOB. Batching decals into one primitive is what produced
 // the AO "lines"; the shipping sprite AO uploads one per actor.
@@ -502,6 +572,11 @@ constexpr uint64_t RT_SPARK_MESH_ID     = 0x1000000000000000ull;
 constexpr uint64_t RT_DEBRIS_MESH_ID    = 0x1000000000000001ull;
 constexpr uint64_t RT_DEBRIS_AO_MESH_ID = 0x1000000000000100ull;
 constexpr uint64_t RT_ARC_BURN_MESH_ID  = 0x1000000000001000ull;
+// One per piece of barrel art, since a primitive carries exactly one texture.
+constexpr uint64_t RT_SHARD_MESH_ID     = 0x1000000000002000ull;
+// The textured ember batch: additive like the untextured one, but a primitive
+// carries one texture so it cannot share the spark batch's id.
+constexpr uint64_t RT_EMBER_ART_MESH_ID = 0x1000000000003000ull;
 
 // The shared additive batch. Sparks, arc filigree and embers all land here:
 // same blend, same untextured white material, same mesh id, so a second batch

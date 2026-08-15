@@ -190,7 +190,12 @@ void SpawnArcMark( const FVector3& at,
                    ArcFlavor       flavor,
                    bool            withArcs,
                    float           burnScale,
-                   ImpactFx        fx )
+                   ImpactFx        fx,
+                   float           emberScale,
+                   bool            emberArt,
+                   float           emberSize,
+                   float           emberBright,
+                   float           emberScatter )
 {
     const uint32_t cap =
         std::min( RT_ARC_MARK_MAX, uint32_t( std::max( 0, int{ cvar::rt_arc_max } ) ) );
@@ -239,8 +244,13 @@ void SpawnArcMark( const FVector3& at,
     m.bit  = normal ^ t;
     m.age       = 0.f;
     m.arcs      = withArcs;
-    m.burnScale = burnScale;
-    m.fx        = fx;
+    m.burnScale  = burnScale;
+    m.fx         = fx;
+    m.emberScale = std::max( 0.f, emberScale );
+    m.emberArt   = emberArt;
+    m.emberSize   = std::max( 0.05f, emberSize );
+    m.emberBright  = std::max( 0.f, emberBright );
+    m.emberScatter = std::max( 0.f, emberScatter );
     // THE DELAY IS THE FIX FOR DOUBLE SMOKE, designed in rather than tuned
     // later. The rocket's own death burst (RT_PROJECTILE_SMOKE / rt_smoke_boom)
     // goes off at this same point on this same frame. Embers breathing from
@@ -292,8 +302,18 @@ FVector3 EmberPos( const ArcMark& m, int i, float burnRad )
     const uint32_t es = m.seed + 0x2545F491u + uint32_t( i ) * 2654435761u;
     const float    a  = hash01( es ) * 2.f * rt_pi();
     const float    r  = std::sqrt( hash01( es * 7919u ) ) * burnRad *
-                     std::clamp( float{ cvar::rt_ember_scatter }, 0.f, 4.f );
+                     std::clamp( float{ cvar::rt_ember_scatter } * m.emberScatter, 0.f, 8.f );
     return m.at + m.tan * ( std::cos( a ) * r ) + m.bit * ( std::sin( a ) * r );
+}
+
+// ONE PLACE, because the draw and the smoke both need the answer and a mark
+// whose coals are drawn N times but smoked M times puts smoke over bare floor.
+int EmberCountFor( const ArcMark& m )
+{
+    const float base = float( std::max( 0, int{ cvar::rt_ember_count } ) );
+    return std::clamp( int( std::lround( base * std::max( 0.f, m.emberScale ) ) ),
+                       0,
+                       RT_ARC_MAX_EMBER );
 }
 
 // Aged from the spark sim, which already owns the tic-delta machinery. Marks do
@@ -310,7 +330,6 @@ void AgeArcMarks( float dt )
     const float emberLife = std::max( 0.05f, float{ cvar::rt_ember_life } );
     const float every     = std::max( 0.02f, float{ cvar::rt_ember_smoke_every } );
     const float hotFrac   = std::clamp( float{ cvar::rt_ember_smoke_hot }, 0.f, 1.f );
-    const int   nEmber    = std::clamp( int{ cvar::rt_ember_count }, 0, RT_ARC_MAX_BRANCH );
     const float burnRad   = std::max( 0.f, float{ cvar::rt_arc_burn_radius } );
 
     // PER TIC, ACROSS ALL MARKS. Several rockets landing together would
@@ -329,6 +348,10 @@ void AgeArcMarks( float dt )
             continue;
         }
 
+        // PER MARK, not once for the frame: a barrel's scorch carries more coals
+        // than a rocket's, and both can be alive at the same moment.
+        const int nEmber = EmberCountFor( m );
+
         if( wantSmoke && m.fx == ImpactFx::Ember && nEmber > 0 && budget > 0 &&
             m.age >= m.nextSmoke )
         {
@@ -340,12 +363,27 @@ void AgeArcMarks( float dt )
             const float et = m.age / emberLife;
             if( et < hotFrac )
             {
-                // ONE ember picked per breath, rotating through them, rather
-                // than all of them at once. A patch of wall this small with
-                // every ember smoking simultaneously reads as one plume, which
-                // is the effect the delay above exists to avoid re-creating a
-                // second later.
-                const int pick = int( hash01( m.seed + uint32_t( m.age * 977.f ) ) *
+                // A FEW EMBERS PER BREATH, SCALED TO HOW MANY THERE ARE, rather
+                // than all of them and rather than always exactly one.
+                //
+                // All of them at once reads as a single plume, which is the
+                // failure the delay above exists to avoid re-creating a second
+                // later -- so it stays a rotating subset.
+                //
+                // But exactly ONE was tuned for a rocket's five coals, and it
+                // does not survive the barrel's fifty: one wisp every 0.3 s
+                // across fifty embers means any given coal breathes about once a
+                // quarter of a MINUTE, so the bed reads as not smoking at all.
+                // Reported as "there is no smoke trail on the embers". The
+                // fraction below keeps a rocket at exactly its old single wisp
+                // and gives the barrel a handful, and the per-tic budget still
+                // bounds the whole thing.
+                const int picks = std::clamp( nEmber / 6, 1, std::min( 8, budget ) );
+
+                for( int pk = 0; pk < picks; pk++ )
+                {
+                const int pick = int( hash01( m.seed + uint32_t( m.age * 977.f ) +
+                                              uint32_t( pk ) * 2654435761u ) *
                                       float( nEmber ) ) %
                                  std::max( 1, nEmber );
 
@@ -427,6 +465,7 @@ void AgeArcMarks( float dt )
                     budget--;
                     s_dbgEmberSmoke++;
                 }
+                } // picks
             }
         }
 

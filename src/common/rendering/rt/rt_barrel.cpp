@@ -1,4 +1,4 @@
-// Doom64-RT: WHAT AN EXPLODING BARREL LEAVES BEHIND.
+﻿// Doom64-RT: WHAT AN EXPLODING BARREL LEAVES BEHIND.
 //
 // A barrel currently goes off, throws a smoke burst, and leaves the room
 // exactly as it found it. It should leave a SCENE: a scorch churned into the
@@ -39,6 +39,9 @@
 
 #include "rt_sparks_internal.h"
 
+#include <cstring>
+#include <fstream>
+
 // NOTE: no `using namespace rtsp;` up here -- this file DEFINES things in that
 // namespace, and a using-directive in scope while doing so makes every
 // unqualified name findable twice. It goes after the closing brace, for the
@@ -60,6 +63,244 @@ struct BarrelMark
 };
 
 std::vector< BarrelMark > g_barrels;
+
+// ---------------------------------------------------------------------------
+// THE AUTHORED PIECES, and this replaced geometry I had generated myself.
+//
+// The first version built each chunk out of maths: a curved strip with hashed
+// tears along both edges and a colour picked from a palette sampled out of
+// BAR1A0. It was reported, correctly, as "still particles / parts you generate
+// yourself, its ugly" -- and the offer that followed is the better answer by a
+// wide margin. Four pieces were cut from the barrel art by hand: torn, charred,
+// with hot orange along the break. No procedural tear generator was going to
+// arrive at that, because the thing that makes them read is authorship.
+//
+// HOW ART GETS IN WITHOUT TOUCHING A WAD. RTGL1 resolves a primitive's
+// pTextureName against rt/mat/<name>.png on disk, which is the same route the
+// map title cards take: rt_titles.cpp registers the NAME with a 1x1 placeholder
+// via rgProvideOriginalTexture and RTGL1 substitutes the file. So a piece is a
+// file at
+//
+//     rt/mat/d64rt/barrel/shardN.png        (and rt/mat_dev, see below)
+//
+// referred to as "d64rt/barrel/shardN", and adding a fifth piece is dropping a
+// fifth file -- no code, no lump, no DECORATE.
+//
+// BOTH TREES OR IT IS A GHOST. The staged RTGL1.json sets developerMode true,
+// which makes RTGL1 read mat_dev in preference to mat. Art placed in only one
+// of them looks exactly like a plumbing failure.
+//
+// THE SHAPE IS THE ALPHA CHANNEL, which is why the primitive is uploaded
+// ALPHA_TESTED. Without that flag every piece renders as the full rectangle its
+// art sits in -- a barrel-coloured playing card.
+
+constexpr int RT_BARREL_ART_MAX = 8;
+
+struct ShardArt
+{
+    FString name;   // the RTGL1 material name, e.g. "d64rt/barrel/shard1"
+    float   aspect; // width / height of the source image
+};
+
+std::vector< ShardArt > g_shardArt;
+bool                    g_shardArtScanned = false;
+
+// The ember sheet, found and registered by the same scan. Separate from the
+// shard list because there is one of it and it is not interchangeable with a
+// piece of plate.
+FString g_emberArt;
+float   g_emberArtAspect = 1.f;
+
+// PNG dimensions straight out of the IHDR. Twenty lines against pulling in an
+// image decoder, and it cannot go wrong quietly: the signature and the chunk
+// name are both checked, so a file that is not a PNG is rejected rather than
+// producing a nonsense aspect ratio nobody would trace back to here.
+//
+// A PLAIN FILE, NOT A LUMP. rt/mat is RTGL1's own directory next to gzdoom.exe
+// and is NOT in gzdoom's lump filesystem -- fileSystem.CheckNumForFullName on
+// an rt/ path always answers -1 however present the file is. That mistake cost
+// this project a silent failure once already, in LoadSparkSurfaces.
+bool ReadPngSize( const char* path, int* outW, int* outH )
+{
+    std::ifstream f( path, std::ios::binary );
+    if( !f.is_open() )
+    {
+        return false;
+    }
+
+    unsigned char hdr[ 24 ]{};
+    f.read( reinterpret_cast< char* >( hdr ), sizeof( hdr ) );
+    if( f.gcount() < std::streamsize( sizeof( hdr ) ) )
+    {
+        return false;
+    }
+
+    static const unsigned char kSig[ 8 ] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    if( memcmp( hdr, kSig, 8 ) != 0 || memcmp( hdr + 12, "IHDR", 4 ) != 0 )
+    {
+        return false;
+    }
+
+    *outW = ( int( hdr[ 16 ] ) << 24 ) | ( int( hdr[ 17 ] ) << 16 ) | ( int( hdr[ 18 ] ) << 8 ) |
+            int( hdr[ 19 ] );
+    *outH = ( int( hdr[ 20 ] ) << 24 ) | ( int( hdr[ 21 ] ) << 16 ) | ( int( hdr[ 22 ] ) << 8 ) |
+            int( hdr[ 23 ] );
+
+    return *outW > 0 && *outH > 0;
+}
+
+// Register the name so RTGL1 has something to hang the rt/mat override on.
+// Exactly RT_RegisterFullscreenImage's trick, with NEAREST rather than LINEAR:
+// everything in this game is nearest-filtered (rt_smoothtextures ships false),
+// and a smoothed 20-pixel cut-out would be the one soft-edged object on screen.
+void RegisterShardTexture( const char* name )
+{
+    constexpr uint8_t empty[] = { 0, 0, 0, 0 };
+
+    auto info = RgOriginalTextureInfo{
+        .sType        = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_INFO,
+        .pNext        = nullptr,
+        .pTextureName = name,
+        .pPixels      = empty,
+        .size         = { 1, 1 },
+        .filter       = RG_SAMPLER_FILTER_NEAREST,
+        .addressModeU = RG_SAMPLER_ADDRESS_MODE_CLAMP,
+        .addressModeV = RG_SAMPLER_ADDRESS_MODE_CLAMP,
+    };
+
+    RgResult r = rt.rgProvideOriginalTexture( &info );
+    RG_CHECK( r );
+}
+
+// Called from the DRAW, not from startup: rgProvideOriginalTexture wants a live
+// renderer, and the draw is the only place this file's work is guaranteed to be
+// inside one. Runs once.
+void ScanShardArt()
+{
+    if( g_shardArtScanned )
+    {
+        return;
+    }
+    g_shardArtScanned = true;
+
+    for( int i = 1; i <= RT_BARREL_ART_MAX; i++ )
+    {
+        FString rel;
+        rel.Format( "d64rt/barrel/shard%d", i );
+
+        // mat_dev first, mirroring RTGL1's own precedence under developerMode,
+        // so the dimensions read here always belong to the file that will
+        // actually be sampled.
+        FString devPath;
+        devPath.Format( "rt/mat_dev/%s.png", rel.GetChars() );
+        FString matPath;
+        matPath.Format( "rt/mat/%s.png", rel.GetChars() );
+
+        int w = 0, h = 0;
+        if( !ReadPngSize( devPath.GetChars(), &w, &h ) &&
+            !ReadPngSize( matPath.GetChars(), &w, &h ) )
+        {
+            continue;
+        }
+
+        RegisterShardTexture( rel.GetChars() );
+        g_shardArt.push_back( ShardArt{ rel, float( w ) / float( h ) } );
+    }
+
+    // THE EMBER SHEET, one file rather than a numbered set. Scattered coals on
+    // transparent; a coal takes the WHOLE image, with its UVs flipped at random
+    // per coal so fifty of them in one scorch are not fifty copies of one shape.
+    {
+        const char* rel = "d64rt/embers/embers";
+        FString     devPath, matPath;
+        devPath.Format( "rt/mat_dev/%s.png", rel );
+        matPath.Format( "rt/mat/%s.png", rel );
+
+        int w = 0, h = 0;
+        if( ReadPngSize( devPath.GetChars(), &w, &h ) ||
+            ReadPngSize( matPath.GetChars(), &w, &h ) )
+        {
+            RegisterShardTexture( rel );
+            g_emberArt       = rel;
+            g_emberArtAspect = float( w ) / float( h );
+            // QUIET unless asked. This is a success line on a path that is
+            // shipped OFF; it was loud while the art was being got working and
+            // has no business in a normal session's log. The FAILURE below
+            // stays loud, because a missing file and a working one that simply
+            // does not show up look identical and only one is fixed by editing
+            // the art.
+            if( cvar::rt_barrel_debug )
+            {
+                Printf( "rt_barrel: ember art %s (%.2f)\n", rel, g_emberArtAspect );
+            }
+        }
+        else if( cvar::rt_barrel_ember_tex )
+        {
+            // Only when the feature is actually SWITCHED ON. Warning about
+            // missing art for a path nobody asked for is noise; warning about
+            // it when it was asked for is the difference between a missing file
+            // and a broken effect.
+            Printf( TEXTCOLOR_ORANGE "rt_barrel: NO ember art -- tried '%s' and '%s' "
+                                     "(cwd-relative)\n" TEXTCOLOR_NORMAL,
+                    devPath.GetChars(),
+                    matPath.GetChars() );
+        }
+    }
+
+    // ALWAYS SAYS SOMETHING, and the zero case is the loud one. With no art the
+    // shards fall back to generated geometry, which looks like a feature that
+    // was never changed rather than like a missing file -- the single most
+    // expensive kind of failure in this project's history.
+    if( g_shardArt.empty() )
+    {
+        Printf( TEXTCOLOR_ORANGE
+                "rt_barrel: NO shard art found -- looked for "
+                "rt/mat_dev/d64rt/barrel/shard1..%d.png and rt/mat/...\n" TEXTCOLOR_NORMAL
+                "  Falling back to generated plate. Art goes in BOTH authored trees:\n"
+                "  Doom64-Retribution/Retribution-RT-Materials/rt/{mat,mat_dev}/d64rt/barrel/\n",
+                RT_BARREL_ART_MAX );
+    }
+    else
+    {
+        // Quiet unless asked, for the reason the ember line is: the art loading
+        // correctly is the normal case, and a line per session about it is the
+        // kind of noise that trains people to stop reading the log.
+        if( cvar::rt_barrel_debug )
+        {
+            FString sizes;
+            for( const ShardArt& a : g_shardArt )
+            {
+                sizes.AppendFormat( " %s(%.2f)", a.name.GetChars(), a.aspect );
+            }
+            Printf( "rt_barrel: %d shard pieces:%s\n", int( g_shardArt.size() ), sizes.GetChars() );
+        }
+    }
+}
+
+int ShardArtCount()
+{
+    return int( g_shardArt.size() );
+}
+
+const char* EmberArtName()
+{
+    return g_emberArt.IsEmpty() ? nullptr : g_emberArt.GetChars();
+}
+
+float EmberArtAspect()
+{
+    return g_emberArtAspect;
+}
+
+const char* ShardArtName( int i )
+{
+    return g_shardArt[ size_t( i ) ].name.GetChars();
+}
+
+float ShardArtAspect( int i )
+{
+    return g_shardArt[ size_t( i ) ].aspect;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -93,9 +334,16 @@ void SpawnBarrelShards( const FVector3& at, const FVector3& up )
         return;
     }
 
+    // How many authored pieces exist. Zero is a legitimate state -- no art
+    // installed -- and the whole burst falls back to generated grit rather than
+    // to nothing.
+    const int artCount = ShardArtCount();
+
     const DebrisProfile& pr    = ProfileFor( SurfKind::Barrel );
     const float          size  = std::max( 0.01f, float{ cvar::rt_barrel_size } );
-    const float          life  = std::max( 0.5f, float{ cvar::rt_barrel_life } );
+    // NOT CLAMPED UP FROM ZERO: 0 is the "forever" sentinel, and a max() here
+    // would silently turn permanent wreckage into half a second of it.
+    const float          life  = float{ cvar::rt_barrel_life };
     const float          speed = std::max( 0.f, float{ cvar::rt_barrel_speed } );
     const float          bias  = std::max( 0.f, float{ cvar::rt_barrel_up } );
 
@@ -141,14 +389,64 @@ void SpawnBarrelShards( const FVector3& at, const FVector3& up )
         // apart. Scaled by the piece size so it stays proportionate.
         const FVector3 jitter{ rnd11(), rnd11(), rnd11() };
 
-        sp.pos     = at + jitter * ( size * 1.5f );
-        sp.vel     = dir * ( speed * ( 0.45f + 0.85f * rnd01() ) );
-        sp.age     = 0.f;
-        sp.life    = life * ( 0.75f + 0.5f * rnd01() );
+        // TWO POPULATIONS, AND A BARREL NEEDS BOTH.
+        //
+        // The authored cut-outs are the big recognisable plates -- charred, torn,
+        // hot along the break -- and four of them are the whole vocabulary. A
+        // burst made only of those reads as four objects rather than as
+        // something coming apart, and with a dozen pieces the same drawing is on
+        // screen three times at once.
+        //
+        // So a share of every burst is SMALL GENERATED GRIT instead: the curved
+        // torn strip in one of the barrel's own greys, at a fraction of the
+        // size. It is exactly the geometry the art replaced, kept because at
+        // fragment scale it is the right tool -- nobody can tell a 4 cm chip was
+        // procedural, and hand-cutting a dozen of them would be work spent where
+        // it cannot be seen.
+        //
+        // baseRgb IS THE SWITCH, and it is worth saying so out loud because it
+        // is doing double duty: for a shard, 0 means "wear the authored art" and
+        // non-zero means "generate the outline, in this colour". That saves a
+        // field on a struct there are four thousand of.
+        const bool isGrit = ( artCount == 0 ) ||
+                           ( rnd01() < std::clamp( float{ cvar::rt_barrel_small_frac }, 0.f, 1.f ) );
+
+        const float sizeMul =
+            isGrit ? std::max( 0.05f, float{ cvar::rt_barrel_small_size } ) : 1.f;
+
+        sp.pos  = at + jitter * ( size * 1.5f );
+        sp.vel  = dir * ( speed * ( 0.45f + 0.85f * rnd01() ) );
+        sp.age = 0.f;
+        // 0 MEANS FOREVER, the same sentinel rt_arc_burn_life uses, and it means
+        // the same thing there: forever is really "until the pool evicts it".
+        // Wreckage has no reason to weather on the timescale of a firefight, so
+        // what bounds how much of it a level accumulates is rt_spark_max and the
+        // evict-within-kind rule, not a clock. Saying so with a sentinel is
+        // clearer than picking a number large enough to look permanent.
+        sp.life = life <= 0.f ? FLT_MAX : life * ( 0.75f + 0.5f * rnd01() );
         // A WIDE size spread, wider than debris takes. A barrel does not come
         // apart into equal pieces: there are two or three big plates and a
         // scatter of smaller stuff, and uniform chunks read as manufactured.
-        sp.size    = size * ( 0.45f + 1.25f * rnd01() );
+        // THE SIZE SPREAD, and it is a CURVE rather than a range because the
+        // range alone gave the wrong shape of burst.
+        //
+        // A uniform 0.45x..1.7x makes every piece roughly medium: the extremes
+        // are as likely as the middle, so twelve pieces come out twelve similar
+        // sizes and the burst reads as a set of parts rather than as something
+        // that broke. What a barrel actually leaves is ONE OR TWO BIG PANELS and
+        // a lot of smaller stuff.
+        //
+        // Raising rnd01() to a power biases the draw toward the low end, so the
+        // big multiplier at the top is RARE rather than typical -- which is what
+        // lets the ceiling be as high as 3x without every burst being a pile of
+        // giant plates. Reported as needing "more variety in term of bigger":
+        // the answer is not a bigger uniform size, it is a longer tail.
+        const float lo   = std::max( 0.05f, float{ cvar::rt_barrel_size_min } );
+        const float hi   = std::max( lo, float{ cvar::rt_barrel_size_max } );
+        const float bias = std::max( 0.2f, float{ cvar::rt_barrel_size_bias } );
+        const float tsz  = std::pow( rnd01(), bias );
+
+        sp.size = size * sizeMul * ( lo + ( hi - lo ) * tsz );
         sp.sec     = sec;
         sp.settled = false;
         sp.kind    = SparkKind::Shard;
@@ -167,12 +465,21 @@ void SpawnBarrelShards( const FVector3& at, const FVector3& up )
         n.MakeUnit();
         sp.nrm = n;
 
-        sp.phase  = rnd01() * 2.f * rt_pi();
-        sp.spin   = rnd11() * 3.2f * pr.spin;
-        sp.aspect = pr.aspectLo + rnd01() * ( pr.aspectHi - pr.aspectLo );
+        sp.phase = rnd01() * 2.f * rt_pi();
+        // Grit tumbles faster than plate. A quarter-metre panel turning quickly
+        // strobes as it passes edge-on and reads as a rendering fault; a 4 cm
+        // chip doing the same just reads as a chip.
+        sp.spin = rnd11() * 3.2f * pr.spin * ( isGrit ? 2.2f : 1.f );
+        // A MUCH WIDER SHAPE RANGE FOR THE GRIT, and this is the answer to "just
+        // don't make them simple squares". Aspect 1.0 with a low tear is a
+        // square; the range below reaches from a sliver to a stubby wedge and
+        // never sits at 1 for long. The authored pieces ignore this -- their
+        // proportions come from the image.
+        sp.aspect = isGrit ? ( 0.28f + rnd01() * 1.15f )
+                          : ( pr.aspectLo + rnd01() * ( pr.aspectHi - pr.aspectLo ) );
         sp.sid    = NextSparkSid();
-        // Resolved from the sid so it cannot change frame to frame.
-        sp.baseRgb = ShardShade( sp.sid );
+        // 0 = wear the art; non-zero = generate the outline in this grey.
+        sp.baseRgb = isGrit ? ShardShade( sp.sid ) : 0u;
 
         made++;
         s_dbgSpawned++;
@@ -276,7 +583,12 @@ void BarrelBlow( AActor* mo )
                       ArcFlavor::Plasma, // unread: the ember path never indexes the arc ramp
                       /*withArcs=*/false,
                       std::max( 0.f, float{ cvar::rt_barrel_scorch_scale } ),
-                      cvar::rt_barrel_embers ? ImpactFx::Ember : ImpactFx::Arc );
+                      cvar::rt_barrel_embers ? ImpactFx::Ember : ImpactFx::Arc,
+                      std::max( 0.f, float{ cvar::rt_barrel_ember_scale } ),
+                      bool( cvar::rt_barrel_ember_tex ),
+                      std::max( 0.05f, float{ cvar::rt_barrel_ember_size } ),
+                      std::max( 0.f, float{ cvar::rt_barrel_ember_bright } ),
+                      std::max( 0.f, float{ cvar::rt_barrel_ember_scatter } ) );
     }
 
     SpawnBarrelShards( midAt, fn );
@@ -372,9 +684,10 @@ using namespace rtsp;
 // SUPPOSED to differ, and a capture that hid that would be lying about the
 // effect.
 //
-//   barrel_here          scorch + plate, where you are looking
-//   barrel_here shards   plate only, no scorch
-//   barrel_here scorch   scorch only, no plate
+//   barrel_here              scorch + plate, 150 units in front
+//   barrel_here shards       plate only, no scorch
+//   barrel_here scorch       scorch only, no plate
+//   barrel_here all 90       both, 90 units in front (closer, for shape)
 CCMD( barrel_here )
 {
     if( !primaryLevel )
@@ -402,16 +715,25 @@ CCMD( barrel_here )
     // burst on a wall would be reproducing something the effect never does.
     // Ignoring pitch is the point -- where you happen to be looking must not
     // change the capture.
-    // 220 UNITS, AND THE FIRST TRY AT 72 IS WORTH RECORDING. At 72 the burst is
-    // about a metre away and lands directly BEHIND THE WEAPON SPRITE, which
-    // covers the bottom centre of the frame. The ladder said 12 shards live and
-    // 17 quads uploaded while the capture showed an empty room -- so this looked
-    // exactly like a draw bug and was a framing one. 220 puts it clear of the
-    // gun and still fills a useful part of the frame.
+    // HOW FAR IN FRONT, and both ends of the range have bitten already.
+    //
+    // The first try was 72 units. That is about a metre, which puts the burst
+    // directly BEHIND THE WEAPON SPRITE covering the bottom centre of the frame:
+    // the ladder reported 12 shards live and 17 quads uploaded while the capture
+    // showed an empty room, so it looked exactly like a draw bug and was a
+    // framing one. 220 cleared the gun but is far enough that a 20-unit piece is
+    // a few pixels. 150 is the compromise, and the argument exists because the
+    // right answer depends on what is being judged.
+    double dist = 150.0;
+    if( argv.argc() > 2 )
+    {
+        dist = std::clamp( atof( argv[ 2 ] ), 48.0, 1024.0 );
+    }
+
     const auto&  vp  = r_viewpoint;
     const double yaw = vp.Angles.Yaw.Radians();
-    const double ox  = vp.Pos.X + std::cos( yaw ) * 220.0;
-    const double oy  = vp.Pos.Y + std::sin( yaw ) * 220.0;
+    const double ox  = vp.Pos.X + std::cos( yaw ) * dist;
+    const double oy  = vp.Pos.Y + std::sin( yaw ) * dist;
 
     sector_t* sec = primaryLevel->PointInSector( ox, oy );
 
@@ -441,7 +763,12 @@ CCMD( barrel_here )
                       ArcFlavor::Plasma,
                       false,
                       std::max( 0.f, float{ cvar::rt_barrel_scorch_scale } ),
-                      cvar::rt_barrel_embers ? ImpactFx::Ember : ImpactFx::Arc );
+                      cvar::rt_barrel_embers ? ImpactFx::Ember : ImpactFx::Arc,
+                      std::max( 0.f, float{ cvar::rt_barrel_ember_scale } ),
+                      bool( cvar::rt_barrel_ember_tex ),
+                      std::max( 0.05f, float{ cvar::rt_barrel_ember_size } ),
+                      std::max( 0.f, float{ cvar::rt_barrel_ember_bright } ),
+                      std::max( 0.f, float{ cvar::rt_barrel_ember_scatter } ) );
     }
     if( wantShards )
     {

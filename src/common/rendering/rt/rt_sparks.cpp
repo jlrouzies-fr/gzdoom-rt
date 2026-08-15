@@ -966,15 +966,50 @@ void RT_UpdateSparks()
                         {
                             const DVector3 fn = sec->floorplane.Normal();
                             FVector3       up{ float( fn.X ), float( fn.Y ), float( fn.Z ) };
-                            if( up.LengthSquared() > 1e-6f )
+                            if( up.LengthSquared() < 1e-6f )
                             {
-                                up.MakeUnit();
-                                sp.nrm = up;
+                                up = FVector3{ 0, 0, 1 };
                             }
-                            else
+                            up.MakeUnit();
+
+                            // NOT DEAD FLAT, and this is not decoration.
+                            //
+                            // A plate lying perfectly flush with the floor is
+                            // seen from standing height at a very shallow angle,
+                            // so it projects to a few pixels of sliver and
+                            // vanishes at any distance -- which is exactly how
+                            // the first capture came out: a scorch on an empty
+                            // floor with the wreckage technically present and
+                            // invisible. It is also wrong: torn sheet does not
+                            // lie flush, it rocks on its own buckles.
+                            //
+                            // Tilting it gives the piece a silhouette against
+                            // the floor and a face that can catch a light. The
+                            // cap keeps it from standing up like a headstone.
+                            const float tilt =
+                                std::clamp( float{ cvar::rt_barrel_rest_tilt }, 0.f, 0.9f );
+                            if( tilt > 0.f )
                             {
-                                sp.nrm = FVector3{ 0, 0, 1 };
+                                const FVector3 wob{ rnd11(), rnd11(), rnd11() };
+                                FVector3       n = up + wob * tilt;
+                                if( n.LengthSquared() > 1e-6f )
+                                {
+                                    n.MakeUnit();
+                                    // Never point into the floor.
+                                    if( ( n | up ) < 0.f )
+                                    {
+                                        n = n - up * ( 2.f * ( n | up ) );
+                                        n.MakeUnit();
+                                    }
+                                    up = n;
+                                }
                             }
+                            sp.nrm = up;
+
+                            // Lifted by a fraction of its own size, or a tilted
+                            // plate is buried to its waist in the floor -- half
+                            // the piece is below the plane it is resting on.
+                            sp.pos.Z += sp.size * 0.35f * tilt;
                         }
                     }
                 }

@@ -2740,6 +2740,13 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .metallicMax            = cvar::rt_metallic_max,
         .metallicRoughCut       = cvar::rt_metallic_roughcut,
         .metallicRoughBand      = cvar::rt_metallic_roughband,
+        .spritePbr              = cvar::rt_sprite_pbr
+                                      ? std::clamp( float{ cvar::rt_sprite_pbr_mix }, 0.f, 1.f )
+                                      : 0.f,
+        .spriteMetallicMax      = cvar::rt_sprite_metallic_max,
+        .spriteRoughMin         = cvar::rt_sprite_rough_min,
+        .spriteNormalStrength   = cvar::rt_sprite_normal,
+        .worldPbr               = std::clamp( float{ cvar::rt_tex_pbr_mix }, 0.f, 1.f ),
     };
 
     float dirtscale = ( ( powerupflags & RT_POWERUP_FLAG_RADIATIONSUIT_BIT ) ||

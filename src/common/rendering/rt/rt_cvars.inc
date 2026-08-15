@@ -1630,6 +1630,80 @@
     RT_CVAR( rt_mzlflsh_u,              -0.9f,  "muzzle flash light offset - up (in meteres)" )
     RT_CVAR( rt_mzlflsh_fade,           5.f,    "soft fade-out duration in tics when extralight ends (0 = hard cut; reduces RR residual sparkle)" )
 
+    RT_CVAR( rt_tex_pbr_mix,            0.35f,  "HOW MUCH of a WALL or FLAT's authored material to apply, "
+                                                "0..1 -- the world twin of rt_sprite_pbr_mix. 1 = exactly as "
+                                                "authored, 0 = plain dielectric (metallic 0, roughness 1).\n"
+                                                "\n"
+                                                "Ships at 0.35, matching the sprite dial. Walls do NOT have "
+                                                "the failure sprites do -- a wall carries per-texel normals "
+                                                "from its _n map, so it never shows the flat-quad wash -- so "
+                                                "the reasons here are NOISE and TASTE rather than an artefact: "
+                                                "every glossy surface is another specular the denoiser has to "
+                                                "resolve, and 898 hand-labelled textures can add up to more "
+                                                "shine than Doom 64 ever had.\n"
+                                                "\n"
+                                                "Compresses the spread between materials as it falls, the "
+                                                "same way the sprite dial does: everything converges on one "
+                                                "neutral rather than each class being clamped separately." )
+
+    // --- SPRITES ------------------------------------------------------------
+    // A billboard is ONE QUAD CARRYING ONE NORMAL, so its indirect specular
+    // reflection vector is identical for every texel: the whole sprite samples
+    // the room in a single direction and gains one flat colour across its body.
+    // A warm wall off to the side turns a soldier beige. Walls cannot fail this
+    // way -- their _n varies the normal per texel -- so one set of numbers
+    // cannot serve both, which is why these exist rather than reusing
+    // rt_metallic_*.
+    RT_CVAR( rt_sprite_pbr,             true,   "MASTER for the whole sprite material pass. Off = every "
+                                                "SPRITE ignores its authored _orm AND its derived _n and "
+                                                "goes back to a plain dielectric (metallic 0, roughness 1, "
+                                                "geometric normal) -- the look before any of the labelling "
+                                                "was applied.\n"
+                                                "\n"
+                                                "A RENDERER switch, not a revert: the maps stay on disk and "
+                                                "come back the moment it is turned on, and nothing needs "
+                                                "re-baking either way.\n"
+                                                "\n"
+                                                "Walls and flats are untouched -- they keep rt_metallic." )
+    RT_CVAR( rt_sprite_pbr_mix,         0.35f,  "HOW MUCH of a sprite's authored material to apply, 0..1. "
+                                                "This is the COMPRESSION dial: 1 = exactly as labelled, 0 = "
+                                                "the plain dielectric a sprite had before any of the "
+                                                "labelling existed, and everything between pulls the whole "
+                                                "sprite pass toward that neutral.\n"
+                                                "\n"
+                                                "It does two things at once, which is the point. It lowers "
+                                                "how hard sprites react to light -- the flesh washing to pale "
+                                                "clay and the shotgun blowing out to near-white are both an "
+                                                "over-reaction, not a wrong call. And it COMPRESSES THE "
+                                                "SPREAD BETWEEN CLASSES: metal at 0.2 roughness beside flesh "
+                                                "at 0.7 stops being a contrast problem once both are most of "
+                                                "the way to the same neutral.\n"
+                                                "\n"
+                                                "Neutral is metallic 0 / roughness 1 because that is exactly "
+                                                "what a sprite with no _orm rendered as. So 0 here is not an "
+                                                "approximation of the old look, it IS the old look -- and "
+                                                "rt_sprite_pbr 0 is the same thing as a hard switch.\n"
+                                                "\n"
+                                                "The derived normal maps fade with this too, so one dial "
+                                                "covers the whole sprite material pass." )
+    RT_CVAR( rt_sprite_metallic_max,    0.9f,   "ceiling on a SPRITE's metalness, the sprite-only twin of "
+                                                "rt_metallic_max. Weapons were labelled with a lot of metal "
+                                                "at low roughness, and a metal has no diffuse lobe -- so "
+                                                "this is what stops a gun going black in an unlit corridor "
+                                                "without touching the walls." )
+    RT_CVAR( rt_sprite_rough_min,       0.f,    "FLOOR on a SPRITE's roughness, and the direct lever on the "
+                                                "beige wash: a broader specular lobe SPREADS the single "
+                                                "room reflection a flat quad receives instead of mirroring "
+                                                "it. Raise this first if sprites look washed out under "
+                                                "indirect light from the side.\n"
+                                                "\n"
+                                                "0 = inert. Try 0.7 before reaching for rt_sprite_pbr 0." )
+    RT_CVAR( rt_sprite_normal,          1.f,    "how much of a sprite's NORMAL MAP to apply, on top of "
+                                                "rt_normalmap_stren. Sprite normals are DERIVED from the "
+                                                "silhouette by tools/bake_sprite_normals.py rather than "
+                                                "authored, so this dials back a guess without touching the "
+                                                "walls' authored maps. 0 = flat billboard again." )
+
     // Per-weapon muzzle flash colour. rt_mzlflsh_color above stays the default for
     // everything not listed here (pistol / shotgun / SSG / rocket: their flash art means
     // out warm, #ffd5ae, which is what that default already is).
@@ -2717,7 +2791,7 @@
     // CPU in rt_sparks.cpp, drawn as one batched primitive of flat world-space squares, and
     // lit by ONE short spherical light per impact. NOT smoke: a 1 cm bright dot cannot be
     // represented in a 64-slice froxel volume, so nothing here touches rt_smoke_*.
-    RT_CVAR( rt_spark,                  false,  "master switch for impact sparks -- the hot bits thrown off when a hitscan "
+    RT_CVAR( rt_spark,                  true ,  "master switch for impact sparks -- the hot bits thrown off when a hitscan "
                                                 "hits a wall, floor or ceiling. OFF by default until judged in play. "
                                                 "Flesh is deliberately excluded (blood owns it), as are sky and liquid. "
                                                 "The particles are an ADDITIVE rasterized overlay and so appear in no "
@@ -2960,7 +3034,7 @@
                                                 "-- exactly the mistake that made the first debris ramps read as too "
                                                 "bright. Rock and concrete sit around 0.20-0.35 in reality. Raise it if "
                                                 "chips read as silhouettes, lower it if they read as chalk." )
-    RT_CVAR_NOARCH( rt_spark_surface_debug, 1,  "1 prints the TEXTURE NAME of every surface an impact lands on, and how "
+    RT_CVAR_NOARCH( rt_spark_surface_debug, 0,  "1 prints the TEXTURE NAME of every surface an impact lands on, and how "
                                                 "it classified. This is the tool for building "
                                                 "rt/data/spark_surfaces.txt, and it exists because there is no other way "
                                                 "to do the job: Doom 64 texture names are opaque (C1, C102B, SPACEAO1), "
@@ -3084,6 +3158,17 @@
                                                 "ones, each with its own darkness. They blend per fragment, so the "
                                                 "result is blotchy where they pile up and ashy where one lies alone, "
                                                 "with no triangle ever able to disagree with its neighbour." )
+    RT_CVAR( rt_arc_burn_spread,        1.0f,   "how far the ASH and SCORCH blobs travel away from "
+                                                "rt_arc_burn_color, 0..1. 0 collapses the whole mark back to one "
+                                                "colour; 1 lets ash reach pale grey and scorch reach burnt umber.\n"
+                                                "THIS IS WHAT MAKES THE MARK MORE THAN BLACK. The three blob kinds "
+                                                "used to be brightness and saturation knobs on rt_arc_burn_color "
+                                                "alone -- and that colour is an albedo of about 0.035, so every kind "
+                                                "landed between 0.004 and 0.05. Char, ash and scorch were three names "
+                                                "for three shades of black, and overlapping shades of black average "
+                                                "back to black. You cannot saturate your way to brown from something "
+                                                "with no brown in it, so ash and scorch are real destinations now and "
+                                                "this is the distance to them." )
     RT_CVAR( rt_arc_burn_mottle,        0.7f,   "how blotchy ONE scorch is, 0..1. Not to be confused with "
                                                 "rt_arc_burn_color_var, which varies whole marks against each other; "
                                                 "this varies the inside of a single one.\n"
@@ -3119,7 +3204,7 @@
                                                 "(rt_arc_core) and narrower than the branches reach: a burn the size of "
                                                 "the whole filigree reads as a stain, and one the size of the core "
                                                 "reads as a bullet hole." )
-    RT_CVAR_COLOR( rt_arc_burn_color,   0x0A0807, "WHAT THE SCORCH DARKENS TOWARD (hex), and it must not be black.\n"
+    RT_CVAR_COLOR( rt_arc_burn_color,   0x261A10, "WHAT THE SCORCH DARKENS TOWARD (hex), and it must not be black.\n"
                                                 "The decal blends into the albedo buffer with a plain SRC_ALPHA / "
                                                 "ONE_MINUS_SRC_ALPHA lerp (DecalManager.cpp:599), so the result is "
                                                 "  albedo = colour * strength + original * (1 - strength).\n"
@@ -3241,20 +3326,20 @@
     RT_CVAR( rt_ember,                  1,      "master for ROCKET IMPACT EMBERS: cooling coals scattered by a rocket "
                                                 "blast, each trailing a thin wisp of smoke. Independent of rt_spark "
                                                 "and rt_arc -- they share the particle pool but not a switch." )
-    RT_CVAR( rt_ember_count,            5,      "embers per rocket impact. SINGLE DIGITS BY DESIGN. These were first "
+    RT_CVAR( rt_ember_count,            10,      "embers per rocket impact. SINGLE DIGITS BY DESIGN. These were first "
                                                 "built as a spray of a dozen-plus flying particles and that was the "
                                                 "wrong construction twice over -- an ember is not a fragment in flight, "
                                                 "and a scorch the size of a dinner plate with fourteen glowing spots in "
                                                 "it reads as a light-up sign rather than as something still burning." )
-    RT_CVAR( rt_ember_life,             7.0f,   "seconds the embers glow before going black. LONG -- this is what is "
+    RT_CVAR( rt_ember_life,             20.f,   "seconds the embers glow before going black. LONG -- this is what is "
                                                 "still there after the explosion has cleared, which is the entire point "
                                                 "of the effect. The scorch under them lives far longer again "
                                                 "(rt_arc_burn_life), so a cold mark is left behind afterwards." )
-    RT_CVAR( rt_ember_scatter,          0.8f,   "how far the embers spread across the scorch, as a fraction of its "
+    RT_CVAR( rt_ember_scatter,          0.5f,   "how far the embers spread across the scorch, as a fraction of its "
                                                 "radius. Below 1 they sit inside the churn, which is where something "
                                                 "still burning belongs; above 1 they spill onto clean wall and stop "
                                                 "reading as part of the same event." )
-    RT_CVAR( rt_ember_size,             0.03f,  "metres, edge of one ember. Small: these are hot SPOTS in the burn, not "
+    RT_CVAR( rt_ember_size,             0.01f,  "metres, edge of one ember. Small: these are hot SPOTS in the burn, not "
                                                 "coals lying on top of it." )
     RT_CVAR( rt_ember_bright,           2.0f,   "how hard an ember ADDS to the screen. Read rt_spark_bright first -- "
                                                 "same vertex-alpha lever, same 8-bit ceiling. Dimmer than an arc on "
@@ -3364,7 +3449,7 @@
     RT_CVAR( rt_ember_smoke_radius,     0.06f,  "metres, radius of one ember wisp. Near the PISTOL's 0.07 by design -- "
                                                 "the reference for this whole profile is the muzzle filament, not a "
                                                 "flame or a burst." )
-    RT_CVAR( rt_ember_smoke_life,       1.1f,   "multiplier on rt_smoke_life for an ember wisp. The pistol's value." )
+    RT_CVAR( rt_ember_smoke_life,       2.0f,   "multiplier on rt_smoke_life for an ember wisp. The pistol's value." )
     RT_CVAR( rt_ember_smoke_density,    0.55f,  "multiplier on rt_smoke_density for an ember wisp. Thinner than the "
                                                 "pistol's 0.90: there are a dozen embers and one barrel." )
     RT_CVAR( rt_ember_smoke_max,        10,     "how many ember wisps may be spawned per TIC across all embers. "
@@ -3390,15 +3475,24 @@
                                                 "genuinely curved sheet with torn ends. See the note in "
                                                 "rt_spark_draw.cpp before reaching for a size knob to fix a shape "
                                                 "problem." )
-    RT_CVAR( rt_barrel_count,           12,     "pieces per barrel. LOW BY DESIGN -- a barrel is one object and it "
+    RT_CVAR( rt_barrel_count,           60,     "pieces per barrel. LOW BY DESIGN -- a barrel is one object and it "
                                                 "comes apart into a handful of recognisable plates, not into shrapnel. "
                                                 "Raising this is the fastest way to turn the effect back into the "
                                                 "particle spray it was specifically built not to be." )
-    RT_CVAR( rt_barrel_size,            0.17f,  "metres, the nominal piece. Jittered 0.45x..1.7x per shard, so a burst "
-                                                "carries two or three big plates and a scatter of smaller stuff rather "
-                                                "than a set of matching parts. 0.17 is about 11 map units against a "
-                                                "barrel 20 across -- a piece, not a fragment." )
-    RT_CVAR( rt_barrel_life,            26.f,   "seconds a piece lasts, jittered 0.75x..1.25x. Long: this is wreckage "
+    RT_CVAR( rt_barrel_size,            0.45f,  "metres, the REFERENCE piece -- not the largest. rt_barrel_size_min and "
+                                                "_max scale off it and _size_bias pulls the draw toward the small end, "
+                                                "so the 3x ceiling is a rare big panel rather than the typical piece. "
+                                                "0.45 m is about 28 map units against a barrel 40 across." )
+    RT_CVAR( rt_barrel_life,            0.f,   "seconds a piece lasts, jittered 0.75x..1.25x.\n"
+                                                "0 MEANS FOREVER, and that is the shipped value -- the same "
+                                                "sentinel rt_arc_burn_life uses, meaning the same thing: "
+                                                "forever is really 'until the pool evicts it'. Wreckage has "
+                                                "no reason to weather on the timescale of a firefight, so what "
+                                                "bounds how much a level accumulates is rt_spark_max and the "
+                                                "evict-within-kind rule, not a clock. At 60 pieces a barrel "
+                                                "against the pinned rt_spark_max 2000, that is about thirty "
+                                                "barrels before the oldest plate gives up its slot.\n"
+                                                "Given a real number instead: this is wreckage "
                                                 "you should still be walking round after the fight, which is the whole "
                                                 "difference between destruction and an effect. The last quarter shrinks "
                                                 "the piece to nothing rather than fading it -- see the note on "
@@ -3410,9 +3504,16 @@
                                                 "spherical throw. At 0 the throw is a full sphere and half the plate "
                                                 "goes straight into the floor where it is never seen; this is what puts "
                                                 "the burst in the air long enough to be read." )
-    RT_CVAR( rt_barrel_albedo,          1.45f,  "brightness of a piece, as a multiplier on the colour it took from "
+    RT_CVAR( rt_barrel_albedo,          0.25f,  "brightness of a piece, as a multiplier on the colour it took from "
                                                 "BAR1A0.\n"
-                                                "ABOVE 1 ON PURPOSE, and this is not a fudge: sprite pixels are already "
+                                                "IT APPLIES TO THE GRIT ONLY. An authored piece takes its colour "
+                                                "straight from its own art, and RTGL1 ignores a primitive colour "
+                                                "entirely once an albedo texture is present, so nothing here can "
+                                                "tint or dim one.\n"
+                                                "It was 1.45, on the reasoning below -- and in a lit room that "
+                                                "put the grit at an albedo near 0.65, which reads as chips of "
+                                                "PAPER lying in the scorch. The reasoning was right and the "
+                                                "number was not: sprite pixels are already "
                                                 "LIT values, and feeding a lit value in as an albedo -- which the path "
                                                 "tracer then lights again -- lands a shade darker than the barrel it "
                                                 "came off.\n"
@@ -3421,7 +3522,7 @@
                                                 "accident of its art. A shard's colour is one entry out of the "
                                                 "barrel's fourteen and the spread between them IS the effect, so it is "
                                                 "scaled rather than pinned." )
-    RT_CVAR( rt_barrel_curve,           0.95f,  "how curved a piece is, in RADIANS of the barrel's cylinder that one "
+    RT_CVAR( rt_barrel_curve,           0.55f,  "how curved a piece is, in RADIANS of the barrel's cylinder that one "
                                                 "plate spans. This is the single knob that separates sheet metal from "
                                                 "card: a flat piece has no bend for a light to travel across, so it "
                                                 "shades uniformly and reads as a painted quad however it is coloured. "
@@ -3441,14 +3542,117 @@
                                                 "mottling, blob count and lifetime are the rt_arc_burn_* group, because "
                                                 "burnt floor is one kind of thing and should not have three sets of "
                                                 "controls that can disagree." )
-    RT_CVAR( rt_barrel_scorch_scale,    5.0f,   "the barrel's scorch, as a multiple of rt_arc_burn_radius. The only "
+    RT_CVAR( rt_barrel_scorch_scale,    3.5f,   "the barrel's scorch, as a multiple of rt_arc_burn_radius. The only "
                                                 "part of the mark that is the barrel's own, because the radius is the "
                                                 "only thing a barrel scorch has that a rocket's does not. Compare "
                                                 "rt_ember_burn_scale (3.4) for the rocket." )
+    RT_CVAR( rt_barrel_ember_scale,     10.f,   "HOW MANY COALS a barrel leaves, as a multiple of rt_ember_count. At "
+                                                "the shipped count of 5 that is 13 -- against a rocket's 5, because a "
+                                                "barrel is a much bigger fire over a much wider scorch and the same "
+                                                "handful of coals spread over it reads as a nearly-empty burn.\n"
+                                                "IT IS A MULTIPLE RATHER THAN ITS OWN COUNT so that everything else "
+                                                "about a coal -- how long it glows, how it flickers, how big it is, "
+                                                "how it smokes -- stays the rt_ember_* group. One kind of thing, one "
+                                                "set of knobs; only the quantity differs.\n"
+                                                "CAPPED AT 24 per mark (RT_ARC_MAX_BRANCH), so past about 4.8 this "
+                                                "stops doing anything at the default count. Raise rt_ember_count if "
+                                                "you want rockets to smoulder harder too -- this knob deliberately "
+                                                "cannot, which is the whole reason it exists." )
+    RT_CVAR( rt_barrel_ember_scatter,   1.4f,   "how far a barrel's coals spread, as a multiple of rt_ember_scatter.\n"
+                                                "Most of the spread is already free: coals scatter across the MARK's "
+                                                "own burn radius, and a barrel's scorch is several times a rocket's. "
+                                                "This is the extra push PAST the char -- coals thrown clear of the "
+                                                "burn rather than sitting inside it, which is what stops fifty of "
+                                                "them reading as one bonfire in the middle." )
+    RT_CVAR( rt_barrel_ember_bright,    1.0f,  "how hard a barrel's UNTEXTURED coals add to the screen, as a "
+                                                "multiple of rt_ember_bright.\n"
+                                                "BELOW 1 BECAUSE THE COUNT WENT UP. The additive peak is per coal, "
+                                                "so fifty coals at the value a rocket's five were judged at is not a "
+                                                "brighter bed of embers -- it is fifty blown-out white squares, which "
+                                                "is exactly what the first run at this count produced. Count and "
+                                                "brightness have to move against each other." )
+    RT_CVAR( rt_barrel_ember_emis,      6.0f,   "how hard a TEXTURED coal glows. Only reaches the textured path: a "
+                                                "coal wearing the ember sheet is opaque traced geometry with an "
+                                                "emissive term, not an additive overlay, so rt_ember_bright -- which "
+                                                "is an alpha on an additive blend -- means nothing to it.\n"
+                                                "WHY IT IS TRACED AT ALL, since additive is how everything else here "
+                                                "glows: an additive primitive is TRANSLUCENT, i.e. rasterized, and "
+                                                "the rasterized path samples the texture PROVIDED through the API -- "
+                                                "which for art on disk is a 1x1 transparent placeholder standing in "
+                                                "for the rt/mat override. Transparent times additive is nothing, and "
+                                                "that is exactly what the first version rendered. The substitution "
+                                                "happens in the MATERIAL system, which only the traced path consults. "
+                                                "Being traced is the better answer anyway: the coals turn up in "
+                                                "reflections, which an overlay never could.\n"
+                                                "Scaled by the mark's own fade, because with an albedo texture "
+                                                "present RTGL1 ignores the primitive colour and there is nowhere else "
+                                                "for the cooling to live." )
+    RT_CVAR( rt_barrel_ember_size,      1.0f,   "size of a barrel's coals, as a multiple of rt_ember_size. A coal "
+                                                "sized for a ROCKET's mark is a speck in a scorch several times as "
+                                                "wide, and at 3 cm on a lit floor an additive dot is invisible. Its "
+                                                "own knob for the same reason the count has one: rockets were judged "
+                                                "at the shared value and should not move." )
+    RT_CVAR( rt_barrel_ember_tex,       0,      "a barrel's coals are drawn with the authored ember sheet at "
+                                                "rt/mat/d64rt/embers/embers.png instead of as flat quads.\n"
+                                                "SHIPPED OFF, and kept rather than deleted. It works -- the "
+                                                "coals stand up as little flames and the art reads -- but "
+                                                "judged in play it did not look better than the plain coals, "
+                                                "so barrels use the rocket's embers at the rocket's size and "
+                                                "differ only in HOW MANY and HOW FAR SPREAD. The path stays "
+                                                "here because the next piece of ember art can switch it back "
+                                                "on with one pin, and because what it cost to get working is "
+                                                "worth not paying twice.\n"
+                                                "IT ONLY WORKS BECAUSE THE ART IS IN BOTH MATERIAL TREES. "
+                                                "developerMode makes RTGL1 read rt/mat_dev in preference to "
+                                                "rt/mat, and a sheet present in only one of them resolves to "
+                                                "the 1x1 transparent placeholder -- which an alpha-tested "
+                                                "quad discards entirely, with no error anywhere. That cost "
+                                                "an afternoon of chasing size, emissive and winding.\n"
+                                                "Ignored when the file is absent.\n"
+                                                "Superseded text follows: it was at "
+                                                "rt/mat/d64rt/embers/embers.png instead of as flat quads. Each coal "
+                                                "takes the WHOLE image with its UVs mirrored at random, so fifty of "
+                                                "them in one scorch are not fifty copies of one shape lying the same "
+                                                "way round.\n"
+                                                "BARRELS ONLY, on purpose. A rocket's five coals were judged and "
+                                                "accepted as flat quads; one switch for both would be exactly the "
+                                                "coupling this system keeps having to undo. If the file is missing, "
+                                                "this silently falls back to the flat quad.\n"
+                                                "No alpha test is involved: the coals are ADDITIVE, so a transparent "
+                                                "texel adds nothing on its own. That is the one place they differ "
+                                                "from the barrel plate, which is opaque and needs the test to have a "
+                                                "shape at all." )
     RT_CVAR( rt_barrel_embers,          1,      "coals still glowing in the scorch, with their thin smoke threads. The "
                                                 "rocket's ember mechanism pointed at the barrel -- so it takes the "
                                                 "whole rt_ember_* group, including rt_ember_smoke, and needs no knobs "
                                                 "of its own. Off leaves a bare scorch." )
+    // RECONSTRUCTED DECLARATIONS. rt_barrel.cpp and rt_sparks.cpp reference
+    // these three, but no committed rt_cvars.inc has ever declared them -- the
+    // barrel work landed mid-edit and the tree did not build. The defaults are
+    // read off the USE SITES (each clamps its own range), not off the author's
+    // intent; correct them if they were meant to be something else.
+    RT_CVAR( rt_barrel_size_min,        0.35f,  "smallest piece, as a multiple of rt_barrel_size." )
+    RT_CVAR( rt_barrel_size_max,        3.0f,   "LARGEST piece, as a multiple of rt_barrel_size. At the shipped 0.45 m "
+                                                "reference that is a 1.35 m panel -- about twice the barrel's own "
+                                                "width, i.e. the whole side of it peeled off and thrown. That is "
+                                                "deliberate and it is only affordable because of the bias below: the "
+                                                "top of this range is RARE, not typical." )
+    RT_CVAR( rt_barrel_size_bias,       2.2f,   "how strongly the size draw is pulled toward the SMALL end. The random "
+                                                "number is raised to this power before it picks a size, so 1 is a flat "
+                                                "range and higher makes big pieces progressively rarer.\n"
+                                                "THIS IS WHAT MAKES THE SPREAD READ. A flat range makes every piece "
+                                                "roughly medium -- the extremes are as likely as the middle, so a "
+                                                "dozen pieces come out a dozen similar sizes and the burst looks like "
+                                                "a set of parts rather than like something that broke. A barrel leaves "
+                                                "one or two big panels and a lot of smaller stuff, which is a long "
+                                                "TAIL and not a wide range." )
+    RT_CVAR( rt_barrel_rest_tilt,       0.60f,  "how far a SETTLED barrel piece tilts off the floor, 0..0.9. "
+                                                "Clamped at the use site: the cap is what stops a plate "
+                                                "standing up like a headstone." )
+    RT_CVAR( rt_barrel_small_frac,      0.40f,  "fraction of barrel pieces that are GRIT rather than plate, "
+                                                "0..1. A piece with no art is always grit regardless." )
+    RT_CVAR( rt_barrel_small_size,      0.38f,  "size of a grit piece as a multiple of rt_barrel_size. "
+                                                "Floored at 0.05 at the use site." )
     RT_CVAR_NOARCH( rt_barrel_debug,    0,      "log every barrel blast: where it was, how many pieces it made, and "
                                                 "whether the distance cull rejected it. The distinction that costs a "
                                                 "session if it is not printed -- 'no barrel was ever detected' and "

@@ -274,7 +274,7 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         .localLightsIntensity = MapLightLevel( rtstate.m_lightlevel ),
     };
 
-    auto makePrimFlags = [ this, &verts ]( bool isUI ) -> RgMeshPrimitiveFlags {
+    auto makePrimFlags = [ this, &verts, &isSpriteBillboard ]( bool isUI ) -> RgMeshPrimitiveFlags {
         if( isUI )
         {
             return RG_MESH_PRIMITIVE_TRANSLUCENT;
@@ -374,6 +374,22 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             }
             // World: keep alpha-test for real masks (fences). Soft-alpha solids were
             // forced opaque at upload time via looksLikeRealMask heuristic.
+        }
+
+        // Doom64-RT: tell RTGL1 this is a BILLBOARD, so the sprite material
+        // dials apply to it instead of the world ones (rt_sprite_pbr and
+        // friends). isSpriteBillboard is already computed above for
+        // rt_sprite_shadow and rt_sprite_ao -- this just lets the shader in on
+        // it, which is what makes a sprite-only switch possible at all.
+        // FirstPerson is in here deliberately. The viewmodel does NOT go through
+        // the billboard branch -- it takes MakeFirstPersonQuadInWorldSpace and
+        // leaves isSpriteBillboard false -- so flagging billboards alone left the
+        // weapon in your hands as the one sprite rt_sprite_pbr could not switch
+        // off. It is a camera-facing quad carrying a sprite's material like any
+        // other, and it is the sprite on screen the most.
+        if( isSpriteBillboard || rtstate.is< RtPrim::FirstPerson >() )
+        {
+            add |= RG_MESH_PRIMITIVE_SPRITE;
         }
 
         return ( alphaTest ? RG_MESH_PRIMITIVE_ALPHA_TESTED : 0 ) | add;

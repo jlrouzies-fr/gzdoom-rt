@@ -60,6 +60,44 @@ QuadBatch s_batchArcBurn;
 
 QuadBatch s_batchSpark;
 
+// ONE BATCH PER PIECE OF BARREL ART. A primitive carries exactly one texture,
+// so this is not a grouping choice the way the debris buckets are -- it is the
+// minimum: four pieces of art is four primitives however few shards are alive.
+QuadBatch s_batchShard[ RT_BARREL_ART_SLOTS ];
+
+// The coals, when they wear the authored ember sheet.
+//
+// OPAQUE AND ALPHA-TESTED, NOT ADDITIVE, and that is not a style choice -- it is
+// the only path where the art exists at all.
+//
+// The first version put them in the additive batch with the texture name on it,
+// which is the obvious thing: a coal glows, additive is how everything else here
+// glows. It rendered NOTHING. The isolation run is what settled it -- with
+// rt_barrel_ember_tex 0 the same fifty coals came back as blazing white squares,
+// so the geometry, the positions and the count were all fine and the TEXTURE was
+// the difference.
+//
+// The reason is the two-path split this file already documents from the other
+// side. An additive primitive is TRANSLUCENT, i.e. a RASTERIZED overlay, and the
+// rasterized path samples the texture that was PROVIDED through
+// rgProvideOriginalTexture -- which for art on disk is the 1x1 transparent
+// placeholder standing in for the rt/mat override. Transparent times additive is
+// nothing. The rt/mat substitution happens in the MATERIAL system, which only
+// the traced path consults; that is exactly why the barrel plate, which is
+// opaque, has worked from its first run.
+//
+// So a textured coal is real traced geometry with an emissive term instead: it
+// glows because the primitive is emissive, not because the blend adds. That is
+// the better answer anyway -- it is in the acceleration structure, so it shows
+// up in reflections, which an overlay never could.
+//
+// ONE PRIMITIVE PER MARK rather than one batch for all of them, because the
+// emissive strength is the only place a coal's COOLING can live once the texture
+// owns its colour: the primitive colour is ignored when an albedo texture is
+// present (HitInfo.inl), so a per-mark emissive scaled by the mark's fade is
+// what makes the bed dim as it dies.
+QuadBatch s_batchEmberArt;
+
 // DEBRIS IS BATCHED BY COLOUR, and that is forced by how RTGL1 shades traced
 // geometry rather than by anything about the effect.
 //
@@ -136,11 +174,13 @@ QuadBatch& DebrisBucketFor( SurfKind k, float r, float g, float b )
     return s_debrisBuckets[ 0 ].batch;
 }
 
-void UploadBatch( const QuadBatch&  b,
-                  uint64_t          meshId,
-                  bool              additive,
-                  const char*       texName,
-                  RgColor4DPacked32 primColor )
+void UploadBatch( const QuadBatch&     b,
+                  uint64_t             meshId,
+                  bool                 additive,
+                  const char*          texName,
+                  RgColor4DPacked32    primColor,
+                  RgMeshPrimitiveFlags extra,
+                  float                emissive )
 {
     if( b.verts.empty() )
     {
@@ -223,8 +263,8 @@ void UploadBatch( const QuadBatch&  b,
         //                       ACCELERATION STRUCTURE -- so debris is real
         //                       ray-traced geometry, lit by the scene, casting
         //                       and receiving shadows, visible in reflections.
-        .flags                = additive ? RG_MESH_PRIMITIVE_TRANSLUCENT
-                                         : RgMeshPrimitiveFlags( 0 ),
+        .flags = RgMeshPrimitiveFlags(
+            ( additive ? RG_MESH_PRIMITIVE_TRANSLUCENT : RgMeshPrimitiveFlags( 0 ) ) | extra ),
         .primitiveIndexInMesh = 0,
         .pVertices            = b.verts.data(),
         .vertexCount          = uint32_t( b.verts.size() ),
@@ -237,8 +277,10 @@ void UploadBatch( const QuadBatch&  b,
         // THE ALBEDO, for the traced batch -- see the note above the buckets.
         // Alpha must stay 1: below 0.98 RTGL1 demotes the primitive to the
         // rasterized overlay and it goes fullbright again.
-        .color        = primColor,
-        .emissive     = additive ? 1.f : 0.f,
+        .color = primColor,
+        // -1 means "whatever this batch's blend implies"; a caller passes a real
+        // value only when it has an _e map to scale.
+        .emissive = emissive >= 0.f ? emissive : ( additive ? 1.f : 0.f ),
         .classicLight = 1.f,
     };
 
@@ -569,8 +611,18 @@ void RT_DrawSparks()
                          float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
                          float( vp.Pos.Z ) * ONEGAMEUNIT_IN_METERS };
 
+    // Scanned and registered here rather than at startup:
+    // rgProvideOriginalTexture wants a live renderer, and this is the only place
+    // that is guaranteed. Runs once and then costs a bool test.
+    ScanShardArt();
+
     s_batchSpark.verts.clear();
     s_batchSpark.idx.clear();
+    for( QuadBatch& sb : s_batchShard )
+    {
+        sb.verts.clear();
+        sb.idx.clear();
+    }
     s_batchDebrisAo.verts.clear();
     s_batchDebrisAo.idx.clear();
     for( int i = 0; i < s_debrisBucketCount; i++ )
@@ -880,9 +932,28 @@ void RT_DrawSparks()
         // rasterized (see the shrink above). rt_spark_bright is meaningless for
         // it either way -- that knob widens an ADDITIVE peak, and debris does
         // not add.
-        // The bucket can only be chosen once the colour is resolved, since the
-        // colour IS the batch key.
-        QuadBatch& batch = isDbr ? DebrisBucketFor( sp.surf, r, g, b ) : s_batchSpark;
+        // WHICH BATCH, and there are now three answers.
+        //
+        // A TEXTURED SHARD goes to its own art's batch and nothing else decides
+        // it: a primitive carries exactly one texture, so the piece of art IS
+        // the batch key, and the colour resolved above is not consulted at all.
+        // HitInfo.inl mixes the primitive colour in only where there is no
+        // albedo texture -- with one present the art wins outright, which is the
+        // whole point of authoring it.
+        //
+        // DEBRIS goes to a colour bucket, and the bucket can only be chosen once
+        // the colour is resolved, since the colour IS its key.
+        // baseRgb 0 on a shard means "wear the authored art"; non-zero means the
+        // spawn chose to make this one small generated grit and handed it a
+        // colour. See the note in SpawnBarrelShards.
+        const int artN  = ShardArtCount();
+        const int artIx = ( isShard && artN > 0 && sp.baseRgb == 0u )
+                              ? int( hash01( sp.sid * 0x27D4EB2Fu ) * float( artN ) ) % artN
+                              : -1;
+
+        QuadBatch& batch = ( artIx >= 0 ) ? s_batchShard[ artIx ]
+                                          : ( isDbr ? DebrisBucketFor( sp.surf, r, g, b )
+                                                    : s_batchSpark );
 
         const float fade = 1.f - t * t;
         const float a    = isDbr ? 1.f : std::clamp( bright * fade, 0.f, 1.f );
@@ -913,12 +984,20 @@ void RT_DrawSparks()
             // So a shard is built in WORLD SPACE, out of three things a torn
             // barrel plate actually has:
             //
+            //   ART.    Its OUTLINE and its colour come from a hand-cut piece of
+            //           the barrel sprite, sampled through the alpha channel --
+            //           see the note in rt_barrel.cpp. The first version
+            //           generated the outline procedurally, from hashed tears
+            //           around a curved strip, and it was reported as "still
+            //           particles / parts you generate yourself, its ugly". It
+            //           was: no tear generator produces charred metal with hot
+            //           orange along the break, because what makes those read is
+            //           that someone drew them.
             //   CURVE.  It is a section of a cylinder, not a plane. The bend is
             //           real geometry with real normals across it, so one edge
             //           catches a light while the other does not -- which is
-            //           what the eye reads as sheet metal rather than as card.
-            //   TEARS.  Both long edges are ragged, at radii hashed from the
-            //           shard's own sid so they are fixed for its life.
+            //           what the eye reads as sheet metal rather than as card,
+            //           and it is the one thing the flat art cannot supply.
             //   TUMBLE. About a WORLD axis, not within the screen plane, so the
             //           plate genuinely presents its edge sometimes. That is
             //           only affordable BECAUSE it is double-sided below.
@@ -928,7 +1007,20 @@ void RT_DrawSparks()
             // out or shade black at exactly the moments the tumble is most
             // legible. Twenty triangles a shard against a dozen shards is
             // nothing next to that.
+            //
+            // WITH NO ART (artIx < 0) this falls back to generating the outline:
+            // hashed tears, palette colour, the version that was replaced. It is
+            // kept because a missing file must degrade to something visible
+            // rather than to an empty room -- and because it is what proves,
+            // when the pieces do not show up, that the problem is the art path
+            // and not the geometry.
             const int segs = std::clamp( int{ cvar::rt_barrel_segs }, 2, 12 );
+
+            // THE ART'S OWN PROPORTIONS. A piece 32x15 renders twice as long as
+            // it is wide, so the outline that was cut is the outline that lands
+            // in the room. Without art, the spawn-time aspect stands in.
+            const float aspect = artIx >= 0 ? ShardArtAspect( artIx )
+                                            : std::max( 0.15f, sp.aspect );
 
             // THE FRAME, in two cases, and the split is what lets a settled
             // shard lie FLAT. While it tumbles the whole frame turns about a
@@ -989,10 +1081,12 @@ void RT_DrawSparks()
 
             const FVector3 ez = nn ^ tt; // the length axis, along the bend's spine
 
-            // Aspect splits one size into a PLATE rather than a lozenge: wide
-            // across the bend, long along it, which is what a stave is.
-            const float W  = half * std::max( 0.15f, sp.aspect );
-            const float Lh = half / std::max( 0.15f, sp.aspect );
+            // rt_barrel_size is the piece's LONG side whichever way round the
+            // art is, so a wide piece and a tall one of the same size setting
+            // are the same size on screen -- otherwise the knob would mean
+            // something different for each of the four.
+            const float W  = aspect >= 1.f ? half : half * aspect;
+            const float Lh = aspect >= 1.f ? half / aspect : half;
 
             // The bend. R is derived so the plate still spans W to either side
             // whatever the arc is, so this knob changes how CURVED a shard is
@@ -1010,14 +1104,32 @@ void RT_DrawSparks()
                 FVector3 vn = nn * std::cos( phi ) + tt * std::sin( phi );
                 vn.MakeUnit();
 
-                // The torn edges. Independent per edge and per station, so no
-                // two shards share an outline and neither edge is straight.
+                // THE OUTLINE. With art the quad stays a clean rectangle and the
+                // ALPHA CHANNEL cuts the shape -- jagging the mesh as well would
+                // chew a bite out of art that is already torn, and hide part of
+                // the drawing. Without art the mesh has to be the outline, so
+                // the edges are pulled in by a per-station hash instead.
+                //
+                // THE RANGE REACHES DOWN TO 0.3, not 0.55. At 0.55 the two edges
+                // never depart far enough from parallel and a piece with an
+                // aspect near 1 comes out a rounded square -- which is exactly
+                // what "just don't make them simple squares" was about. Going
+                // deeper makes a station genuinely pinch, so a fragment can be a
+                // wedge or a sliver rather than a lozenge every time.
                 const float ja =
-                    0.55f + 0.45f * hash01( sp.sid * 2654435761u + uint32_t( k ) * 7919u );
+                    artIx >= 0
+                        ? 1.f
+                        : 0.30f + 0.70f * hash01( sp.sid * 2654435761u + uint32_t( k ) * 7919u );
                 const float jb =
-                    0.55f + 0.45f * hash01( sp.sid * 40503u + uint32_t( k ) * 22695477u + 17u );
+                    artIx >= 0 ? 1.f
+                               : 0.30f + 0.70f * hash01( sp.sid * 40503u +
+                                                         uint32_t( k ) * 22695477u + 17u );
 
                 const RgNormalPacked32 pn = rt.rgUtilPackNormal( vn.X, vn.Y, vn.Z );
+
+                // u runs ACROSS the bend, so the art curves the way a stave
+                // does; v runs along the spine. Both span the full image.
+                const float uu = float( k ) / float( segs );
 
                 const FVector3 pa = mid + ez * ( Lh * ja );
                 const FVector3 pb = mid - ez * ( Lh * jb );
@@ -1025,13 +1137,13 @@ void RT_DrawSparks()
                 batch.verts.push_back( RgPrimitiveVertex{
                     .position     = { pa.X, pa.Y, pa.Z },
                     .normalPacked = pn,
-                    .texCoord     = { float( k ) / float( segs ), 0.f },
+                    .texCoord     = { uu, 0.f },
                     .color        = col,
                 } );
                 batch.verts.push_back( RgPrimitiveVertex{
                     .position     = { pb.X, pb.Y, pb.Z },
                     .normalPacked = pn,
-                    .texCoord     = { float( k ) / float( segs ), 1.f },
+                    .texCoord     = { uu, 1.f },
                     .color        = col,
                 } );
 
@@ -1043,13 +1155,13 @@ void RT_DrawSparks()
                 batch.verts.push_back( RgPrimitiveVertex{
                     .position     = { pa.X, pa.Y, pa.Z },
                     .normalPacked = pn2,
-                    .texCoord     = { float( k ) / float( segs ), 0.f },
+                    .texCoord     = { uu, 0.f },
                     .color        = col,
                 } );
                 batch.verts.push_back( RgPrimitiveVertex{
                     .position     = { pb.X, pb.Y, pb.Z },
                     .normalPacked = pn2,
-                    .texCoord     = { float( k ) / float( segs ), 1.f },
+                    .texCoord     = { uu, 1.f },
                     .color        = col,
                 } );
             }
@@ -1260,10 +1372,16 @@ void RT_DrawSparks()
         const bool  wantGlow = cvar::rt_arc_glow;
 
         const bool  wantEmber   = cvar::rt_ember;
-        const int   emberN      = std::clamp( int{ cvar::rt_ember_count }, 0, RT_ARC_MAX_BRANCH );
+        // NOTE: the ember COUNT is resolved per mark inside the loop, not here.
+        // A barrel's scorch carries more coals than a rocket's and the two can
+        // be alive at once, so it rides the mark. EmberCountFor is the one place
+        // that answers it -- see the note on it.
         const float emberLife   = std::max( 0.05f, float{ cvar::rt_ember_life } );
         const float emberSize   = std::max( 0.002f, float{ cvar::rt_ember_size } );
-        const float emberBright  = std::max( 0.f, float{ cvar::rt_ember_bright } );
+        // Scaled PER MARK below by m.emberBright: fifty coals at the rocket's
+        // brightness is fifty blown-out white squares, because the additive peak
+        // is per coal and raising the count alone turns a bed into a light box.
+        const float emberBrightBase = std::max( 0.f, float{ cvar::rt_ember_bright } );
         const float emberHalo  = std::max( 0.f, float{ cvar::rt_ember_halo } );
         const float emberHaloA = std::clamp( float{ cvar::rt_ember_halo_alpha }, 0.f, 1.f );
         const float emberGlowInt = std::max( 0.f, float{ cvar::rt_ember_glow_intensity } );
@@ -1446,6 +1564,31 @@ void RT_DrawSparks()
 
                     for( int bi = 0; bi < nBlobs; bi++ )
                     {
+                        // ONE DECAL PRIMITIVE PER BLOB, and this is the fix for
+                        // the straight-edged CUTS across the mark.
+                        //
+                        // All nine fans used to go into one primitive. It is
+                        // geometrically sound -- no triangle spans two blobs,
+                        // every fan interpolates only its own vertices -- and it
+                        // is wrong anyway, for a reason this file already
+                        // records twenty lines up in UploadAoBlob: the sprite AO
+                        // did exactly this, produced "lines" reaching away from
+                        // the blobs, and was fixed by uploading one primitive
+                        // per blob. Same batching, same signature, same fix.
+                        //
+                        // A decal is not ordinary geometry: RsDecal.frag keeps a
+                        // fragment only where the traced surface beneath it is
+                        // within a few centimetres, so what a decal primitive
+                        // covers is decided per fragment against the world. Nine
+                        // overlapping fans sharing one primitive share that
+                        // test, and the discard boundary lands as a hard,
+                        // perfectly straight edge through the middle of the
+                        // mark. Reported as "it never looks smoothly spread,
+                        // always breaks" -- and the breaks are straight because
+                        // a plane intersecting a plane is a line.
+                        s_batchArcBurn.verts.clear();
+                        s_batchArcBurn.idx.clear();
+
                         const uint32_t bs = m.seed + uint32_t( bi ) * 2654435761u;
 
                         // Blob 0 is the mark itself, centred and full size. The
@@ -1515,40 +1658,138 @@ void RT_DrawSparks()
                         float aMul = primary ? 1.f : ( 0.80f + 0.20f * hash01( bs * 69069u ) );
                         if( burnMottle > 0.f )
                         {
-                            const float pick = hash01( bs * 2246822519u );
                             const float jit  = hash01( bs * 374761393u );
                             const float grey = 0.2126f * vr + 0.7152f * vg + 0.0722f * vb;
 
-                            // The mix. Mottle scales how far from "all base" it
-                            // goes, so 0 still means one flat colour everywhere.
-                            const float pSoot = 0.42f * burnMottle;
-                            const float pAsh  = 0.30f * burnMottle;
+                            // KIND BY RADIUS, NOT BY COIN FLIP, and this is the
+                            // correction that made it read as a burn.
+                            //
+                            // The kind used to be a hash: a blob was char, ash
+                            // or scorch at random wherever it sat. That scatters
+                            // brown patches through the middle of the mark and
+                            // black ones out at the rim, which is backwards --
+                            // and averaged over nine overlapping blobs it comes
+                            // out as one muddy brown everywhere, which is
+                            // exactly what "still not black enough" was looking
+                            // at.
+                            //
+                            // A real blast is not random about this. The core
+                            // sat in the heat and CARBONISED -- black, then soot
+                            // grey around it. Only the outskirts merely got hot
+                            // enough to BROWN the surface. So distance from the
+                            // mark's centre picks the kind, and the black and
+                            // grey now own most of the disc with brown confined
+                            // to the edge.
+                            //
+                            // The hash is still in it, as a wobble on the
+                            // threshold rather than the choice itself -- without
+                            // that the three zones would be clean concentric
+                            // rings, which reads as a target rather than as
+                            // damage.
+                            const float rad01 =
+                                std::clamp( boff / std::max( 1e-4f, 0.55f * mBurnRad ), 0.f, 1.f );
+                            const float pick =
+                                std::clamp( rad01 + ( hash01( bs * 2246822519u ) - 0.5f ) * 0.30f,
+                                            0.f,
+                                            1.f );
 
-                            float sat = 1.f;
-                            float mul = 1.f;
+                            // Where the zones sit. Mottle scales how far from
+                            // "all base" it goes, so 0 still means one flat
+                            // colour everywhere -- at 0 both thresholds reach 1
+                            // and every blob is char.
+                            const float pSoot = 1.f - 0.64f * burnMottle;
+                            const float pAsh  = 0.43f * burnMottle;
+
+                            // EACH KIND GETS ITS OWN COLOUR, not a multiplier on
+                            // one base -- and that swap is the whole fix for
+                            // "still too unicolor".
+                            //
+                            // The three kinds used to be sat/brightness knobs
+                            // applied to rt_arc_burn_color. That colour is
+                            // 0x0A0807: an albedo of about 0.035. Multiplying it
+                            // by anything in a 0.1..1.4 range lands every kind
+                            // between 0.004 and 0.05 -- so "char", "ash" and
+                            // "scorch" were three names for three shades of
+                            // black, and six overlapping shades of black average
+                            // back to black. The names were right and the maths
+                            // could never deliver them, because you cannot
+                            // saturate your way to brown from something that has
+                            // no brown in it.
+                            //
+                            // So ash and scorch are real destinations now, and
+                            // rt_arc_burn_color stays the CHAR anchor, which is
+                            // what it always meant. rt_arc_burn_spread says how
+                            // far the other two travel from it, so the whole
+                            // range still collapses to one colour at 0.
+                            const float spread =
+                                std::clamp( float{ cvar::rt_arc_burn_spread }, 0.f, 1.f );
+
+                            // ALL THREE ARE DERIVED FROM rt_arc_burn_color, not
+                            // hardcoded beside it, and that is what makes the
+                            // knob mean something.
+                            //
+                            // They were absolute colours for one round, and the
+                            // moment the base moved from 3.5% to 15% the fixed
+                            // ash and scorch (10% and 8%) became DARKER than the
+                            // char they were supposed to sit above -- the ladder
+                            // silently inverted and the core stopped being the
+                            // dark part. Anchoring them to the base means the
+                            // order survives any colour: char is the base
+                            // pushed down, ash is the base drained of hue and
+                            // lifted, scorch is the base warmed. Pick black and
+                            // the whole mark is black; pick dark brown and the
+                            // core is still the darkest thing in it.
+                            //
+                            // A BURN IS NEVER LIGHTER THAN WHAT IT BURNED, and
+                            // the first attempt at these was: ash at 0.42 and
+                            // scorch at 0.29 turned the mark into a pale tan
+                            // blob standing out BRIGHTER than the wall. "Ash is
+                            // light" is true of a cold fireplace and false of a
+                            // scorch on a dark wall -- what matters is that the
+                            // three read as different from EACH OTHER while all
+                            // three stay darker than the surface. So the ladder
+                            // below is black -> soot grey -> dark umber, and the
+                            // whole of it sits under the wall's own value.
+                            //
+                            // Ash: soot grey. Lighter than char, hueless.
+                            const float kAshR = grey * 1.35f;
+                            const float kAshG = grey * 1.32f;
+                            const float kAshB = grey * 1.28f;
+                            // Scorch: burnt umber. Where the heat browned the
+                            // surface rather than carbonising it.
+                            const float kScoR = std::min( 1.f, vr * 1.30f );
+                            const float kScoG = vg * 0.92f;
+                            const float kScoB = vb * 0.62f;
+
+                            float tr = vr, tg = vg, tb = vb;
+
                             if( pick < pSoot )
                             {
-                                // CHAR. Near black and almost hueless -- this is
-                                // the part that was missing.
-                                mul = 0.10f + 0.18f * jit;
-                                sat = 0.25f;
+                                // CHAR. The base, pushed darker still.
+                                const float mul = 0.22f + 0.45f * jit;
+                                tr = vr * mul;
+                                tg = vg * mul;
+                                tb = vb * mul;
                             }
                             else if( pick < pSoot + pAsh )
                             {
-                                // ASH. Grey: the hue is gone but it is not dark.
-                                mul = 0.85f + 0.55f * jit;
-                                sat = 0.05f;
+                                const float mul = 0.70f + 0.60f * jit;
+                                tr = ( vr + ( kAshR - vr ) * spread ) * mul;
+                                tg = ( vg + ( kAshG - vg ) * spread ) * mul;
+                                tb = ( vb + ( kAshB - vb ) * spread ) * mul;
                             }
                             else
                             {
-                                // SCORCH. The base colour, lightly varied.
-                                mul = 0.70f + 0.55f * jit;
-                                sat = 1.f;
+                                const float mul = 0.70f + 0.60f * jit;
+                                tr = ( vr + ( kScoR - vr ) * spread ) * mul;
+                                tg = ( vg + ( kScoG - vg ) * spread ) * mul;
+                                tb = ( vb + ( kScoB - vb ) * spread ) * mul;
                             }
 
-                            vr = std::clamp( ( grey + ( vr - grey ) * sat ) * mul, 0.f, 1.f );
-                            vg = std::clamp( ( grey + ( vg - grey ) * sat ) * mul, 0.f, 1.f );
-                            vb = std::clamp( ( grey + ( vb - grey ) * sat ) * mul, 0.f, 1.f );
+                            (void)grey;
+                            vr = std::clamp( tr, 0.f, 1.f );
+                            vg = std::clamp( tg, 0.f, 1.f );
+                            vb = std::clamp( tb, 0.f, 1.f );
                         }
 
                         const float av = std::clamp( burnStr * bfade * aMul, 0.f, 1.f );
@@ -1597,14 +1838,24 @@ void RT_DrawSparks()
                             s_batchArcBurn.idx.push_back(
                                 base + 1 + uint32_t( ( k + 1 ) % kBurnSegs ) );
                         }
+
+                        // The blob's own primitive. The id has to be unique
+                        // across every blob of every live mark, so the mark's
+                        // uid is strided by the blob ceiling -- RTGL1 keeps one
+                        // upload per id and it is the LATER one that loses, so a
+                        // collision would silently delete a blob rather than
+                        // misplace it.
+                        UploadAoBlob( s_batchArcBurn,
+                                      RT_ARC_BURN_MESH_ID +
+                                          uint64_t( m.uid % 4096u ) * 8ull + uint64_t( bi ) );
                     }
 
-                    // ONE PRIMITIVE PER SCORCH, keyed on the mark's uid rather
-                    // than on a running counter. RTGL1 keeps one upload per ID
-                    // and it is the LATER one that loses, so a counter -- which
-                    // renumbers every mark whenever an older one is evicted --
-                    // would make scorches swap places. Pitfall 34.
-                    UploadAoBlob( s_batchArcBurn, RT_ARC_BURN_MESH_ID + uint64_t( m.uid % 4096u ) );
+                    // Each blob uploaded itself above. The ids are keyed on the
+                    // mark's uid rather than on a running counter: RTGL1 keeps
+                    // one upload per id and it is the LATER one that loses, so a
+                    // counter -- which renumbers every mark whenever an older
+                    // one is evicted -- would make scorches swap places.
+                    // Pitfall 34.
                     burnEmitted++;
                 }
             }
@@ -1621,12 +1872,15 @@ void RT_DrawSparks()
             // amount of gravity, drag or bounce tuning turns one into the other.
             //
             // Small, few, and stationary. The count is single digits by design.
+            const int emberN = EmberCountFor( m );
+
             if( m.fx == ImpactFx::Ember && wantEmber && emberN > 0 )
             {
                 const float et = std::clamp( m.age / emberLife, 0.f, 1.f );
                 if( et < 1.f )
                 {
-                    const float efade = ( 1.f - et ) * ( 1.f - et );
+                    const float efade       = ( 1.f - et ) * ( 1.f - et );
+                    const float emberBright = emberBrightBase * m.emberBright;
 
                     // The cooling colour, interpolated across MISL's own ten
                     // entries. Not quantized: an ember is watched for seconds,
@@ -1653,6 +1907,12 @@ void RT_DrawSparks()
                     const RgNormalPacked32 en =
                         rt.rgUtilPackNormal( m.nrm.X, m.nrm.Y, m.nrm.Z );
 
+                    // The textured coals accumulate here and are uploaded as ONE
+                    // traced primitive once this mark's loop is done. Cleared
+                    // per mark, not per frame -- see the note on the batch.
+                    s_batchEmberArt.verts.clear();
+                    s_batchEmberArt.idx.clear();
+
                     for( int e = 0; e < emberN; e++ )
                     {
                         // Each ember its own size and its own slightly offset
@@ -1660,7 +1920,9 @@ void RT_DrawSparks()
                         // a handful of spots fading in perfect unison is the
                         // tell that they are one object rather than several.
                         const uint32_t eh = m.seed + 0x9E3779B9u + uint32_t( e ) * 40503u;
-                        const float    sz = emberSize * ( 0.6f + 0.8f * hash01( eh ) );
+                        // PER MARK, like the count: a coal sized for a rocket's
+                        // mark is a speck in a scorch several times as wide.
+                        const float sz = emberSize * m.emberSize * ( 0.6f + 0.8f * hash01( eh ) );
 
                         // EMBERS BREATHE. A real coal does not cool smoothly --
                         // it pulses as the draught over it changes, brightening
@@ -1712,31 +1974,129 @@ void RT_DrawSparks()
                         // camera-facing quad would stay a full disc at grazing
                         // angles and give away that nothing is really on the
                         // surface.
-                        const float    szp = sz * ( 0.92f + 0.08f * pulse );
-                        const FVector3 ex  = m.tan * szp;
-                        const FVector3 ey  = m.bit * szp;
+                        const float szp = sz * ( 0.92f + 0.08f * pulse );
+
+                        // ART OR A FLAT QUAD, decided per MARK. A barrel's coals
+                        // wear the authored ember sheet; a rocket's five stay the
+                        // flat quad they were accepted as. One switch for both
+                        // would be the coupling this file keeps having to undo.
+                        //
+                        // Both go into an ADDITIVE batch, so nothing here needs
+                        // an alpha test: transparent texels multiply the
+                        // contribution to zero and add nothing. That is the one
+                        // real difference from the plate, which is opaque and
+                        // does need ALPHA_TESTED to get a shape at all.
+                        const bool  useArt = m.emberArt && EmberArtName() != nullptr;
+                        QuadBatch&  eb_    = useArt ? s_batchEmberArt : s_batchSpark;
+
+                        // The sheet is taller than it is wide, and squashing it
+                        // into a square would be the one thing that makes hand-
+                        // drawn art look procedural again.
+                        const float ea = useArt ? EmberArtAspect() : 1.f;
+
+                        FVector3 ex, ey, cc = c;
+
+                        if( useArt )
+                        {
+                            // IT STANDS UP, and this is what made the textured
+                            // coals visible at all.
+                            //
+                            // An untextured coal is IN THE SURFACE PLANE on
+                            // purpose -- it is a hot spot burnt into the wall,
+                            // and a camera-facing disc would stay a full circle
+                            // at grazing angles and give away that nothing is
+                            // really on the surface. That reasoning is right for
+                            // a burn mark and wrong for this art, which is not a
+                            // burn mark: it is FLAME. Lying flat, a 7 cm quad
+                            // seen from standing height projects to a two-pixel
+                            // sliver, which is why three isolation runs looked
+                            // identical to the eye while a pixel diff proved the
+                            // size knob was moving three thousand of them.
+                            //
+                            // So a textured coal is a billboard standing ON the
+                            // surface: vertical, turned to face the camera about
+                            // that vertical. Which is how every fire sprite in
+                            // the game works, and for the same reason.
+                            FVector3 sideways = right - FVector3{ 0, 0, 1 } * right.Z;
+                            if( sideways.LengthSquared() < 1e-6f )
+                            {
+                                sideways = FVector3{ 1, 0, 0 };
+                            }
+                            sideways.MakeUnit();
+
+                            ex = sideways * ( szp * ea );
+                            ey = FVector3{ 0, 0, 1 } * szp;
+                            // Its FOOT sits on the surface rather than its
+                            // middle, or half the flame is under the floor.
+                            cc = c + FVector3{ 0, 0, 1 } * szp;
+                        }
+                        else
+                        {
+                            ex = m.tan * ( ea >= 1.f ? szp : szp * ea );
+                            ey = m.bit * ( ea >= 1.f ? szp / ea : szp );
+                        }
 
                         const FVector3 cr[ 4 ] = {
-                            c - ex - ey, c + ex - ey, c + ex + ey, c - ex + ey
+                            cc - ex - ey, cc + ex - ey, cc + ex + ey, cc - ex + ey
                         };
-                        const float uv[ 4 ][ 2 ] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 
-                        const uint32_t base = uint32_t( s_batchSpark.verts.size() );
+                        // FLIPPED PER COAL. Fifty coals off one sheet would
+                        // otherwise be fifty copies of one shape lying in the
+                        // same orientation, which reads as a stamp rather than
+                        // as fire. Two hashed bits: mirror in u, mirror in v.
+                        const bool fu = useArt && hash01( m.seed + uint32_t( e ) * 2654435761u ) > 0.5f;
+                        const bool fv = useArt && hash01( m.seed + uint32_t( e ) * 40503u + 7u ) > 0.5f;
+
+                        float uv[ 4 ][ 2 ] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
                         for( int k = 0; k < 4; k++ )
                         {
-                            s_batchSpark.verts.push_back( RgPrimitiveVertex{
+                            if( fu ) uv[ k ][ 0 ] = 1.f - uv[ k ][ 0 ];
+                            if( fv ) uv[ k ][ 1 ] = 1.f - uv[ k ][ 1 ];
+                        }
+
+                        const uint32_t base = uint32_t( eb_.verts.size() );
+                        for( int k = 0; k < 4; k++ )
+                        {
+                            eb_.verts.push_back( RgPrimitiveVertex{
                                 .position     = { cr[ k ].X, cr[ k ].Y, cr[ k ].Z },
                                 .normalPacked = en,
                                 .texCoord     = { uv[ k ][ 0 ], uv[ k ][ 1 ] },
                                 .color        = ec,
                             } );
                         }
-                        s_batchSpark.idx.push_back( base );
-                        s_batchSpark.idx.push_back( base + 1 );
-                        s_batchSpark.idx.push_back( base + 2 );
-                        s_batchSpark.idx.push_back( base );
-                        s_batchSpark.idx.push_back( base + 2 );
-                        s_batchSpark.idx.push_back( base + 3 );
+                        eb_.idx.push_back( base );
+                        eb_.idx.push_back( base + 1 );
+                        eb_.idx.push_back( base + 2 );
+                        eb_.idx.push_back( base );
+                        eb_.idx.push_back( base + 2 );
+                        eb_.idx.push_back( base + 3 );
+
+                        // BOTH WINDINGS FOR THE TEXTURED COAL, and this is the
+                        // whole reason it rendered nothing.
+                        //
+                        // The winding here comes out of tan/bitangent, which are
+                        // derived from the surface normal and may face either
+                        // way round the mark. That never mattered while a coal
+                        // was ADDITIVE, because the rasterized overlay does not
+                        // cull; the moment it became traced geometry a
+                        // back-facing quad simply vanished. Three isolation runs
+                        // at different sizes and emissive strengths came back
+                        // PIXEL-IDENTICAL, which is what ruled out every value
+                        // and pointed at the geometry.
+                        //
+                        // Two more triangles rather than reasoning about the
+                        // sign: the shard path reached the same conclusion for
+                        // the same reason, and a coal seen from its back should
+                        // be a coal either way.
+                        if( useArt )
+                        {
+                            eb_.idx.push_back( base );
+                            eb_.idx.push_back( base + 2 );
+                            eb_.idx.push_back( base + 1 );
+                            eb_.idx.push_back( base );
+                            eb_.idx.push_back( base + 3 );
+                            eb_.idx.push_back( base + 2 );
+                        }
                         s_dbgQuads++;
 
                         // THE HALO, and it is standing in for something the
@@ -1826,11 +2186,40 @@ void RT_DrawSparks()
                                 // embers ride the branch half -- an ember mark
                                 // never draws branches, so the two can never be
                                 // alive on the same mark and cannot collide.
+                                //
+                                // THE STRIDE IS THE EMBER CAP, NOT THE BRANCH
+                                // ONE, and this was a live bug the moment coals
+                                // stopped borrowing the branch ceiling. With a
+                                // stride of 2 * 24 and up to 96 coals, mark N's
+                                // ember ids ran straight through mark N+1's
+                                // whole range -- so a barrel's fiftieth coal and
+                                // a nearby ROCKET's first claimed the same light
+                                // id. RTGL1 keeps one light per id, so one of
+                                // them silently lost its glow, and which one
+                                // depended on upload order. Widening the stride
+                                // to the largest thing that can hang off a mark
+                                // makes the ranges disjoint by construction.
                                 ArcGlowId_Base +
-                                    uint64_t( m.uid ) * uint64_t( RT_ARC_MAX_BRANCH * 2 ) +
+                                    uint64_t( m.uid ) *
+                                        uint64_t( RT_ARC_MAX_BRANCH * 2 + RT_ARC_MAX_EMBER ) +
                                     uint64_t( e ),
                             } );
                         }
+                    }
+
+                    // THE TEXTURED COALS, one traced primitive for this mark.
+                    // The emissive term carries the whole bed's cooling, because
+                    // with an albedo texture present RTGL1 ignores the primitive
+                    // colour and there is nowhere else for a fade to live.
+                    if( !s_batchEmberArt.verts.empty() )
+                    {
+                        UploadBatch( s_batchEmberArt,
+                                     RT_EMBER_ART_MESH_ID + uint64_t( ai ),
+                                     /*additive=*/false,
+                                     EmberArtName(),
+                                     RG_PACKED_COLOR_WHITE,
+                                     RG_MESH_PRIMITIVE_ALPHA_TESTED,
+                                     std::max( 0.f, float{ cvar::rt_barrel_ember_emis } ) * efade );
                     }
                 }
             }
@@ -2074,7 +2463,7 @@ void RT_DrawSparks()
                         // overlapping -- and an overlap here is silent, since
                         // RTGL1 simply keeps one upload per ID.
                         ArcGlowId_Base +
-                            uint64_t( m.uid ) * uint64_t( RT_ARC_MAX_BRANCH * 2 ) +
+                            uint64_t( m.uid ) * uint64_t( RT_ARC_MAX_BRANCH * 2 + RT_ARC_MAX_EMBER ) +
                             uint64_t( b ),
                     } );
                 }
@@ -2168,7 +2557,7 @@ void RT_DrawSparks()
                         // keeping one of the pair and silently dropping the
                         // other, with no error anywhere.
                         ArcGlowId_Base +
-                            uint64_t( m.uid ) * uint64_t( RT_ARC_MAX_BRANCH * 2 ) +
+                            uint64_t( m.uid ) * uint64_t( RT_ARC_MAX_BRANCH * 2 + RT_ARC_MAX_EMBER ) +
                             uint64_t( RT_ARC_MAX_BRANCH ) + uint64_t( c ),
                     } );
                 }
@@ -2228,6 +2617,20 @@ void RT_DrawSparks()
     }
 
     UploadBatch( s_batchSpark, RT_SPARK_MESH_ID, true, nullptr, RG_PACKED_COLOR_WHITE );
+
+    // THE BARREL PLATE. ALPHA_TESTED is what makes the cut-out a shape rather
+    // than the rectangle its art sits in; WHITE because with an albedo texture
+    // present RTGL1 ignores the primitive colour entirely (HitInfo.inl), so the
+    // art is the whole of the look and nothing here can tint it.
+    for( int i = 0; i < ShardArtCount() && i < RT_BARREL_ART_SLOTS; i++ )
+    {
+        UploadBatch( s_batchShard[ i ],
+                     RT_SHARD_MESH_ID + uint64_t( i ),
+                     false,
+                     ShardArtName( i ),
+                     RG_PACKED_COLOR_WHITE,
+                     RG_MESH_PRIMITIVE_ALPHA_TESTED );
+    }
 
     for( int i = 0; i < s_debrisBucketCount; i++ )
     {
