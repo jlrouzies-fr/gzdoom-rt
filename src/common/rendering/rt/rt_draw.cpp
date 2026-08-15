@@ -1032,7 +1032,42 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     auto l_lampglow = [ & ]() -> std::pair< RgMeshPrimitiveFlags, float > {
         if( isUI || !cvar::rt_ceiling_bulb_noemis || !rtstate.is< RtPrim::LatticeLitFlat >() )
         {
-            return { RgMeshPrimitiveFlags( 0 ), l_worldemissive() };
+            const float we = l_worldemissive();
+
+            // SECTOR SELF-EMISSION HAS TO CLAIM THE SAME FLAG, or a texture that
+            // merely OWNS a textures.json entry loses it.
+            //
+            // TextureMeta.cpp does, unless the flag is set:
+            //     prim.emissive = std::max( 0.0f, meta->emissiveMult );
+            // and JsonParser.h defaults emissiveMult to 0.0f. So an entry that says
+            // nothing whatsoever about emission -- a metallicDefault/roughnessDefault
+            // PBR label, say -- still overwrites whatever we computed here with ZERO.
+            //
+            // rt_sector_emis was therefore resting on the ABSENCE of a meta entry.
+            // The metal/roughness labelling passes (e1c8944, then 8976584 across 898
+            // textures) removed that absence, and every painted light feature sitting
+            // on a labelled texture went dark at once -- 2091 of 3015 entries carry no
+            // emissiveMult. MAP02's red corridor panels are the case rt_sector_emis
+            // was written for and they are in that set.
+            //
+            // It is silent by construction: gzdoom computes and sends the right
+            // number, so `whatsthat` still says SELF-EMITS and rt_tex_probe still
+            // prints sector_emis=0.350. Both are telling the truth; the value simply
+            // does not survive the next call. Do not trust either as evidence that
+            // the emission reached the screen.
+            //
+            // ONLY the sector ramp is claimed. l_worldemissive() also returns
+            // rt_emis_additive_dflt for l_isemis() surfaces, and those MUST keep
+            // deferring to the material -- an SMON panel's authored emissiveMult 2.8
+            // would otherwise be replaced by 0.15 and the monitors would go dim. That
+            // is the same "one owner per value" mistake in the other direction.
+            const bool fromSectorRamp = !l_isemis() && forceWorldWhiteRgb && we > 0.f;
+
+            if( fromSectorRamp && bool{ cvar::rt_sector_emis_override } )
+            {
+                return { RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE, we };
+            }
+            return { RgMeshPrimitiveFlags( 0 ), we };
         }
         return { RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE,
                  std::max( 0.f, float{ cvar::rt_ceiling_bulb_emis } ) };
