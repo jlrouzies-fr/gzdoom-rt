@@ -31,3 +31,6 @@
 /build_vc2019-64
 /build_vc2019-32
 /build__
+
+# Backup of the stock application icon, kept by tools/make_app_icon.py --revert
+*.pre_d64rt

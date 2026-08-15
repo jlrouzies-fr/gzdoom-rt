@@ -543,7 +543,15 @@ class Actor : Thinker native
 	}
 
 	// This is called when a missile bounces off something.
-	virtual int SpecialBounceHit(Actor bounceMobj, Line bounceLine, SecPlane bouncePlane)
+	// bouncePlane is readonly<SecPlane> to match released GZDoom 4.11. This fork
+	// branched at g4.11pre-712, before that parameter was made read-only, so a mod
+	// written against 4.11.0 fails to bind with "Attempt to override non-existent
+	// virtual function SpecialBounceHit" -- the signature differs, the name does
+	// not. Doom 64: Unseen Evil hits this in zscript/d64ue/enemies/zebron.zsc:171.
+	// Safe to change here: nothing in gzdoom.pk3, Retribution or any d64r-*.pk3
+	// overrides this virtual, and the native caller (AActor::SpecialBounceHit in
+	// p_mobj.cpp) dispatches via IFVIRTUAL and passes secplane_t* either way.
+	virtual int SpecialBounceHit(Actor bounceMobj, Line bounceLine, readonly<SecPlane> bouncePlane)
 	{
 		return MHIT_DEFAULT;
 	}

@@ -312,10 +312,21 @@ static void CreateGameInfoStatusBar(bool &shouldWarn)
 	}
 	else
 	{
-		extern void RT_ShowWarningMessageBox(const char*);
-		RT_ShowWarningMessageBox((
-			FString{ "Found non-Doom HUD, expect INCOMPATIBILITIES.\ngameinfo.statusbarclass=" } +
-			FString{ gameinfo.statusbarclass.GetChars() }).GetChars());
+		// Printf, NOT RT_ShowWarningMessageBox. This is informational -- a mod with
+		// its own HUD may or may not have a problem -- but as a modal box it HALTS
+		// STARTUP until somebody clicks it, which makes every such mod impossible to
+		// launch unattended from tools\*.cmd. Doom 64: Unseen Evil trips it with
+		// statusbarclass=D64UE_StatusBar and simply sits there.
+		//
+		// Retribution is unaffected either way: it uses DoomStatusBar, so it takes
+		// the branch above and never reached this.
+		//
+		// The text is unchanged and still lands in the console and the logfile, so
+		// nothing is lost except the block -- the same reasoning as the RTGL
+		// severity rule (use Warning/Printf, never something that stops the game).
+		Printf(TEXTCOLOR_YELLOW
+			"Found non-Doom HUD, expect INCOMPATIBILITIES. gameinfo.statusbarclass=%s\n",
+			gameinfo.statusbarclass.GetChars());
 	}
 #endif
 	auto cls = PClass::FindClass(gameinfo.statusbarclass);
