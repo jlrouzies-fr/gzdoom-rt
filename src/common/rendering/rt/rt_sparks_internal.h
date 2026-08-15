@@ -122,6 +122,24 @@ constexpr uint32_t RT_EMBER_RAMP[] = {
 };
 constexpr int RT_EMBER_RAMP_N = int( std::size( RT_EMBER_RAMP ) );
 
+// THE UNMAKER, from LPUFA0-C0 -- the laser's own impact puff, sampled the same
+// way every other ramp here was.
+//
+// It needed no correction whatever: the sprite is already a pure red ladder from
+// a hot orange-red down to a dark oxblood, with no yellow at the top and no
+// brown at the bottom. That is what separates it at a glance from the rocket's
+// MISL ramp, which passes through yellow and ends in soot -- a laser burn glows
+// red and stays red as it cools, and the artist had already said so.
+//
+// Ten entries, like the ember ramp and for the same reason: this is watched for
+// ten seconds, and banding nobody can see on a five-frame spark is very visible
+// on something held still on a wall.
+constexpr uint32_t RT_LASER_RAMP[] = {
+    0xFF4A10, 0xD63100, 0xC73305, 0xAD2900, 0x8B0000,
+    0x7B2100, 0x631800, 0x521800, 0x420800, 0x291000,
+};
+constexpr int RT_LASER_RAMP_N = int( std::size( RT_LASER_RAMP ) );
+
 // ---------------------------------------------------------------------------
 // THE BARREL, and the first thing to say about it is that the obvious guess was
 // wrong. An exploding-barrel chunk was designed as "green metal with a rust
@@ -249,6 +267,9 @@ enum class ArcFlavor : uint8_t
     Plasma, // the player's plasma rifle
     Arach,  // the arachnotron's, which has its own palette
     BFG,
+    // The Unmaker's laser. Its own palette, sampled from LPUFA0-C0, and unlike
+    // every other flavour here it never draws filigree -- see ImpactFx::Laser.
+    Unmaker,
     COUNT,
 };
 
@@ -258,7 +279,24 @@ enum class ImpactFx : uint8_t
 {
     Arc,   // electric filigree on the wall: plasma, BFG
     Ember, // a scorch with a few coals still glowing in it: the rocket
+    // THE UNMAKER: one red-hot spot glowing on the wall, a small churn around
+    // it, one thread of smoke, gone in ten seconds.
+    //
+    // Mechanically it IS an ember mark with a single coal instead of ten -- same
+    // hot spot, same cooling curve, same wisp emitter -- and sharing that is the
+    // point rather than a shortcut: a laser burn and a rocket coal are the same
+    // physical thing at different scales. What differs is the PALETTE it cools
+    // through and how long it takes, and both of those are carried per mark.
+    Laser,
 };
+
+// Does this kind of mark carry glowing spots at all? Written out because the
+// test appears in the draw AND in the smoke, and a new fx that silently fails
+// one of them is how an effect ends up half-built with no error anywhere.
+inline bool FxHasEmbers( ImpactFx f )
+{
+    return f == ImpactFx::Ember || f == ImpactFx::Laser;
+}
 
 struct ArcStyle
 {
@@ -432,6 +470,22 @@ struct ArcMark
     // radius, and a barrel's scorch is several times a rocket's -- so this is
     // the extra push past the char, for coals thrown clear of the burn.
     float     emberScatter;
+    // SECONDS, absolute; 0 means "use rt_ember_life". The Unmaker's burn cools
+    // over its own ten seconds and a rocket's coals over theirs, and tuning one
+    // must not move the other.
+    float     emberLife;
+    // HOW FAR THE SPOT'S LIGHT REACHES, absolute; 0 means "use
+    // rt_ember_glow_intensity". Intensity IS the reach for these -- see that
+    // cvar's note, the radius is the emitter SIZE and not its range -- and a
+    // rocket coal is one of ten seen at arm's length while a laser burn is a
+    // single mark that should light the wall from across the room.
+    float     emberGlow;
+    // The filigree's size multiplier, RESOLVED AT SPAWN from the flavour's
+    // style row -- except the Unmaker, which takes it from a cvar so "very
+    // small" is dialable without a rebuild. Read instead of ArcStyleFor's own
+    // scale at draw time, because two marks of different weapons can be alive
+    // at once and the style table is not per mark.
+    float     arcScale;
 };
 
 extern std::array< ArcMark, RT_ARC_MARK_MAX > s_arcs;
@@ -455,7 +509,9 @@ void SpawnArcMark( const FVector3& at,
                    bool            emberArt    = false,
                    float           emberSize    = 1.f,
                    float           emberBright  = 1.f,
-                   float           emberScatter = 1.f );
+                   float           emberScatter = 1.f,
+                   float           emberLife    = 0.f,
+                   float           emberGlow    = 0.f );
 
 // HOW MANY COALS THIS MARK HAS. Shared by the draw and the smoke so the two
 // agree BY CONSTRUCTION rather than by both being handed the same expression --

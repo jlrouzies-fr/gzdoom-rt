@@ -1355,7 +1355,7 @@ void RT_DrawSparks()
         const float flkR  = std::max( 0.f, float{ cvar::rt_arc_flicker_rate } );
         const float coreR = std::max( 0.f, float{ cvar::rt_arc_core } );
         const float forkP = std::clamp( float{ cvar::rt_arc_fork }, 0.f, 1.f );
-        const float abr   = std::max( 0.f, float{ cvar::rt_arc_bright } );
+        const float abrBase = std::max( 0.f, float{ cvar::rt_arc_bright } );
         const float churn = std::max( 0.f, float{ cvar::rt_arc_churn } );
         const float crReach = std::max( 0.f, float{ cvar::rt_arc_creep_reach } );
         const float arcLife = std::max( 0.05f, float{ cvar::rt_arc_life } );
@@ -1376,7 +1376,8 @@ void RT_DrawSparks()
         // A barrel's scorch carries more coals than a rocket's and the two can
         // be alive at once, so it rides the mark. EmberCountFor is the one place
         // that answers it -- see the note on it.
-        const float emberLife   = std::max( 0.05f, float{ cvar::rt_ember_life } );
+        // Scaled PER MARK below: a laser burn cools on its own clock.
+        const float emberLifeBase = std::max( 0.05f, float{ cvar::rt_ember_life } );
         const float emberSize   = std::max( 0.002f, float{ cvar::rt_ember_size } );
         // Scaled PER MARK below by m.emberBright: fifty coals at the rocket's
         // brightness is fifty blown-out white squares, because the additive peak
@@ -1384,7 +1385,7 @@ void RT_DrawSparks()
         const float emberBrightBase = std::max( 0.f, float{ cvar::rt_ember_bright } );
         const float emberHalo  = std::max( 0.f, float{ cvar::rt_ember_halo } );
         const float emberHaloA = std::clamp( float{ cvar::rt_ember_halo_alpha }, 0.f, 1.f );
-        const float emberGlowInt = std::max( 0.f, float{ cvar::rt_ember_glow_intensity } );
+        const float emberGlowBase = std::max( 0.f, float{ cvar::rt_ember_glow_intensity } );
         const float emberGlowRad = std::max( 0.005f, float{ cvar::rt_ember_glow_radius } );
         const float emberFlicker = std::clamp( float{ cvar::rt_ember_flicker }, 0.f, 1.f );
         const float emberRate    = std::max( 0.f, float{ cvar::rt_ember_flicker_rate } );
@@ -1562,6 +1563,14 @@ void RT_DrawSparks()
                     const int nBlobs =
                         std::clamp( int{ cvar::rt_arc_burn_blobs }, 1, 8 );
 
+                    // OUTSIDE IN: the brown rim goes down first, the black core
+                    // last. Decals blend in the order they are uploaded, so a
+                    // rim blob drawn after the char one lerps its brown straight
+                    // over the middle of the mark -- which is exactly what kept
+                    // the centre from reading dark even once the char itself was
+                    // nearly black. Two passes rather than sorting: pass 0 lays
+                    // the ash and scorch, pass 1 puts the char on top.
+                    for( int pass = 0; pass < 2; pass++ )
                     for( int bi = 0; bi < nBlobs; bi++ )
                     {
                         // ONE DECAL PRIMITIVE PER BLOB, and this is the fix for
@@ -1628,11 +1637,50 @@ void RT_DrawSparks()
                         // sqrt() on the offset spreads them evenly by AREA rather
                         // than bunching them in the middle.
                         const bool  primary = ( bi == 0 );
-                        const float bscale =
-                            primary ? 0.72f : ( 0.34f + 0.30f * hash01( bs * 7919u ) );
                         const float boff =
                             primary ? 0.f
                                     : std::sqrt( hash01( bs * 40503u ) ) * 0.55f * mBurnRad;
+
+                        // A BLOB SHRINKS WITH ITS DISTANCE FROM THE CENTRE, and
+                        // this is what finally let the core stay dark.
+                        //
+                        // Size used to be independent of position: an outer blob
+                        // was 0.34..0.64 of the mark radius while sitting only
+                        // 0.55 of it from the middle, so a blob COLOURED as rim
+                        // brown -- the kind is chosen by distance below --
+                        // painted its brown straight across the centre anyway.
+                        // The zones were right and the geometry defeated them,
+                        // which is why the core kept reading brown-grey however
+                        // dark the char was made.
+                        //
+                        // Near blobs stay large so the union is still one broad
+                        // mark; far ones are small, so the brown they carry
+                        // stays at the edge where it belongs.
+                        const float bdist01 =
+                            std::clamp( boff / std::max( 1e-4f, 0.55f * mBurnRad ), 0.f, 1.f );
+                        const float bscale =
+                            primary ? 0.72f
+                                    : ( 0.50f - 0.26f * bdist01 + 0.16f * hash01( bs * 7919u ) );
+
+                        // Which pass this blob belongs to. The kind is resolved
+                        // again below for its colour; here it only decides the
+                        // ORDER, so the two must agree -- same hash, same
+                        // threshold. With mottle 0 every blob is char, pass 0
+                        // draws nothing and pass 1 draws them all.
+                        {
+                            const float pick0 =
+                                burnMottle > 0.f
+                                    ? std::clamp( bdist01 +
+                                                      ( hash01( bs * 2246822519u ) - 0.5f ) * 0.30f,
+                                                  0.f,
+                                                  1.f )
+                                    : 0.f;
+                            const bool isChar = ( pick0 < 1.f - 0.50f * burnMottle );
+                            if( ( pass == 0 ) == isChar )
+                            {
+                                continue;
+                            }
+                        }
                         const float bang = hash01( bs * 22695477u ) * 2.f * rt_pi();
 
                         const FVector3 c0 = bcen + m.tan * ( std::cos( bang ) * boff ) +
@@ -1686,8 +1734,9 @@ void RT_DrawSparks()
                             // that the three zones would be clean concentric
                             // rings, which reads as a target rather than as
                             // damage.
-                            const float rad01 =
-                                std::clamp( boff / std::max( 1e-4f, 0.55f * mBurnRad ), 0.f, 1.f );
+                            // Already computed above, where it also sizes the
+                            // blob -- one distance, one meaning.
+                            const float rad01 = bdist01;
                             const float pick =
                                 std::clamp( rad01 + ( hash01( bs * 2246822519u ) - 0.5f ) * 0.30f,
                                             0.f,
@@ -1697,8 +1746,8 @@ void RT_DrawSparks()
                             // "all base" it goes, so 0 still means one flat
                             // colour everywhere -- at 0 both thresholds reach 1
                             // and every blob is char.
-                            const float pSoot = 1.f - 0.64f * burnMottle;
-                            const float pAsh  = 0.43f * burnMottle;
+                            const float pSoot = 1.f - 0.50f * burnMottle;
+                            const float pAsh  = 0.33f * burnMottle;
 
                             // EACH KIND GETS ITS OWN COLOUR, not a multiplier on
                             // one base -- and that swap is the whole fix for
@@ -1751,10 +1800,17 @@ void RT_DrawSparks()
                             // below is black -> soot grey -> dark umber, and the
                             // whole of it sits under the wall's own value.
                             //
-                            // Ash: soot grey. Lighter than char, hueless.
-                            const float kAshR = grey * 1.35f;
-                            const float kAshG = grey * 1.32f;
-                            const float kAshB = grey * 1.28f;
+                            // Ash: soot grey, and DARKER than the base rather
+                            // than lighter. It was grey * 1.35 for one round --
+                            // a neutral lighter than the base -- and that is
+                            // what made the middle of the mark read pale, since
+                            // a light neutral next to brown reads as a washed
+                            // out patch rather than as ash. Soot is dark. This
+                            // sits between the char and the scorch, so the
+                            // ladder outward is char -> soot -> brown.
+                            const float kAshR = grey * 0.80f;
+                            const float kAshG = grey * 0.78f;
+                            const float kAshB = grey * 0.76f;
                             // Scorch: burnt umber. Where the heat browned the
                             // surface rather than carbonising it.
                             const float kScoR = std::min( 1.f, vr * 1.30f );
@@ -1766,7 +1822,7 @@ void RT_DrawSparks()
                             if( pick < pSoot )
                             {
                                 // CHAR. The base, pushed darker still.
-                                const float mul = 0.22f + 0.45f * jit;
+                                const float mul = 0.08f + 0.22f * jit;
                                 tr = vr * mul;
                                 tg = vg * mul;
                                 tb = vb * mul;
@@ -1803,6 +1859,7 @@ void RT_DrawSparks()
                         const float w1 = hash01( bs * 668265263u ) * 2.f * rt_pi();
                         const float w2 = hash01( bs * 3266489917u ) * 2.f * rt_pi();
 
+
                         const uint32_t base = uint32_t( s_batchArcBurn.verts.size() );
                         s_batchArcBurn.verts.push_back( RgPrimitiveVertex{
                             .position     = { c0.X, c0.Y, c0.Z },
@@ -1821,16 +1878,46 @@ void RT_DrawSparks()
                             const float wob = 1.f + 0.20f * std::sin( a2 * 2.f + w1 ) +
                                               0.12f * std::sin( a2 * 3.f + w2 );
                             const float rr = mBurnRad * bscale * wob;
-                            const FVector3 pv = c0 + m.tan * ( std::cos( a2 ) * rr ) +
-                                                m.bit * ( std::sin( a2 ) * rr );
+                            const float ca = std::cos( a2 ), sa2 = std::sin( a2 );
+
+                            const FVector3 pv =
+                                c0 + m.tan * ( ca * rr ) + m.bit * ( sa2 * rr );
+
                             s_batchArcBurn.verts.push_back( RgPrimitiveVertex{
                                 .position     = { pv.X, pv.Y, pv.Z },
                                 .normalPacked = bn,
-                                .texCoord     = { 0.5f + 0.5f * std::cos( a2 ),
-                                                  0.5f + 0.5f * std::sin( a2 ) },
+                                .texCoord     = { 0.5f + 0.5f * ca, 0.5f + 0.5f * sa2 },
                                 .color        = cr,
                             } );
                         }
+
+                        // ONE FAN. EVERY TRIANGLE IDENTICAL. NO QUADS.
+                        //
+                        // This was briefly a flat core plus a falloff band, to
+                        // make a blob actually reach its own colour somewhere --
+                        // and the band brought the triangle mesh back, visibly,
+                        // across the whole soft edge (triangleBugBack.png).
+                        // Splitting it into four thinner bands made it WORSE,
+                        // which is the part worth remembering: the eye is not
+                        // picking up the size of the alpha step, it is picking
+                        // up the GRADIENT BREAK at every quad diagonal, and more
+                        // bands means more diagonals. Averaging arithmetic says
+                        // thinner bands are fainter; Gouraud says every diagonal
+                        // is a crease regardless. Gouraud wins.
+                        //
+                        // A fan has no diagonals: each triangle is the centre
+                        // plus two adjacent rim vertices, so the interpolation
+                        // is radially symmetric everywhere and there is nothing
+                        // to see. That is why the earlier scorch work landed
+                        // here, and overriding it cost this round.
+                        //
+                        // The blob is a cone again, so no single blob reaches
+                        // full strength except at its centre -- and that is
+                        // fine, because alpha COMPOUNDS: 1-(1-a1)(1-a2)... over
+                        // several overlapping blobs builds a solid dark middle
+                        // out of soft parts. What was actually keeping the core
+                        // light was the draw order and the ash being brighter
+                        // than the base, and both are fixed above.
                         for( int k = 0; k < kBurnSegs; k++ )
                         {
                             s_batchArcBurn.idx.push_back( base );
@@ -1874,8 +1961,30 @@ void RT_DrawSparks()
             // Small, few, and stationary. The count is single digits by design.
             const int emberN = EmberCountFor( m );
 
-            if( m.fx == ImpactFx::Ember && wantEmber && emberN > 0 )
+            if( FxHasEmbers( m.fx ) && wantEmber && emberN > 0 )
             {
+                // THE PALETTE IS THE MARK'S, NOT THE SYSTEM'S. A rocket coal
+                // cools through MISL's orange into soot; the Unmaker's burn
+                // cools through LPUF's pure reds and never passes through
+                // yellow or brown. Same mechanism, different art -- which is
+                // the whole difference between the two effects.
+                const uint32_t* eramp =
+                    ( m.fx == ImpactFx::Laser ) ? RT_LASER_RAMP : RT_EMBER_RAMP;
+                const int erampN =
+                    ( m.fx == ImpactFx::Laser ) ? RT_LASER_RAMP_N : RT_EMBER_RAMP_N;
+
+                const float emberLife =
+                    m.emberLife > 0.f ? m.emberLife : emberLifeBase;
+
+                // PER MARK, and this was reported as the mark only lighting
+                // anything "if I get glued to it". Nothing was culling the
+                // light -- it was simply the rocket coal's 55, and a sphere
+                // light falls off with the square of the distance, so at 55 it
+                // reaches about a metre. One laser burn is not one of ten
+                // coals; it has to carry the whole glow on its own.
+                const float emberGlowInt =
+                    m.emberGlow > 0.f ? m.emberGlow : emberGlowBase;
+
                 const float et = std::clamp( m.age / emberLife, 0.f, 1.f );
                 if( et < 1.f )
                 {
@@ -1888,12 +1997,12 @@ void RT_DrawSparks()
                     // rather than as style.
                     float er, eg, eb;
                     {
-                        const float f  = et * float( RT_EMBER_RAMP_N - 1 );
-                        const int   i0 = std::clamp( int( f ), 0, RT_EMBER_RAMP_N - 1 );
-                        const int   i1 = std::min( i0 + 1, RT_EMBER_RAMP_N - 1 );
+                        const float f  = et * float( erampN - 1 );
+                        const int   i0 = std::clamp( int( f ), 0, erampN - 1 );
+                        const int   i1 = std::min( i0 + 1, erampN - 1 );
                         const float fr = f - float( i0 );
-                        const uint32_t c0 = RT_EMBER_RAMP[ i0 ];
-                        const uint32_t c1 = RT_EMBER_RAMP[ i1 ];
+                        const uint32_t c0 = eramp[ i0 ];
+                        const uint32_t c1 = eramp[ i1 ];
                         auto l_l = [ & ]( int sh ) {
                             const float a0 = ( ( c0 >> sh ) & 0xFF ) / 255.f;
                             const float a1 = ( ( c1 >> sh ) & 0xFF ) / 255.f;
@@ -2054,7 +2163,27 @@ void RT_DrawSparks()
                             if( fv ) uv[ k ][ 1 ] = 1.f - uv[ k ][ 1 ];
                         }
 
+                        // THE SPOT ITSELF IS OPTIONAL, and the Unmaker ships
+                        // without it.
+                        //
+                        // A coal is a square: one flat quad of one colour, which
+                        // is exactly right at 1 cm in a bed of fifty and exactly
+                        // wrong as the ONE thing a laser leaves on a wall --
+                        // reported as "remove the square pixel / particle you
+                        // put initially". The glow survives it: the analytic
+                        // light below is a separate upload and still lands red
+                        // on the wall, and the filigree carries the shape. Only
+                        // the quad goes.
+                        //
+                        // The loop still RUNS, because the light and the smoke
+                        // both hang off an ember index. Skipping the geometry is
+                        // not the same as having no embers.
+                        const bool drawSpot =
+                            ( m.fx != ImpactFx::Laser ) || bool( cvar::rt_laser_spot );
+
                         const uint32_t base = uint32_t( eb_.verts.size() );
+                        if( drawSpot )
+                        {
                         for( int k = 0; k < 4; k++ )
                         {
                             eb_.verts.push_back( RgPrimitiveVertex{
@@ -2098,6 +2227,7 @@ void RT_DrawSparks()
                             eb_.idx.push_back( base + 2 );
                         }
                         s_dbgQuads++;
+                        } // drawSpot
 
                         // THE HALO, and it is standing in for something the
                         // renderer genuinely cannot do here.
@@ -2241,7 +2371,22 @@ void RT_DrawSparks()
 
             // THE WEAPON'S SIZE MULTIPLIER. The cvars are authored for the
             // plasma rifle; a BFG mark is twice the thing in every dimension.
-            const float mScale = st.scale;
+            // THE MARK'S OWN, not the style table's: the Unmaker's is a cvar
+            // and two weapons' marks can be alive at once.
+            const float mScale = m.arcScale > 0.f ? m.arcScale : st.scale;
+
+            // BRIGHTNESS IS PER MARK TOO, and the Unmaker needed it badly.
+            //
+            // An arc's alpha is clamp(bright * fade, 0, 1) and the result is
+            // ADDITIVE, so at rt_arc_bright 3 a hot ramp entry is multiplied
+            // until its strongest channel clips -- and once red is pinned at 1
+            // the only thing left that can still rise is green. A red filigree
+            // therefore comes out PINK, which is precisely what the plasma
+            // ramp's own note describes from the other direction. Blue and
+            // green ramps survive it; a red one cannot.
+            const float abr = abrBase * ( ( m.flavor == ArcFlavor::Unmaker )
+                                              ? std::max( 0.f, float{ cvar::rt_laser_arc_bright } )
+                                              : 1.f );
             const float reach  = reachBase * mScale;
             const float wid    = widBase * mScale;
 
@@ -2414,7 +2559,24 @@ void RT_DrawSparks()
                 // the light pass: a branch the crackle dropped never reaches
                 // this line, so its light disappears with it for free, and the
                 // re-pathed position can never disagree with the drawn one.
-                if( wantGlow && abr > 0.f )
+                // ONE LIGHT PER MARK FOR THE UNMAKER, not one per branch and
+                // one per creeper.
+                //
+                // A mark emits up to 26 candidates -- 1 ember + rt_arc_branches
+                // + rt_arc_creep -- against a global rt_arc_glow_max of 10.
+                // That is affordable for a plasma rifle, whose marks are large
+                // and few. The Unmaker fires fast and its marks live eight
+                // seconds, so a dozen of them end up contesting ten slots
+                // nearest-first: whichever mark you are standing on takes them
+                // all and every other one goes dark. Reported as the glow only
+                // appearing "if I get glued to it", and correctly guessed as
+                // too many lights rather than a dim one.
+                //
+                // The filigree here is a few centimetres across. Nine branch
+                // lights strung along it were never buying anything the single
+                // ember light at its centre does not already do, and dropping
+                // them takes one mark from 26 candidates to 1.
+                if( wantGlow && abr > 0.f && m.flavor != ArcFlavor::Unmaker )
                 {
                     // Lifted further off the wall than the quads are. A light
                     // sitting 12 mm off a surface lights almost none of it --
@@ -2541,7 +2703,7 @@ void RT_DrawSparks()
                 // Dimmer than a branch light, in the same proportion the creeper
                 // is drawn dimmer, so the wall's bright spot still agrees with
                 // the wall's bright geometry.
-                if( wantGlow && abr > 0.f )
+                if( wantGlow && abr > 0.f && m.flavor != ArcFlavor::Unmaker )
                 {
                     s_arcLights.push_back( ArcLightCand{
                         cend + m.nrm * 0.05f,

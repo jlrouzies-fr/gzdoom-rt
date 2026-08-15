@@ -127,7 +127,7 @@ std::array< SparkFlash, RT_SPARK_FLASH_MAX >   s_flashes{};
 // each effect can be judged with the other out of the way.
 bool SparkSystemOn()
 {
-    return cvar::rt_spark || cvar::rt_arc || cvar::rt_barrel;
+    return cvar::rt_spark || cvar::rt_arc || cvar::rt_barrel || cvar::rt_laser;
 }
 
 // THE POOL ALLOCATOR, lifted out of RT_SpawnImpactSparks when the barrel gained
@@ -1122,7 +1122,10 @@ void SparkReport( const char* why )
         uint32_t nEmbMarks = 0;
         for( uint32_t i = 0; i < s_arcCount; i++ )
         {
-            if( s_arcs[ i ].fx == ImpactFx::Ember )
+            // FxHasEmbers, not == Ember: a laser mark smoulders too, and this
+            // counter reporting zero while wisps were visibly spawning is
+            // exactly the kind of lying instrument that costs a session.
+            if( FxHasEmbers( s_arcs[ i ].fx ) )
             {
                 nEmbMarks++;
             }

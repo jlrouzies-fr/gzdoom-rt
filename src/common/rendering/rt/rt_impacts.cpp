@@ -52,6 +52,18 @@ constexpr ArcStyle RT_ARC_STYLES[ int( ArcFlavor::COUNT ) ] = {
     // DOUBLE. The BFG is the heaviest weapon in the game and its impact should
     // not read as a plasma bolt in green.
     { RT_ARC_BFG_RAMP, RT_ARC_BFG_RAMP_N, 2.0f, "bfg" },
+    // THE UNMAKER -- THE PLASMA IMPACT, VERY SMALL AND RED.
+    //
+    // It was first built as a lone glowing spot, and in play that read as almost
+    // nothing: one dot on a wall is not an event. The filigree is the part of a
+    // plasma mark the eye actually catches, and shrunk to a third and recoloured
+    // it reads exactly as a laser fizzling out against the surface -- which is
+    // what a rig already built for the plasma rifle gives for a table row.
+    //
+    // The scale here is a fallback: a laser mark takes its own from
+    // rt_laser_arc_scale, carried per mark, because how small "very small" is
+    // wanted dialing in play rather than compiling in.
+    { RT_LASER_RAMP, RT_LASER_RAMP_N, 0.30f, "unmaker" },
 };
 
 const ArcStyle& ArcStyleFor( ArcFlavor f )
@@ -110,6 +122,12 @@ constexpr ArcSource RT_ARC_SOURCES[] = {
     { "TracerMissile", ArcFlavor::Plasma, ImpactFx::Ember },
     { "MotherBall", ArcFlavor::Plasma, ImpactFx::Ember },
     { "FatShot", ArcFlavor::Plasma, ImpactFx::Ember },
+    // THE UNMAKER'S LASER. "UnmakerLaser" also matches UnmakerLaserTrail, of
+    // which the weapon spawns THIRTY-FOUR per tic of flight -- its DECORATE is
+    // a wall of A_SpawnItemEx calls -- so without the "Trail" exclusion the
+    // player would paint a solid line of marks down every corridor. That rule
+    // already existed for the rocket's trail; it earns its keep again here.
+    { "UnmakerLaser", ArcFlavor::Unmaker, ImpactFx::Laser },
 };
 
 // "Rocket" is the one key here loose enough to catch things that are not
@@ -195,7 +213,9 @@ void SpawnArcMark( const FVector3& at,
                    bool            emberArt,
                    float           emberSize,
                    float           emberBright,
-                   float           emberScatter )
+                   float           emberScatter,
+                   float           emberLife,
+                   float           emberGlow )
 {
     const uint32_t cap =
         std::min( RT_ARC_MARK_MAX, uint32_t( std::max( 0, int{ cvar::rt_arc_max } ) ) );
@@ -251,6 +271,16 @@ void SpawnArcMark( const FVector3& at,
     m.emberSize   = std::max( 0.05f, emberSize );
     m.emberBright  = std::max( 0.f, emberBright );
     m.emberScatter = std::max( 0.f, emberScatter );
+    m.emberLife    = std::max( 0.f, emberLife );
+    m.emberGlow    = std::max( 0.f, emberGlow );
+    // THE FILIGREE SIZE. Every other flavour states it as a constant in
+    // RT_ARC_STYLES, because "a BFG mark is twice a plasma one" is a fact about
+    // the weapons rather than a preference. The Unmaker's is a cvar: the whole
+    // point of its arcs is that they are TINY -- a laser fizzles, it does not
+    // discharge -- and how tiny is a judgement that wanted dialing in play.
+    m.arcScale = ( flavor == ArcFlavor::Unmaker )
+                     ? std::max( 0.02f, float{ cvar::rt_laser_arc_scale } )
+                     : ArcStyleFor( flavor ).scale;
     // THE DELAY IS THE FIX FOR DOUBLE SMOKE, designed in rather than tuned
     // later. The rocket's own death burst (RT_PROJECTILE_SMOKE / rt_smoke_boom)
     // goes off at this same point on this same frame. Embers breathing from
@@ -259,9 +289,19 @@ void SpawnArcMark( const FVector3& at,
     m.nextSmoke = std::max( 0.f, float{ cvar::rt_ember_smoke_delay } );
     // SCALED BY THE WEAPON, and resolved here rather than at draw time: two
     // marks from different weapons can be alive at once.
-    m.arcLife = withArcs
-                    ? std::max( 0.05f, float{ cvar::rt_arc_life } ) * ArcStyleFor( flavor ).scale
-                    : 0.f;
+    // SIZE AND DURATION ARE SEPARATE for the Unmaker, and prising them apart
+    // was the fix for "it disappears way too fast".
+    //
+    // Every other flavour multiplies one style scale into BOTH -- a BFG mark is
+    // twice a plasma one in every dimension, which is true of a BFG. The
+    // Unmaker's scale is small by design, so deriving the lifetime from it gave
+    // rt_arc_life 2.5 x 0.30 = three quarters of a second: the filigree was
+    // gone before the eye reached it, and making it last meant making it big.
+    // Two knobs, because they are two questions.
+    m.arcLife = !withArcs ? 0.f
+                : ( flavor == ArcFlavor::Unmaker )
+                    ? std::max( 0.05f, float{ cvar::rt_laser_arc_life } )
+                    : std::max( 0.05f, float{ cvar::rt_arc_life } ) * m.arcScale;
     // The SCORCH's life when there is one, otherwise just the arcs'. Never
     // shorter than the arcs, or the mark would be evicted out from under a
     // filigree that is still drawing.
@@ -327,7 +367,7 @@ void AgeArcMarks( float dt )
     const bool wantSmoke =
         cvar::rt_ember && cvar::rt_ember_smoke && cvar::rt_smoke && cvar::rt_arc_burn;
 
-    const float emberLife = std::max( 0.05f, float{ cvar::rt_ember_life } );
+    const float emberLifeBase = std::max( 0.05f, float{ cvar::rt_ember_life } );
     const float every     = std::max( 0.02f, float{ cvar::rt_ember_smoke_every } );
     const float hotFrac   = std::clamp( float{ cvar::rt_ember_smoke_hot }, 0.f, 1.f );
     const float burnRad   = std::max( 0.f, float{ cvar::rt_arc_burn_radius } );
@@ -352,7 +392,10 @@ void AgeArcMarks( float dt )
         // than a rocket's, and both can be alive at the same moment.
         const int nEmber = EmberCountFor( m );
 
-        if( wantSmoke && m.fx == ImpactFx::Ember && nEmber > 0 && budget > 0 &&
+        // PER MARK: a laser burn cools on its own ten-second clock.
+        const float emberLife = m.emberLife > 0.f ? m.emberLife : emberLifeBase;
+
+        if( wantSmoke && FxHasEmbers( m.fx ) && nEmber > 0 && budget > 0 &&
             m.age >= m.nextSmoke )
         {
             m.nextSmoke = m.age + every * ( 0.7f + 0.6f * rnd01() );
@@ -522,6 +565,142 @@ const ArcSource* ArcSourceFor( AActor* mo )
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// THE FAST-PROJECTILE PROBLEM, and why the Unmaker needed a second door.
+//
+// The walk above detects an impact by ABSENCE: an actor carrying MF_MISSILE is
+// seen on one tic and gone the next. That works for everything fired so far
+// because everything so far is slow enough to be seen at least once --
+// 64PlasmaBall is Speed 25, a rocket 20.
+//
+// UnmakerLaser is a FastProjectile at Speed 200. A FastProjectile covers its
+// whole velocity within one Tick(), subdivided only for collision, so at any
+// normal indoor range -- a corridor is 128 to 512 units -- it is spawned,
+// crosses the room and calls P_ExplodeMissile INSIDE THE TIC IT WAS BORN IN,
+// before the renderer's walk has run once. P_ExplodeMissile clears MF_MISSILE,
+// so by the time anything here looks at it the actor no longer qualifies as a
+// projectile. It is never tracked, so it can never go missing, so no impact is
+// ever detected. Reported from play as "plasma / bfg yes but not the unmaker".
+// The mark was fine; nothing was ever asking for one.
+//
+// The actor is still THERE, though, and that is the way in. UnmakerLaser's
+// Death state is `LPUF AB 3 BRIGHT A_FadeOut(0.10)` with a Loop, so after the
+// explosion it sits at the impact point playing its puff frames. Detecting the
+// rising edge of that is the same technique RT_BarrelSmoke uses on BEXP, and
+// for the same reason: when the disappearance rule cannot see an event, the
+// SPRITE can.
+//
+// It also needs its own probe. The main one traces along the projectile's last
+// heading, and a dead actor has no velocity left to give one -- so this looks
+// for the nearest surface in six directions instead. Costs six traces on a
+// laser impact and nothing at all otherwise.
+struct LaserMark
+{
+    AActor* mo;
+    int     lastTic;
+};
+
+std::vector< LaserMark > g_lasers;
+
+// Is this an Unmaker laser that has just gone off? Matched by class so the
+// thirty-four LPUF-sprited trail actors it spawns per tic cannot trigger it --
+// they are caught by the same "Trail" rule the rocket's needed.
+bool IsDeadLaser( AActor* mo )
+{
+    if( !mo || !mo->GetClass() )
+    {
+        return false;
+    }
+    const char* c = mo->GetClass()->TypeName.GetChars();
+    if( !c || ArcClassExcluded( c ) || strstr( c, "UnmakerLaser" ) == nullptr )
+    {
+        return false;
+    }
+    // Still flying: MF_MISSILE is cleared by P_ExplodeMissile, so its presence
+    // means this one has not hit anything yet.
+    return ( mo->flags & MF_MISSILE ) == 0;
+}
+
+// The nearest surface around a point, in six axis directions. Returns false if
+// nothing is within reach, which is the mid-air case -- a laser that expired
+// without hitting anything should leave nothing.
+bool ProbeAround( const DVector3& pos, sector_t* sec, float reach, FVector3* outAt, FVector3* outN )
+{
+    static const DVector3 kDirs[ 6 ] = {
+        {  1,  0,  0 }, { -1,  0,  0 }, {  0,  1,  0 },
+        {  0, -1,  0 }, {  0,  0,  1 }, {  0,  0, -1 },
+    };
+
+    double best = double( reach ) + 1.0;
+    bool   got  = false;
+
+    for( const DVector3& dir : kDirs )
+    {
+        FTraceResults res{};
+        // Same flags as every other probe here: no TRACE_Impact or TRACE_PCross,
+        // so this cannot fire a line special, and an empty ActorMask so it goes
+        // through monsters to the geometry behind.
+        if( !Trace( pos,
+                    sec,
+                    dir,
+                    double( reach ),
+                    ActorFlags::FromInt( 0 ),
+                    ML_BLOCKEVERYTHING,
+                    nullptr,
+                    res,
+                    TRACE_NoSky ) ||
+            res.HitType == TRACE_HasHitSky )
+        {
+            continue;
+        }
+
+        if( res.Distance >= best )
+        {
+            continue;
+        }
+
+        FVector3 n{ 0, 0, 1 };
+        if( res.HitType == TRACE_HitFloor )
+        {
+            n = FVector3{ 0, 0, 1 };
+        }
+        else if( res.HitType == TRACE_HitCeiling )
+        {
+            n = FVector3{ 0, 0, -1 };
+        }
+        else if( res.HitType == TRACE_HitWall && res.Line != nullptr )
+        {
+            const double dx = res.Line->Delta().X;
+            const double dy = res.Line->Delta().Y;
+            n               = FVector3{ float( dy ), float( -dx ), 0.f };
+            if( n.LengthSquared() < 1e-8f )
+            {
+                continue;
+            }
+            n.MakeUnit();
+            // Face the point we probed FROM, which is the side the laser is on.
+            const FVector3 back{ float( -dir.X ), float( -dir.Y ), float( -dir.Z ) };
+            if( ( back | n ) < 0.f )
+            {
+                n = -n;
+            }
+        }
+        else
+        {
+            continue;
+        }
+
+        best  = res.Distance;
+        got   = true;
+        *outN = n;
+        *outAt = FVector3{ float( res.HitPos.X ) * ONEGAMEUNIT_IN_METERS,
+                           float( res.HitPos.Y ) * ONEGAMEUNIT_IN_METERS,
+                           float( res.HitPos.Z ) * ONEGAMEUNIT_IN_METERS };
+    }
+
+    return got;
+}
+
 // A dead projectile's last recorded position is up to a tic of flight short of
 // whatever it hit, in mid air, with no normal and no surface. This recovers all
 // three by re-tracing the last leg. Returns false when there is nothing there --
@@ -629,9 +808,10 @@ void RT_UpdateProjectileImpacts()
     // avoid, and it would have looked like a barrel bug rather than a gate. Each
     // branch below still tests its OWN cvar, so either can be judged with the
     // other out of the way.
-    if( !primaryLevel || !( cvar::rt_arc || cvar::rt_barrel ) )
+    if( !primaryLevel || !( cvar::rt_arc || cvar::rt_barrel || cvar::rt_laser ) )
     {
         g_projs.clear();
+        g_lasers.clear();
         BarrelForgetAll();
         return;
     }
@@ -646,6 +826,7 @@ void RT_UpdateProjectileImpacts()
     if( tic < s_lastProjTic || tic - s_lastProjTic > TICRATE )
     {
         g_projs.clear();
+        g_lasers.clear();
         BarrelForgetAll();
     }
     if( tic == s_lastProjTic )
@@ -662,6 +843,83 @@ void RT_UpdateProjectileImpacts()
         // but the walk itself is the expensive part and it is already happening.
         // See the note at the top of rt_barrel.cpp.
         BarrelWalkActor( mo, tic );
+
+        // THE UNMAKER COMES IN THROUGH ITS OWN DOOR. It is dead by the time
+        // anything here sees it -- see the note on LaserMark -- so it is caught
+        // by its death sprite rather than by going missing.
+        if( cvar::rt_laser && IsDeadLaser( mo ) )
+        {
+            LaserMark* lm = nullptr;
+            for( LaserMark& l : g_lasers )
+            {
+                if( l.mo == mo )
+                {
+                    lm = &l;
+                    break;
+                }
+            }
+            if( !lm )
+            {
+                // FIRST SIGHT IS THE IMPACT. The actor only enters this state
+                // once, when it explodes, and it then loops its puff frames --
+                // so "not seen before" IS the rising edge, and the list exists
+                // only to stop the mark being made again on every later tic.
+                g_lasers.push_back( LaserMark{ mo, tic } );
+
+                const auto&    vp = r_viewpoint;
+                const FVector3 eye{ float( vp.Pos.X ) * ONEGAMEUNIT_IN_METERS,
+                                    float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
+                                    float( vp.Pos.Z ) * ONEGAMEUNIT_IN_METERS };
+                const FVector3 hereM{ float( mo->X() ) * ONEGAMEUNIT_IN_METERS,
+                                      float( mo->Y() ) * ONEGAMEUNIT_IN_METERS,
+                                      float( mo->Z() ) * ONEGAMEUNIT_IN_METERS };
+                const float far_m = std::max( 0.f, float{ cvar::rt_laser_far } );
+
+                FVector3 at{}, n{};
+                if( ( hereM - eye ).LengthSquared() <= far_m * far_m &&
+                    ProbeAround( mo->Pos(),
+                                 mo->Sector,
+                                 std::max( 8.f, float{ cvar::rt_laser_probe } ),
+                                 &at,
+                                 &n ) )
+                {
+                    const float spots = std::max( 0.f, float( int{ cvar::rt_laser_spots } ) );
+                    const float base  = std::max( 1.f, float( int{ cvar::rt_ember_count } ) );
+
+                    SpawnArcMark( at,
+                                  n,
+                                  ArcFlavor::Unmaker,
+                                  /*withArcs=*/true,
+                                  std::max( 0.f, float{ cvar::rt_laser_burn_scale } ),
+                                  ImpactFx::Laser,
+                                  spots / base,
+                                  /*emberArt=*/false,
+                                  std::max( 0.05f, float{ cvar::rt_laser_size } ),
+                                  std::max( 0.f, float{ cvar::rt_laser_bright } ),
+                                  std::max( 0.f, float{ cvar::rt_laser_scatter } ),
+                                  std::max( 0.1f, float{ cvar::rt_laser_life } ),
+                                  std::max( 0.f, float{ cvar::rt_laser_glow } ) );
+
+                    if( cvar::rt_arc_debug )
+                    {
+                        Printf( "rt_laser: IMPACT at %.2f %.2f %.2f  n %.2f %.2f %.2f (tic %d)\n",
+                                at.X, at.Y, at.Z, n.X, n.Y, n.Z, tic );
+                    }
+                }
+                else if( cvar::rt_arc_debug )
+                {
+                    Printf( "rt_laser: dead laser at %.0f %.0f %.0f with NO SURFACE within "
+                            "%.0f units (or beyond the cull)\n",
+                            mo->X(), mo->Y(), mo->Z(),
+                            float( cvar::rt_laser_probe ) );
+                }
+            }
+            else
+            {
+                lm->lastTic = tic;
+            }
+            continue;
+        }
 
         const ArcSource* src = ArcSourceFor( mo );
         if( !src )
@@ -723,6 +981,19 @@ void RT_UpdateProjectileImpacts()
 
     BarrelSweep( tic );
 
+    // Drop lasers not seen this tic. Their AActor* is never dereferenced after
+    // this, so a stale entry can only ever waste a slot.
+    for( size_t i = 0; i < g_lasers.size(); )
+    {
+        if( g_lasers[ i ].lastTic == tic )
+        {
+            i++;
+            continue;
+        }
+        g_lasers[ i ] = g_lasers.back();
+        g_lasers.pop_back();
+    }
+
     // THE SWEEP IS THE IMPACT. Anything tracked last tic and not seen this one
     // has either lost MF_MISSILE (it exploded) or left the thinker list. Its
     // AActor* is not dereferenced here -- only the position, direction and
@@ -750,7 +1021,9 @@ void RT_UpdateProjectileImpacts()
         // leaving embers, with nothing to connect the two.
         const float    far_m = std::max( 0.f,
                                          m.fx == ImpactFx::Ember ? float{ cvar::rt_ember_far }
-                                                                 : float{ cvar::rt_arc_far } );
+                                         : m.fx == ImpactFx::Laser
+                                             ? float{ cvar::rt_laser_far }
+                                             : float{ cvar::rt_arc_far } );
 
         if( ( lastM - eye ).LengthSquared() <= far_m * far_m )
         {
@@ -759,7 +1032,39 @@ void RT_UpdateProjectileImpacts()
             sector_t* sec = nullptr;
             if( ProbeImpactSurface( m, &at, &n, &sec ) )
             {
-                if( m.fx == ImpactFx::Ember )
+                if( m.fx == ImpactFx::Laser )
+                {
+                    if( !cvar::rt_laser )
+                    {
+                        continue;
+                    }
+
+                    // THE UNMAKER. One red-hot spot, a small churn round it,
+                    // one thread of smoke, cold in ten seconds.
+                    //
+                    // The count is expressed as a share of rt_ember_count so
+                    // the mark carries an ABSOLUTE number of spots: retuning
+                    // the rocket's coals must not add spots to a laser burn,
+                    // which is the whole reason these are per-mark.
+                    const float spots =
+                        std::max( 0.f, float( int{ cvar::rt_laser_spots } ) );
+                    const float base =
+                        std::max( 1.f, float( int{ cvar::rt_ember_count } ) );
+
+                    SpawnArcMark( at,
+                                  n,
+                                  ArcFlavor::Unmaker,
+                                  /*withArcs=*/true,
+                                  std::max( 0.f, float{ cvar::rt_laser_burn_scale } ),
+                                  ImpactFx::Laser,
+                                  spots / base,
+                                  /*emberArt=*/false,
+                                  std::max( 0.05f, float{ cvar::rt_laser_size } ),
+                                  std::max( 0.f, float{ cvar::rt_laser_bright } ),
+                                  std::max( 0.f, float{ cvar::rt_laser_scatter } ),
+                                  std::max( 0.1f, float{ cvar::rt_laser_life } ) );
+                }
+                else if( m.fx == ImpactFx::Ember )
                 {
                     // THE ROCKET: a churn on the floor plus scattered embers.
                     // The scorch is the SAME decal the arcs leave, at a bigger
@@ -864,9 +1169,16 @@ CCMD( arc_here )
             wantArc = false;
             scale   = std::max( 0.f, float{ cvar::rt_ember_burn_scale } );
         }
+        else if( a.CompareNoCase( "laser" ) == 0 )
+        {
+            flavor  = ArcFlavor::Unmaker;
+            fx      = ImpactFx::Laser;
+            wantArc = true;
+            scale   = std::max( 0.f, float{ cvar::rt_laser_burn_scale } );
+        }
         else if( a.CompareNoCase( "plasma" ) != 0 )
         {
-            Printf( "arc_here: expected plasma | bfg | arach | ember\n" );
+            Printf( "arc_here: expected plasma | bfg | arach | ember | laser\n" );
             return;
         }
     }
@@ -939,10 +1251,36 @@ CCMD( arc_here )
                        float( res.HitPos.Y ) * ONEGAMEUNIT_IN_METERS,
                        float( res.HitPos.Z ) * ONEGAMEUNIT_IN_METERS };
 
-    SpawnArcMark( at, n, flavor, wantArc, scale, fx );
+    // A laser mark carries its own spot count, size, brightness and clock, so
+    // the lab has to hand them over exactly as the impact path does -- planting
+    // one with the ember defaults would be judging a different effect.
+    if( fx == ImpactFx::Laser )
+    {
+        const float spots = std::max( 0.f, float( int{ cvar::rt_laser_spots } ) );
+        const float base  = std::max( 1.f, float( int{ cvar::rt_ember_count } ) );
+
+        SpawnArcMark( at,
+                      n,
+                      flavor,
+                      true,
+                      scale,
+                      fx,
+                      spots / base,
+                      false,
+                      std::max( 0.05f, float{ cvar::rt_laser_size } ),
+                      std::max( 0.f, float{ cvar::rt_laser_bright } ),
+                      std::max( 0.f, float{ cvar::rt_laser_scatter } ),
+                      std::max( 0.1f, float{ cvar::rt_laser_life } ),
+                      std::max( 0.f, float{ cvar::rt_laser_glow } ) );
+    }
+    else
+    {
+        SpawnArcMark( at, n, flavor, wantArc, scale, fx );
+    }
 
     Printf( "arc_here: %s mark at %.0f %.0f %.0f, normal %.2f %.2f %.2f (%u live)\n",
-            fx == ImpactFx::Ember ? "ember" : RT_ARC_STYLES[ int( flavor ) ].name,
+            fx == ImpactFx::Ember ? "ember"
+                                  : RT_ARC_STYLES[ int( flavor ) ].name,
             res.HitPos.X,
             res.HitPos.Y,
             res.HitPos.Z,

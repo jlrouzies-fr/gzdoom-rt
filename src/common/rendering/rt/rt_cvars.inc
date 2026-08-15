@@ -3204,7 +3204,7 @@
                                                 "(rt_arc_core) and narrower than the branches reach: a burn the size of "
                                                 "the whole filigree reads as a stain, and one the size of the core "
                                                 "reads as a bullet hole." )
-    RT_CVAR_COLOR( rt_arc_burn_color,   0x261A10, "WHAT THE SCORCH DARKENS TOWARD (hex), and it must not be black.\n"
+    RT_CVAR_COLOR( rt_arc_burn_color,   0x120C06, "WHAT THE SCORCH DARKENS TOWARD (hex), and it must not be black.\n"
                                                 "The decal blends into the albedo buffer with a plain SRC_ALPHA / "
                                                 "ONE_MINUS_SRC_ALPHA lerp (DecalManager.cpp:599), so the result is "
                                                 "  albedo = colour * strength + original * (1 - strength).\n"
@@ -3273,7 +3273,7 @@
                                                 "drawn rather than recomputed. This is what makes the effect genuinely "
                                                 "ray-traced: the branch QUADS are an additive rasterized overlay, "
                                                 "outside the acceleration structure, and light nothing at all." )
-    RT_CVAR( rt_arc_glow_max,           10,     "global cap on live branch lights, NEAREST-FIRST. A plasma rifle is a "
+    RT_CVAR( rt_arc_glow_max,           100,     "global cap on live branch lights, NEAREST-FIRST. A plasma rifle is a "
                                                 "rapid-fire weapon and 32 marks x 9 branches is 288 candidate lights, "
                                                 "which is the arithmetic rt-lighting-practices.md 20 exists to stop. "
                                                 "The cap is what makes per-branch lights affordable at all." )
@@ -3459,6 +3459,94 @@
                                                 "specifically warned about. The wisps are also marked AMBIENT, so "
                                                 "rt_smoke_ambient_budget bounds them again and they cannot starve the "
                                                 "player's own muzzle smoke." )
+
+    RT_CVAR( rt_laser,                  1,      "master for the UNMAKER's wall burn: a red-hot spot glowing where the "
+                                                "laser struck, a small churn around it, and one thread of smoke.\n"
+                                                "It is an EMBER MARK with a single coal instead of ten, and sharing "
+                                                "that mechanism is deliberate rather than a shortcut -- a laser burn "
+                                                "and a rocket coal are the same physical thing at different scales. "
+                                                "What differs is the palette it cools through (LPUFA0-C0's pure reds, "
+                                                "never passing through yellow or soot the way MISL does) and how long "
+                                                "it takes, both carried per mark so tuning the rocket cannot move it." )
+    RT_CVAR( rt_laser_arc_scale,        0.18f ,  "how big the laser's electric filigree is, as a multiple of the "
+                                                "plasma rifle's -- which is what every rt_arc_width / _reach / _life "
+                                                "default describes.\n"
+                                                "THE FILIGREE IS THE EFFECT. The Unmaker mark was first built as a "
+                                                "lone glowing spot with a churn, and in play it read as almost "
+                                                "nothing: one dot on a wall is not an event. The crackling filigree is "
+                                                "the part of a plasma mark the eye actually catches, and shrunk to a "
+                                                "third and recoloured red it reads as a laser fizzling out against the "
+                                                "surface. Reusing a rig built for another weapon cost a table row.\n"
+                                                "Small is the point -- a laser fizzles, it does not discharge. Past "
+                                                "about 0.6 it stops being an Unmaker mark and starts being a red "
+                                                "plasma one." )
+    RT_CVAR( rt_laser_glow,             220.f,  "how far the laser burn's light reaches. Absolute, replacing "
+                                                "rt_ember_glow_intensity for this mark only.\n"
+                                                "INTENSITY IS THE REACH for these lights -- the radius is the "
+                                                "emitter's SIZE and not its range, see rt_ember_glow_radius. A rocket "
+                                                "coal's 55 is tuned for one of ten seen at arm's length; a laser burn "
+                                                "is a single mark carrying the whole glow, and at 55 it lit about a "
+                                                "metre of wall.\n"
+                                                "Note this was NOT the whole of 'the glow only appears when I am "
+                                                "close' -- that was rt_arc_glow_max being swamped, see the note in "
+                                                "rt_spark_draw.cpp. Raising this alone would have made one mark "
+                                                "brighter and left the rest dark." )
+    RT_CVAR( rt_laser_probe,            48.f,   "map units the laser searches for the surface it hit, in each of six "
+                                                "axis directions.\n"
+                                                "IT NEEDS ITS OWN PROBE because it is found dead. UnmakerLaser is a "
+                                                "FastProjectile at Speed 200: it crosses a corridor and explodes "
+                                                "INSIDE the tic it was fired, before the renderer's walk runs once, so "
+                                                "it is never seen carrying MF_MISSILE and the disappearance rule every "
+                                                "other projectile uses can never fire. It is caught by its LPUF death "
+                                                "sprite instead -- the technique the barrel uses -- and a dead actor "
+                                                "has no heading left to trace along, so the nearest surface around it "
+                                                "is what gets used. Too small and a laser that stops a little short of "
+                                                "a wall leaves nothing; too large and one that expires in mid air "
+                                                "marks a surface it never touched." )
+    RT_CVAR( rt_laser_arc_bright,       0.90f,  "how hard the laser's filigree adds to the screen, as a multiple of\n"
+                                                "rt_arc_bright.\n"
+                                                "WELL BELOW 1, and not because the effect wanted dimming. An arc's\n"
+                                                "alpha is clamp(bright * fade, 0, 1) and the result is ADDITIVE, so\n"
+                                                "at rt_arc_bright 3 a hot ramp entry is multiplied until its\n"
+                                                "strongest channel clips -- and once red is pinned at 1 the only\n"
+                                                "thing left that can still rise is green. A red filigree therefore\n"
+                                                "comes out PINK. Blue and green ramps survive that; a red one cannot,\n"
+                                                "which is why this is the Unmaker's own knob rather than a taste\n"
+                                                "setting." )
+    RT_CVAR( rt_laser_arc_life,         8.0f,   "seconds the laser's filigree crackles, ABSOLUTE rather than scaled "
+                                                "off rt_arc_life.\n"
+                                                "SIZE AND DURATION HAD TO BE PRISED APART. Every other flavour "
+                                                "multiplies one style scale into both -- a BFG mark is twice a plasma "
+                                                "one in every dimension, which is true of a BFG. The Unmaker's scale "
+                                                "is small by design, so deriving the lifetime from it gave 2.5 x 0.30 "
+                                                "= three quarters of a second: the filigree was gone before the eye "
+                                                "reached it, and the only way to make it last was to make it big. Two "
+                                                "questions, two knobs." )
+    RT_CVAR( rt_laser_spot,             0,      "draw the hot SPOT quad at the centre of a laser mark.\n"
+                                                "OFF. A coal is a flat square of one colour, which is right at 1 cm "
+                                                "in a bed of fifty and wrong as the one thing a laser leaves on a "
+                                                "wall. The glow does not depend on it: the spot's analytic light is a "
+                                                "separate upload and still lands red on the surface, and the filigree "
+                                                "carries the shape. rt_laser_spots stays at 1 regardless, because the "
+                                                "light and the smoke thread both hang off an ember index -- drawing "
+                                                "no quad is not the same as having no embers." )
+    RT_CVAR( rt_laser_spots,            1,      "hot spots per laser burn. ONE by design: the Unmaker fires fast, and "
+                                                "a cluster per shot would carpet a corridor within a second." )
+    RT_CVAR( rt_laser_life,             10.f,   "seconds the burn glows before it is cold and gone. Its own clock, "
+                                                "absolute rather than a multiple of rt_ember_life -- see rt_laser." )
+    RT_CVAR( rt_laser_size,             5.0f,   "size of the hot spot, as a multiple of rt_ember_size. Bigger than a "
+                                                "coal: this is the whole of the effect rather than one of ten." )
+    RT_CVAR( rt_laser_bright,           1.0f,   "how hard the spot adds to the screen, as a multiple of "
+                                                "rt_ember_bright. Above 1 because there is only one of them." )
+    RT_CVAR( rt_laser_scatter,          0.f,    "how far the spot sits from the centre of its own churn, as a "
+                                                "multiple of rt_ember_scatter. ZERO: with one spot there is nothing "
+                                                "to scatter, and it belongs in the middle of the mark it made." )
+    RT_CVAR( rt_laser_burn_scale,       0.55f ,  "the churn around the burn, as a multiple of rt_arc_burn_radius. "
+                                                "SMALL -- compare the rocket's 3.4 and the barrel's 3.5. A laser "
+                                                "leaves a spot, not a blast." )
+    RT_CVAR( rt_laser_far,              40.f,   "metres beyond which a laser impact leaves no mark. A SPAWN cull, for "
+                                                "the reason rt_spark_far is one. Its own knob so the Unmaker's reach "
+                                                "cannot be changed by tuning the arcs or the rocket." )
 
     RT_CVAR( rt_barrel,                 1,      "master for EXPLODING BARREL DESTRUCTION: a scorch churned into the "
                                                 "floor where the barrel stood, and pieces of the barrel itself thrown "
