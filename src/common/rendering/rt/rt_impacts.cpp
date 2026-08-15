@@ -183,12 +183,14 @@ void RT_ClearArcMarks()
 }
 
 // `at` is METRES and on the surface; `normal` is a unit surface normal.
+// The defaults are on the DECLARATION in rt_sparks_internal.h; repeating them
+// here is an error the moment a second file calls this.
 void SpawnArcMark( const FVector3& at,
                    const FVector3& normal,
                    ArcFlavor       flavor,
-                   bool            withArcs  = true,
-                   float           burnScale = 1.f,
-                   ImpactFx        fx        = ImpactFx::Arc )
+                   bool            withArcs,
+                   float           burnScale,
+                   ImpactFx        fx )
 {
     const uint32_t cap =
         std::min( RT_ARC_MARK_MAX, uint32_t( std::max( 0, int{ cvar::rt_arc_max } ) ) );
@@ -582,9 +584,16 @@ using namespace rtsp;
 
 void RT_UpdateProjectileImpacts()
 {
-    if( !primaryLevel || !cvar::rt_arc )
+    // THE GATE IS THE UNION, because two features ride this one walk. Testing
+    // rt_arc alone would have made turning the arcs off silently take barrel
+    // destruction with it -- exactly the invisible coupling this walk exists to
+    // avoid, and it would have looked like a barrel bug rather than a gate. Each
+    // branch below still tests its OWN cvar, so either can be judged with the
+    // other out of the way.
+    if( !primaryLevel || !( cvar::rt_arc || cvar::rt_barrel ) )
     {
         g_projs.clear();
+        BarrelForgetAll();
         return;
     }
 
@@ -598,6 +607,7 @@ void RT_UpdateProjectileImpacts()
     if( tic < s_lastProjTic || tic - s_lastProjTic > TICRATE )
     {
         g_projs.clear();
+        BarrelForgetAll();
     }
     if( tic == s_lastProjTic )
     {
@@ -608,6 +618,12 @@ void RT_UpdateProjectileImpacts()
     auto it = primaryLevel->GetThinkerIterator< AActor >();
     while( AActor* mo = it.Next() )
     {
+        // BARRELS RIDE THIS WALK. They are not projectiles and share none of the
+        // logic below -- their edge is a sprite frame, not a disappearance --
+        // but the walk itself is the expensive part and it is already happening.
+        // See the note at the top of rt_barrel.cpp.
+        BarrelWalkActor( mo, tic );
+
         const ArcSource* src = ArcSourceFor( mo );
         if( !src )
         {
@@ -665,6 +681,8 @@ void RT_UpdateProjectileImpacts()
             mark->speed = vlen;
         }
     }
+
+    BarrelSweep( tic );
 
     // THE SWEEP IS THE IMPACT. Anything tracked last tic and not seen this one
     // has either lost MF_MISSILE (it exploded) or left the thinker list. Its

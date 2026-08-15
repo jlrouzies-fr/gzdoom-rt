@@ -180,6 +180,7 @@ const char* SurfKindName( SurfKind k )
         case SurfKind::Dirt: return "dirt";
         case SurfKind::Flesh: return "flesh";
         case SurfKind::Fluid: return "fluid";
+        case SurfKind::Barrel: return "barrel";
         default: return "other";
     }
 }
@@ -239,6 +240,27 @@ constexpr DebrisProfile RT_DEBRIS_PROFILES[ int( SurfKind::COUNT ) ] = {
     // Other -- unused, sparks.
     { RT_CONCRETE_RAMP, RT_CONCRETE_RAMP_N, nullptr,
       1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 0.55f, 1.65f, 1.f, 1.f, 1.f },
+
+    // BARREL PLATE. Not a surface anyone can be standing on -- see the note on
+    // SurfKind::Barrel -- so half this row is dead and it is worth saying which
+    // half rather than leaving the reader to check.
+    //
+    // LIVE:  the ramp (the age curve for a shard's own sprite colour), and
+    //        gravity / bounce / friction, which the sim reads for every chunk.
+    //        Aspect too: SpawnBarrelShards draws from this range, so the plate
+    //        proportions live here beside every other material's.
+    // DEAD:  count / size / life / speed, because a barrel does not spawn
+    //        through RT_SpawnImpactSparks -- it has its own rt_barrel_* knobs.
+    //        tint / albedo, because the shard colour path bypasses the whole
+    //        luminance-pinning pipeline these two drive.
+    //
+    // The numbers that are live say "heavy sheet steel": a shade heavier than
+    // concrete, almost no bounce, high friction so a landed piece stops rather
+    // than skating, and a SLOW tumble. Slow is deliberate -- a fast-spinning
+    // quarter-metre plate strobes as it passes edge-on and reads as a rendering
+    // fault, which is the same trap the debris tumble is capped for.
+    { RT_BARREL_RAMP, RT_BARREL_RAMP_N, nullptr,
+      1.f, 1.f, 1.f, 1.f, 1.05f, 0.30f, 0.85f, 0.45f, 0.95f, 0.55f, 1.f, 1.f },
 };
 
 const DebrisProfile& ProfileFor( SurfKind k )
@@ -375,7 +397,11 @@ void LoadSparkSurfaces()
     }
     l_flush();
 
-    int n[ 3 ]{};
+    // SIZED BY THE ENUM, not by the three classes this line happens to print.
+    // It was int n[3] and indexed by int(e.kind), which for anything labelled
+    // wood, dirt, flesh, fluid or other -- Other is index 6 -- wrote past the
+    // end of a stack array, and read past it again to print the Other count.
+    int n[ int( SurfKind::COUNT ) ]{};
     for( const SurfEntry& e : s_surfExact )
     {
         n[ int( e.kind ) ]++;
@@ -476,7 +502,11 @@ CCMD( spark_surfaces )
 {
     LoadSparkSurfaces();
 
-    int n[ 3 ]{};
+    // SIZED BY THE ENUM, not by the three classes this line happens to print.
+    // It was int n[3] and indexed by int(e.kind), which for anything labelled
+    // wood, dirt, flesh, fluid or other -- Other is index 6 -- wrote past the
+    // end of a stack array, and read past it again to print the Other count.
+    int n[ int( SurfKind::COUNT ) ]{};
     for( const SurfEntry& e : s_surfExact )
     {
         n[ int( e.kind ) ]++;

@@ -127,7 +127,71 @@ std::array< SparkFlash, RT_SPARK_FLASH_MAX >   s_flashes{};
 // each effect can be judged with the other out of the way.
 bool SparkSystemOn()
 {
-    return cvar::rt_spark || cvar::rt_arc;
+    return cvar::rt_spark || cvar::rt_arc || cvar::rt_barrel;
+}
+
+// THE POOL ALLOCATOR, lifted out of RT_SpawnImpactSparks when the barrel gained
+// a second spawn site. Duplicating the eviction rule would have been two places
+// for it to drift, and the rule is the non-obvious part of the pool.
+Spark* AllocSpark( SparkKind kind )
+{
+    const uint32_t cap =
+        std::min( RT_SPARK_HARDMAX, uint32_t( std::max( 0, int{ cvar::rt_spark_max } ) ) );
+    if( cap == 0 )
+    {
+        return nullptr;
+    }
+
+    uint32_t slot;
+    if( g_sparkCount < cap )
+    {
+        slot = g_sparkCount++;
+    }
+    else
+    {
+        // OLDEST OF ITS OWN KIND, not oldest overall, and the difference is
+        // load-bearing once the kinds have very different lifetimes.
+        //
+        // Sparks live ~5 s, debris ~20 s and barrel plate longer still, in one
+        // shared pool. A plain oldest-out rule therefore evicts the LONG-LIVED
+        // population almost every time -- it is reliably the older one -- so
+        // chips would be culled within a second or two of spawning and their
+        // long life would be a number that never happened. Evicting within the
+        // kind bounds each population by its own spawn rate instead, so none can
+        // starve another. Same shape as the ambient-first rule in
+        // RT_SpawnSmokePuffs, and for the same reason.
+        slot               = UINT32_MAX;
+        uint32_t oldestAny = 0;
+        for( uint32_t j = 0; j < g_sparkCount; j++ )
+        {
+            if( s_sparks[ j ].age > s_sparks[ oldestAny ].age )
+            {
+                oldestAny = j;
+            }
+            if( s_sparks[ j ].kind == kind &&
+                ( slot == UINT32_MAX || s_sparks[ j ].age > s_sparks[ slot ].age ) )
+            {
+                slot = j;
+            }
+        }
+        // None of this kind alive yet: fall back to the oldest of all, so a
+        // first chunk can still be born into a pool full of sparks.
+        if( slot == UINT32_MAX )
+        {
+            slot = oldestAny;
+        }
+    }
+
+    return &s_sparks[ slot ];
+}
+
+// A spark's identity, for its glow light's uniqueID and for every stable hash
+// its geometry uses. Monotonic and never reused, so a light can never be
+// inherited by a different particle.
+uint32_t NextSparkSid()
+{
+    static uint32_t s_next = 1;
+    return s_next++;
 }
 
 int s_lastTic = -1;
@@ -477,44 +541,10 @@ void RT_SpawnImpactSparks( const DVector3& pos,
 
     for( uint32_t i = 0; i < want; i++ )
     {
-        uint32_t slot;
-        if( g_sparkCount < cap )
+        Spark* slotp = AllocSpark( kind );
+        if( !slotp )
         {
-            slot = g_sparkCount++;
-        }
-        else
-        {
-            // OLDEST OF ITS OWN KIND, not oldest overall, and the difference is
-            // load-bearing once sparks and debris have very different lifetimes.
-            //
-            // Sparks live ~5 s and debris ~20 s in one shared pool. A plain
-            // oldest-out rule therefore evicts DEBRIS almost every time -- it is
-            // reliably the older population -- so chips would be culled within a
-            // second or two of spawning and their 20 s life would be a number
-            // that never happened. Evicting within the kind bounds each
-            // population by its own spawn rate instead, so neither can starve
-            // the other. Same shape as the ambient-first rule in
-            // RT_SpawnSmokePuffs, and for the same reason.
-            slot                 = UINT32_MAX;
-            uint32_t oldestAny   = 0;
-            for( uint32_t j = 0; j < g_sparkCount; j++ )
-            {
-                if( s_sparks[ j ].age > s_sparks[ oldestAny ].age )
-                {
-                    oldestAny = j;
-                }
-                if( s_sparks[ j ].kind == kind &&
-                    ( slot == UINT32_MAX || s_sparks[ j ].age > s_sparks[ slot ].age ) )
-                {
-                    slot = j;
-                }
-            }
-            // None of this kind alive yet: fall back to the oldest of all, so a
-            // first chip can still be born into a pool full of sparks.
-            if( slot == UINT32_MAX )
-            {
-                slot = oldestAny;
-            }
+            break;
         }
 
         // A disc sample, sqrt-weighted so the cone is uniform rather than
@@ -525,7 +555,7 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         FVector3 dir = refl + ( tangent * std::cos( ang ) + bitangent * std::sin( ang ) ) * rad;
         dir.MakeUnit();
 
-        Spark& sp = s_sparks[ slot ];
+        Spark& sp = *slotp;
 
         // BORN OFF THE SURFACE, NOT ON IT. A spark spawned exactly on the face
         // it came from makes tier 2's first trace report an immediate self-hit,
@@ -581,10 +611,7 @@ void RT_SpawnImpactSparks( const DVector3& pos,
         // Resolved here, once per impact, because the lookup decodes a bitmap on
         // first sight of a texture. Sparks never read it.
         sp.baseRgb = dbr ? AverageTextureColor( hitTexture ) : 0u;
-        // The spark's identity, for its glow light's uniqueID. Monotonic and
-        // never reused, so a light can never be inherited by a different spark.
-        static uint32_t s_nextSid = 1;
-        sp.sid                    = s_nextSid++;
+        sp.sid = NextSparkSid();
 
         s_dbgSpawned++;
     }
@@ -825,7 +852,7 @@ void RT_UpdateSparks()
             // Per CLASS, not merely per kind: dirt drops dead where a wood
             // splinter floats down, and that difference is most of what tells
             // them apart in motion.
-            const bool           isDbr = ( sp.kind == SparkKind::Debris );
+            const bool           isDbr = IsChunk( sp.kind );
             const DebrisProfile& pr    = ProfileFor( sp.surf );
             const float          kGrav = isDbr ? gravityD * pr.gravity : gravity;
             const float          kBnce =
@@ -921,6 +948,34 @@ void RT_UpdateSparks()
                         // debris does.
                         sp.phase += sp.spin * sp.age;
                         sp.spin = 0.f;
+                        // A SHARD LIES DOWN. Debris is a billboard, so where its
+                        // normal points is a shading choice and nothing more; a
+                        // shard is a real oriented plate, and one frozen mid-
+                        // tumble stands on its edge in the floor. Zeroing the
+                        // spin is what makes this safe to state as a normal
+                        // rather than as a rotation -- the draw only turns the
+                        // plate about its own normal once spin is gone, so the
+                        // face stays flat and only the yaw is arbitrary.
+                        //
+                        // Floors in this game are not all level, so it takes the
+                        // plane's normal rather than world up. Reading the plane
+                        // it settled ON is the point: on a sloped floor a chunk
+                        // lying dead flat in world space is visibly sunk at one
+                        // edge and floating at the other.
+                        if( sp.kind == SparkKind::Shard )
+                        {
+                            const DVector3 fn = sec->floorplane.Normal();
+                            FVector3       up{ float( fn.X ), float( fn.Y ), float( fn.Z ) };
+                            if( up.LengthSquared() > 1e-6f )
+                            {
+                                up.MakeUnit();
+                                sp.nrm = up;
+                            }
+                            else
+                            {
+                                sp.nrm = FVector3{ 0, 0, 1 };
+                            }
+                        }
                     }
                 }
             }

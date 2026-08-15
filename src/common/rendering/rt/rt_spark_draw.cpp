@@ -586,8 +586,9 @@ void RT_DrawSparks()
     {
         const Spark& sp = s_sparks[ i ];
 
-        const bool           isDbr = ( sp.kind == SparkKind::Debris );
-        const DebrisProfile& pr    = ProfileFor( sp.surf );
+        const bool           isDbr   = IsChunk( sp.kind );
+        const bool           isShard = ( sp.kind == SparkKind::Shard );
+        const DebrisProfile& pr      = ProfileFor( sp.surf );
 
         const uint32_t* ramp  = isDbr ? pr.ramp : RT_SPARK_RAMP;
         const int       rampN = isDbr ? pr.rampN : RT_SPARK_RAMP_N;
@@ -645,7 +646,46 @@ void RT_DrawSparks()
         // as "too bright colors". rt_spark_debris_albedo pins the LUMINANCE and
         // lets the texture supply only the hue, so a pale wall and a dark one
         // produce chips of the same believable darkness in different colours.
-        if( isDbr && sp.baseRgb != 0u )
+        if( isShard && sp.baseRgb != 0u )
+        {
+            // A SHARD KEEPS THE SPRITE'S OWN VALUE, and that is the one place it
+            // parts company with debris.
+            //
+            // The debris path deliberately throws a texture's brightness away
+            // and pins every chip to rt_spark_debris_albedo, because a wall
+            // texture's MEAN is an accident of its art -- some average near
+            // white -- and only its hue is worth keeping. A shard's colour is
+            // not a mean of anything: it is one entry chosen out of BAR1A0's
+            // fourteen, and the spread between those entries IS the effect.
+            // Pinning the luminance would hand every chunk of a burst the same
+            // brightness and delete exactly the variety the palette was sampled
+            // for. Nor is the chroma expanded: the barrel is grey by design, and
+            // saturating grey manufactures a colour the artist never used.
+            //
+            // So the sprite value passes straight through, scaled by one knob.
+            // That knob defaults ABOVE 1 on purpose: sprite pixels are already
+            // LIT values, and feeding a lit value in as an albedo -- which the
+            // path tracer then lights again -- lands a shade darker than the
+            // barrel it came off.
+            const float k = std::max( 0.f, float{ cvar::rt_barrel_albedo } );
+
+            float tr = ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f;
+            float tg = ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f;
+            float tb = ( sp.baseRgb & 0xFF ) / 255.f;
+
+            // The ramp's own darkening, as a fraction of its first entry --
+            // identical to the debris path, and for the same reason: a shard
+            // should dull with age without being recoloured into something the
+            // sprite never contained.
+            const uint32_t r0    = ramp[ 0 ];
+            const float    l0    = ( ( r0 >> 16 ) & 0xFF ) / 255.f;
+            const float    curve = l0 > 0.01f ? std::clamp( r / l0, 0.f, 1.f ) : 1.f;
+
+            r = std::min( 1.f, tr * k * curve );
+            g = std::min( 1.f, tg * k * curve );
+            b = std::min( 1.f, tb * k * curve );
+        }
+        else if( isDbr && sp.baseRgb != 0u )
         {
             // The class scales both, and fluid pushes tint past 1 so it CLAMPS at
             // full texture colour -- see its row.
@@ -762,7 +802,7 @@ void RT_DrawSparks()
         FVector3 ex = right * half;
         FVector3 ey = up * half;
 
-        if( isDbr && !pixel )
+        if( isDbr && !isShard && !pixel )
         {
             // RUBBLE, NOT PIXELS. A chip gets its own orientation, its own
             // tumble and its own aspect ratio, so a burst reads as assorted
@@ -857,7 +897,194 @@ void RT_DrawSparks()
 
         const uint32_t base = uint32_t( batch.verts.size() );
 
-        if( isDbr && !pixel )
+        if( isShard && !pixel )
+        {
+            // A PIECE OF THE BARREL, and the reason it is a hundred lines rather
+            // than a bigger debris chip is that the two differ in KIND.
+            //
+            // Everything above builds a CAMERA-FACING quad from the screen's
+            // right/up basis. At 2 cm that is invisible -- a chip has no
+            // silhouette to give it away. At 25 cm it is the whole problem:
+            // asked for "bigger pieces that really look like the barrel metal
+            // sprite parts, not just square particle pixels", and a large flat
+            // billboard that keeps turning to face you as you walk round it is
+            // the definition of a square particle pixel however it is coloured.
+            //
+            // So a shard is built in WORLD SPACE, out of three things a torn
+            // barrel plate actually has:
+            //
+            //   CURVE.  It is a section of a cylinder, not a plane. The bend is
+            //           real geometry with real normals across it, so one edge
+            //           catches a light while the other does not -- which is
+            //           what the eye reads as sheet metal rather than as card.
+            //   TEARS.  Both long edges are ragged, at radii hashed from the
+            //           shard's own sid so they are fixed for its life.
+            //   TUMBLE. About a WORLD axis, not within the screen plane, so the
+            //           plate genuinely presents its edge sometimes. That is
+            //           only affordable BECAUSE it is double-sided below.
+            //
+            // DOUBLE-SIDED, and not as a safety net. A world-oriented plate is
+            // seen from behind roughly half the time; single-sided it would wink
+            // out or shade black at exactly the moments the tumble is most
+            // legible. Twenty triangles a shard against a dozen shards is
+            // nothing next to that.
+            const int segs = std::clamp( int{ cvar::rt_barrel_segs }, 2, 12 );
+
+            // THE FRAME, in two cases, and the split is what lets a settled
+            // shard lie FLAT. While it tumbles the whole frame turns about a
+            // world axis; once the sim has stopped it -- spin zeroed, the
+            // floor plane's normal written into nrm -- only the yaw about its
+            // own normal is left, and a yaw cannot lift the plate off the floor.
+            FVector3 nn = sp.nrm;
+            if( nn.LengthSquared() < 1e-6f )
+            {
+                nn = FVector3{ 0, 0, 1 };
+            }
+            nn.MakeUnit();
+
+            FVector3 tt = std::abs( nn.Z ) < 0.9f ? ( nn ^ FVector3{ 0, 0, 1 } )
+                                                  : ( nn ^ FVector3{ 1, 0, 0 } );
+            tt.MakeUnit();
+
+            const float ang = sp.phase + sp.spin * sp.age;
+
+            if( std::abs( sp.spin ) > 1e-6f )
+            {
+                // Rodrigues about a stable per-shard axis. Hashed from the sid
+                // rather than drawn per frame, or the plate would jitter instead
+                // of turn.
+                FVector3 ax{ hash01( sp.sid * 0x9E3779B9u ) * 2.f - 1.f,
+                             hash01( sp.sid * 0x85EBCA6Bu ) * 2.f - 1.f,
+                             hash01( sp.sid * 0xC2B2AE35u ) * 2.f - 1.f };
+                if( ax.LengthSquared() < 1e-6f )
+                {
+                    ax = FVector3{ 0, 0, 1 };
+                }
+                ax.MakeUnit();
+
+                const float ca     = std::cos( ang );
+                const float sa     = std::sin( ang );
+                auto        l_rot = [ & ]( const FVector3& v ) {
+                    return v * ca + ( ax ^ v ) * sa + ax * ( ( ax | v ) * ( 1.f - ca ) );
+                };
+                nn = l_rot( nn );
+                tt = l_rot( tt );
+                nn.MakeUnit();
+                // Re-orthogonalised: the two are rotated independently, and at a
+                // twenty-second life the float error is not academic.
+                tt = tt - nn * ( tt | nn );
+                if( tt.LengthSquared() < 1e-6f )
+                {
+                    tt = std::abs( nn.Z ) < 0.9f ? ( nn ^ FVector3{ 0, 0, 1 } )
+                                                 : ( nn ^ FVector3{ 1, 0, 0 } );
+                }
+                tt.MakeUnit();
+            }
+            else
+            {
+                const FVector3 bb = nn ^ tt;
+                tt                = tt * std::cos( ang ) + bb * std::sin( ang );
+                tt.MakeUnit();
+            }
+
+            const FVector3 ez = nn ^ tt; // the length axis, along the bend's spine
+
+            // Aspect splits one size into a PLATE rather than a lozenge: wide
+            // across the bend, long along it, which is what a stave is.
+            const float W  = half * std::max( 0.15f, sp.aspect );
+            const float Lh = half / std::max( 0.15f, sp.aspect );
+
+            // The bend. R is derived so the plate still spans W to either side
+            // whatever the arc is, so this knob changes how CURVED a shard is
+            // and not how big -- which is what makes it tunable on its own.
+            const float arc = std::clamp( float{ cvar::rt_barrel_curve }, 0.05f, 2.8f );
+            const float R   = W / std::max( 0.05f, std::sin( arc * 0.5f ) );
+
+            for( int k = 0; k <= segs; k++ )
+            {
+                const float u   = float( k ) / float( segs ) - 0.5f;
+                const float phi = u * arc;
+
+                const FVector3 mid =
+                    c + nn * ( R * ( std::cos( phi ) - 1.f ) ) + tt * ( R * std::sin( phi ) );
+                FVector3 vn = nn * std::cos( phi ) + tt * std::sin( phi );
+                vn.MakeUnit();
+
+                // The torn edges. Independent per edge and per station, so no
+                // two shards share an outline and neither edge is straight.
+                const float ja =
+                    0.55f + 0.45f * hash01( sp.sid * 2654435761u + uint32_t( k ) * 7919u );
+                const float jb =
+                    0.55f + 0.45f * hash01( sp.sid * 40503u + uint32_t( k ) * 22695477u + 17u );
+
+                const RgNormalPacked32 pn = rt.rgUtilPackNormal( vn.X, vn.Y, vn.Z );
+
+                const FVector3 pa = mid + ez * ( Lh * ja );
+                const FVector3 pb = mid - ez * ( Lh * jb );
+
+                batch.verts.push_back( RgPrimitiveVertex{
+                    .position     = { pa.X, pa.Y, pa.Z },
+                    .normalPacked = pn,
+                    .texCoord     = { float( k ) / float( segs ), 0.f },
+                    .color        = col,
+                } );
+                batch.verts.push_back( RgPrimitiveVertex{
+                    .position     = { pb.X, pb.Y, pb.Z },
+                    .normalPacked = pn,
+                    .texCoord     = { float( k ) / float( segs ), 1.f },
+                    .color        = col,
+                } );
+
+                // The back face: the same two points with the normal flipped.
+                // Recomputed rather than read back out of the packed one --
+                // rgUtilPackNormal is lossy and there is no unpack helper here.
+                const RgNormalPacked32 pn2 = rt.rgUtilPackNormal( -vn.X, -vn.Y, -vn.Z );
+
+                batch.verts.push_back( RgPrimitiveVertex{
+                    .position     = { pa.X, pa.Y, pa.Z },
+                    .normalPacked = pn2,
+                    .texCoord     = { float( k ) / float( segs ), 0.f },
+                    .color        = col,
+                } );
+                batch.verts.push_back( RgPrimitiveVertex{
+                    .position     = { pb.X, pb.Y, pb.Z },
+                    .normalPacked = pn2,
+                    .texCoord     = { float( k ) / float( segs ), 1.f },
+                    .color        = col,
+                } );
+            }
+
+            // Four vertices per station: front pair, then back pair. The back
+            // triangles are wound the other way round, so whichever side faces
+            // the camera is a front face with its normal pointing at it.
+            for( int k = 0; k < segs; k++ )
+            {
+                const uint32_t a0 = base + uint32_t( k * 4 );
+                const uint32_t a1 = a0 + 1;
+                const uint32_t a2 = a0 + 4;
+                const uint32_t a3 = a0 + 5;
+
+                batch.idx.push_back( a0 );
+                batch.idx.push_back( a1 );
+                batch.idx.push_back( a3 );
+                batch.idx.push_back( a0 );
+                batch.idx.push_back( a3 );
+                batch.idx.push_back( a2 );
+
+                const uint32_t b0 = a0 + 2;
+                const uint32_t b1 = b0 + 1;
+                const uint32_t b2 = b0 + 4;
+                const uint32_t b3 = b0 + 5;
+
+                batch.idx.push_back( b0 );
+                batch.idx.push_back( b3 );
+                batch.idx.push_back( b1 );
+                batch.idx.push_back( b0 );
+                batch.idx.push_back( b2 );
+                batch.idx.push_back( b3 );
+            }
+        }
+        else if( isDbr && !pixel )
         {
             // AN IRREGULAR POLYGON, NOT A QUAD. A rotated rectangle is still a
             // rectangle: reported as debris looking like "just a pixel /

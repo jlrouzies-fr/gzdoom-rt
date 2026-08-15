@@ -799,6 +799,7 @@ if (HAVE_RT)
 		common/rendering/rt/rt_spark_surfaces.cpp
 		common/rendering/rt/rt_spark_draw.cpp
 		common/rendering/rt/rt_impacts.cpp
+		common/rendering/rt/rt_barrel.cpp
 		common/rendering/rt/rt_presets.cpp
 		common/rendering/rt/rt_weather.cpp
 		common/rendering/rt/rt_export.cpp

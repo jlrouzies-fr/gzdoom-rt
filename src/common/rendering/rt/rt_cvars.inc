@@ -3375,6 +3375,86 @@
                                                 "rt_smoke_ambient_budget bounds them again and they cannot starve the "
                                                 "player's own muzzle smoke." )
 
+    RT_CVAR( rt_barrel,                 1,      "master for EXPLODING BARREL DESTRUCTION: a scorch churned into the "
+                                                "floor where the barrel stood, and pieces of the barrel itself thrown "
+                                                "off it.\n"
+                                                "INDEPENDENT OF rt_smoke. The barrel's smoke burst is a separate "
+                                                "feature under rt_smoke_barrel, and this deliberately does not ride it "
+                                                "-- three-deep gating is how an effect ends up looking broken when the "
+                                                "cvar that actually switched it off is two features away.\n"
+                                                "It DOES ride the same actor walk as rt_arc, so that walk now runs if "
+                                                "EITHER is on. Turning the arcs off cannot take barrels with it." )
+    RT_CVAR( rt_barrel_debris,          1,      "the barrel comes apart into PLATE. Not debris chips with a bigger "
+                                                "size: a chip is a camera-facing billboard, which is an invisible cheat "
+                                                "at 2 cm and a glaring one at 25, so a shard is world-oriented, "
+                                                "genuinely curved sheet with torn ends. See the note in "
+                                                "rt_spark_draw.cpp before reaching for a size knob to fix a shape "
+                                                "problem." )
+    RT_CVAR( rt_barrel_count,           12,     "pieces per barrel. LOW BY DESIGN -- a barrel is one object and it "
+                                                "comes apart into a handful of recognisable plates, not into shrapnel. "
+                                                "Raising this is the fastest way to turn the effect back into the "
+                                                "particle spray it was specifically built not to be." )
+    RT_CVAR( rt_barrel_size,            0.17f,  "metres, the nominal piece. Jittered 0.45x..1.7x per shard, so a burst "
+                                                "carries two or three big plates and a scatter of smaller stuff rather "
+                                                "than a set of matching parts. 0.17 is about 11 map units against a "
+                                                "barrel 20 across -- a piece, not a fragment." )
+    RT_CVAR( rt_barrel_life,            26.f,   "seconds a piece lasts, jittered 0.75x..1.25x. Long: this is wreckage "
+                                                "you should still be walking round after the fight, which is the whole "
+                                                "difference between destruction and an effect. The last quarter shrinks "
+                                                "the piece to nothing rather than fading it -- see the note on "
+                                                "rt_spark_debris_life about why debris must never fade by alpha." )
+    RT_CVAR( rt_barrel_speed,           5.5f,   "m/s a piece leaves the blast, jittered 0.45x..1.3x. Sheet steel is "
+                                                "heavy and it does not go far: much above this the pieces clear the "
+                                                "room and land where nothing connects them to the barrel." )
+    RT_CVAR( rt_barrel_up,              0.75f,  "how much the burst is biased UPWARD, as a fraction added to a "
+                                                "spherical throw. At 0 the throw is a full sphere and half the plate "
+                                                "goes straight into the floor where it is never seen; this is what puts "
+                                                "the burst in the air long enough to be read." )
+    RT_CVAR( rt_barrel_albedo,          1.45f,  "brightness of a piece, as a multiplier on the colour it took from "
+                                                "BAR1A0.\n"
+                                                "ABOVE 1 ON PURPOSE, and this is not a fudge: sprite pixels are already "
+                                                "LIT values, and feeding a lit value in as an albedo -- which the path "
+                                                "tracer then lights again -- lands a shade darker than the barrel it "
+                                                "came off.\n"
+                                                "Note this is NOT rt_spark_debris_albedo's job. That knob PINS every "
+                                                "chip to one luminance, because a wall texture's mean brightness is an "
+                                                "accident of its art. A shard's colour is one entry out of the "
+                                                "barrel's fourteen and the spread between them IS the effect, so it is "
+                                                "scaled rather than pinned." )
+    RT_CVAR( rt_barrel_curve,           0.95f,  "how curved a piece is, in RADIANS of the barrel's cylinder that one "
+                                                "plate spans. This is the single knob that separates sheet metal from "
+                                                "card: a flat piece has no bend for a light to travel across, so it "
+                                                "shades uniformly and reads as a painted quad however it is coloured. "
+                                                "The piece keeps its width whatever this is, so curvature and size are "
+                                                "independent. 0 is not available -- it is clamped to 0.05, because a "
+                                                "genuinely flat plate is the failure mode." )
+    RT_CVAR( rt_barrel_segs,            5,      "stations across the bend. Vertex cost is 4 per station and triangle "
+                                                "cost 4 per gap, doubled because a shard is drawn on both sides. 5 is "
+                                                "enough for the curve to read; the knob exists to prove that a shape "
+                                                "complaint is not a tessellation complaint." )
+    RT_CVAR( rt_barrel_far,             48.f,   "metres beyond which a barrel leaves nothing. A SPAWN cull, for the "
+                                                "reason rt_spark_far is one: eviction is oldest-out while the blast "
+                                                "worth keeping is the one in front of you, so a barrel going off across "
+                                                "the map must not push it out of the pool." )
+    RT_CVAR( rt_barrel_scorch,          1,      "the barrel burns the floor it stood on. THE SAME DECAL the rocket and "
+                                                "the plasma arcs leave, and deliberately sharing their knobs: darkness, "
+                                                "mottling, blob count and lifetime are the rt_arc_burn_* group, because "
+                                                "burnt floor is one kind of thing and should not have three sets of "
+                                                "controls that can disagree." )
+    RT_CVAR( rt_barrel_scorch_scale,    5.0f,   "the barrel's scorch, as a multiple of rt_arc_burn_radius. The only "
+                                                "part of the mark that is the barrel's own, because the radius is the "
+                                                "only thing a barrel scorch has that a rocket's does not. Compare "
+                                                "rt_ember_burn_scale (3.4) for the rocket." )
+    RT_CVAR( rt_barrel_embers,          1,      "coals still glowing in the scorch, with their thin smoke threads. The "
+                                                "rocket's ember mechanism pointed at the barrel -- so it takes the "
+                                                "whole rt_ember_* group, including rt_ember_smoke, and needs no knobs "
+                                                "of its own. Off leaves a bare scorch." )
+    RT_CVAR_NOARCH( rt_barrel_debug,    0,      "log every barrel blast: where it was, how many pieces it made, and "
+                                                "whether the distance cull rejected it. The distinction that costs a "
+                                                "session if it is not printed -- 'no barrel was ever detected' and "
+                                                "'detected, then culled' are identical on screen and have completely "
+                                                "different fixes." )
+
     RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
     RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
     RT_CVAR( rt_water_b,                255,    "water color Blue [0,255]" )

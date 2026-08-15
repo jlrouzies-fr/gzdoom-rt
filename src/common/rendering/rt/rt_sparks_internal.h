@@ -123,6 +123,48 @@ constexpr uint32_t RT_EMBER_RAMP[] = {
 constexpr int RT_EMBER_RAMP_N = int( std::size( RT_EMBER_RAMP ) );
 
 // ---------------------------------------------------------------------------
+// THE BARREL, and the first thing to say about it is that the obvious guess was
+// wrong. An exploding-barrel chunk was designed as "green metal with a rust
+// band" from memory of the PC barrel; Doom 64's BAR1A0 is nothing of the sort.
+//
+// Dumped from D64RTR_v15.WAD, BAR1A0 is 48x50 with exactly FOURTEEN distinct
+// opaque colours, and they form one clean value ramp from near-black to a cold
+// blue-grey highlight -- 080810, 101010, 101018, 181821, 212121, 212129,
+// 292931, 393939, 4A4A4A, 5A5A5A, 63636B, 73737B, 8C8C94, 9CADC6. There is no
+// green and no rust anywhere in it. The barrel is DARK, COLD, GREY-BLUE METAL,
+// and a chunk of it painted green would have read as belonging to a different
+// game -- which is precisely why the sprite was dumped before a colour was
+// chosen rather than after the result looked wrong.
+//
+// TWO TABLES, because a shard needs two different things from the art:
+//
+// SHADES is the PICK palette. A shard chooses one entry and keeps it for life,
+// so a burst comes out assorted the way torn plate is -- some pieces catching
+// the light, some nearly black. Spread across the sprite's value range on
+// purpose rather than weighted by pixel count: weighting by frequency would
+// pick the three darkest entries almost every time (they are two thirds of the
+// sprite) and the burst would come out uniformly black.
+//
+// The 9CADC6 highlight is deliberately NOT here. In the sprite it is a specular
+// rim -- a lighting result, not a material -- and a whole chunk painted with it
+// would read as a piece of blue plastic. The path tracer supplies the highlight
+// itself; see docs' "keep the art, add shading on top".
+constexpr uint32_t RT_BARREL_SHADES[] = {
+    0x101018, 0x1D1D25, 0x292931, 0x393939, 0x4A4A4A, 0x5A5A5A, 0x63636B, 0x73737B,
+};
+constexpr int RT_BARREL_SHADES_N = int( std::size( RT_BARREL_SHADES ) );
+
+// RAMP is the AGE curve, in the same role the other ramps play for debris: the
+// draw reads how much its first entry has darkened by and multiplies the
+// shard's own colour down by that fraction. So a shard keeps its identity and
+// merely dulls, rather than being recoloured into something the sprite never
+// contained. The sprite's own value ramp, coarsened.
+constexpr uint32_t RT_BARREL_RAMP[] = {
+    0x73737B, 0x5A5A5A, 0x4A4A4A, 0x393939, 0x292931, 0x1D1D25, 0x101018, 0x080810,
+};
+constexpr int RT_BARREL_RAMP_N = int( std::size( RT_BARREL_RAMP ) );
+
+// ---------------------------------------------------------------------------
 // Surface classification -- rt_spark_surfaces.cpp
 // ---------------------------------------------------------------------------
 
@@ -137,6 +179,18 @@ enum class SurfKind : uint8_t
     Flesh,
     Fluid,
     Other,
+    // NOT A WALL, and it is here anyway on purpose. Every other entry is a class
+    // a texture can be LABELLED with; Barrel is a class a fragment can BE. It
+    // rides this enum because DebrisProfile is indexed by it and the profile
+    // system -- one row of multipliers stating only how a material differs -- is
+    // exactly what a barrel chunk needs; a parallel table would have been the
+    // same fifteen fields under a different name.
+    //
+    // Nothing can be labelled into it: ParseSurfKind never returns Barrel, so no
+    // line of rt/data/spark_surfaces.txt can turn a wall into one however it is
+    // spelled. APPENDED rather than inserted -- RT_DEBRIS_PROFILES is positional
+    // and Other's index is load-bearing as the out-of-range fallback.
+    Barrel,
     COUNT,
 };
 
@@ -227,7 +281,33 @@ enum class SparkKind : uint8_t
 {
     Spark,  // hot, additive, casts a flash
     Debris, // dull, OPAQUE ray-traced geometry, casts nothing
+    // A BARREL CHUNK, and it is a third kind rather than big debris because the
+    // difference is structural, not a size multiplier.
+    //
+    // Debris is a CAMERA-FACING billboard: the quad is built from the screen
+    // basis and only spun within it. That is invisible at 2 cm -- a chip has no
+    // silhouette to give it away -- and it falls apart the moment the piece is
+    // 25 cm across, because a plate that keeps turning to face you as you walk
+    // round it reads as a sprite rather than as a thing lying on the floor.
+    //
+    // A shard is therefore WORLD-ORIENTED and genuinely curved: a section of the
+    // barrel's own cylinder, torn at both ends, with real normals across the
+    // bend. That is what makes it read as a piece of the barrel instead of a
+    // large square particle. It shares the pool, the sim and the debris colour
+    // path with Debris and diverges only in geometry and in how its colour is
+    // resolved.
+    Shard,
 };
+
+// Anything that is not a hot spark: opaque traced geometry, thrown by gravity,
+// bounced, settled, coloured from art rather than from the heat ramp. Written
+// out because `kind == Debris` was the test in five places and every one of them
+// meant "not a spark" -- Shard silently failing four of them is the exact shape
+// of bug this file's history is made of.
+inline bool IsChunk( SparkKind k )
+{
+    return k != SparkKind::Spark;
+}
 
 // Pool ceilings. The cvars bound how much is used, so raising a cvar past its
 // ceiling is clamped rather than corrupting.
@@ -270,6 +350,16 @@ extern std::array< SparkFlash, RT_SPARK_FLASH_MAX > s_flashes;
 // and lights all test this; the SPAWN sites test their own cvar, so each effect
 // can still be judged with the others out of the way.
 bool SparkSystemOn();
+
+// A slot in the shared pool, or nullptr if the pool is configured to zero.
+// EVICTS WITHIN THE KIND: sparks live ~5 s, debris ~20 s and shards longer
+// still, so a plain oldest-out rule would evict the long-lived population every
+// time and their lifetimes would be numbers that never happened.
+Spark* AllocSpark( SparkKind kind );
+
+// Monotonic, never reused. A particle's identity: its light's uniqueID and the
+// seed of every stable hash its geometry uses.
+uint32_t NextSparkSid();
 
 // Tier 2 of the collision: only ever called when a step LEFT its sector.
 bool SparkHitWall( Spark& sp, const FVector3& from, const FVector3& to, float bounce, float fric );
@@ -318,6 +408,18 @@ extern uint32_t                               s_arcCount;
 void RT_ClearArcMarks();
 void AgeArcMarks( float dt );
 
+// Burn one mark onto a surface. `at` is METRES and lies ON the surface;
+// `normal` is a unit surface normal. The DEFAULTS LIVE HERE, not on the
+// definition in rt_impacts.cpp -- a default argument may be stated once per
+// scope, and once a second translation unit calls this it has to be the
+// declaration that carries them.
+void SpawnArcMark( const FVector3& at,
+                   const FVector3& normal,
+                   ArcFlavor       flavor,
+                   bool            withArcs  = true,
+                   float           burnScale = 1.f,
+                   ImpactFx        fx        = ImpactFx::Arc );
+
 // Where a mark's embers sit, in world metres. SHARED by the draw and the smoke
 // so the two agree by construction rather than by both being handed the same
 // numbers -- the arcs' creepers had exactly that split once.
@@ -325,6 +427,32 @@ FVector3 EmberPos( const ArcMark& m, int i, float burnRad );
 
 // How many projectiles are being tracked right now, for the `sparks` ladder.
 size_t TrackedProjectileCount();
+
+// ---------------------------------------------------------------------------
+// Barrel destruction -- rt_barrel.cpp
+//
+// Rides the projectile walk rather than opening a second thinker iteration:
+// RT_UpdateProjectileImpacts is already visiting every actor once a tic, and a
+// barrel is just another actor in that sweep. It does NOT ride rt_smoke's walk,
+// which is where the barrel's smoke burst lives -- that would have made barrel
+// fire and debris silently depend on rt_smoke and rt_smoke_barrel, the
+// three-deep gating the impact plan rejects.
+// ---------------------------------------------------------------------------
+
+// One actor, one tic. Detects the rising edge of the explosion and fires
+// everything off it. Safe to call for any actor; it filters.
+void BarrelWalkActor( AActor* mo, int tic );
+
+// Drop marks for barrels not seen this tic. Called once after the walk.
+void BarrelSweep( int tic );
+
+// Drop every tracked barrel. On a level change or a load, every AActor* held
+// belongs to the old level and must not be touched again.
+void BarrelForgetAll();
+
+// Throw a burst of barrel plate from a point. `at` is METRES. Public because
+// the `barrel_here` lab command wants it without an actor.
+void SpawnBarrelShards( const FVector3& at, const FVector3& up );
 
 // ---------------------------------------------------------------------------
 // Geometry batching and lights -- rt_spark_draw.cpp
