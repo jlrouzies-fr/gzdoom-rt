@@ -151,7 +151,17 @@ void RT_DrawDust()
     s_verts.clear();
     s_idx.clear();
 
-    if( !cvar::rt_dust || !primaryLevel )
+    // primaryLevel NON-NULL IS NOT THE SAME AS "A MAP IS LOADED". On the title
+    // screen and in the menus -- i.e. any launch without +map -- primaryLevel
+    // exists but holds no geometry, and the PointInSector() call further down
+    // walks a BSP that was never built. That is a null read at address 0 and it
+    // took out the whole title screen: "GZDoom Very Fatal Error" before the first
+    // frame, with plain DOOM II and no mod at all. +map hid it completely, which
+    // is why it survived -- every launcher here passes one.
+    //
+    // Same emptiness test RT_UpdateSectorEmisThreshold already uses, so the two
+    // agree on what "no map" means.
+    if( !cvar::rt_dust || !primaryLevel || primaryLevel->sectors.Size() == 0 )
     {
         return;
     }
