@@ -2511,7 +2511,10 @@
                                                 "this (with the blur and the depth bias too) removes 0.2 of a 1.0 "
                                                 "artefact and leaves the outline in place. The TEMPORAL UPSCALER draws "
                                                 "it -- gone with DLSS and FSR both off, worst under DLAA. See "
-                                                "docs/rt-volumetric-edge-outlines.md. "
+                                                "docs/rt-volumetric-edge-outlines.md -- where it is now RESOLVED, by rt_volume_taccum rather than by anything here. "
+                                                "UNDER rt_volume_taccum the jitter is averaged over 4 SAMPLES "
+                                                "PER PIXEL PER FRAME instead of over the temporal history, so "
+                                                "it still needs to be this wide -- for a different reason. "
                                                 "SO DO NOT LOWER THIS. 5 IS LOAD-BEARING: the volume is lit at one "
                                                 "sample per cell with one shadow ray and has no spatial denoiser of "
                                                 "its own, so this jitter is most of what stands between you and "
@@ -2766,7 +2769,11 @@
     RT_CVAR( rt_volume_ambient,         0.2f,   "ambient term" )
     RT_CVAR( rt_volume_lintensity,      1.f,    "intensity of lights for scattering" )
     RT_CVAR( rt_volume_lassymetry,      0.5f,   "scaterring phase function assymetry" )
-    RT_CVAR( rt_volume_history,         8.f,    "max history length for scaterring accumulation (in frames)" )
+    RT_CVAR( rt_volume_history,         8.f,    "max history length for the SCREEN-SPACE scattering accumulation, in "
+                                                "frames. INERT WHEN rt_volume_taccum > 0, which is the shipping "
+                                                "default: the medium is then accumulated in the froxel grid in "
+                                                "world space and the screen-space accumulator does not run at "
+                                                "all. Use rt_volume_taccum to set the window instead." )
 
     // --- Light shafts from ordinary lamps -----------------------------------
     // docs/plan-light-shafts.md. The froxel pass scatters exactly ONE light --
