@@ -325,10 +325,51 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
 
 bool RT_ModMapNeedsLiveGeometryUpload()
 {
-    // PWAD maps use RT_MapName like "d64rtr_v15_map01" and have no baked rt/scenes/*.
-    // Stock Doom II maps are plain "map01" and rely on static gltf — those can omit uploads.
+    // Does this map have baked rt/scenes geometry to fall back on? If not, the
+    // world has to be uploaded live or it is not drawn AT ALL -- walls and flats
+    // are skipped as "static exportables" and the player is left looking at the
+    // sky dome with only sprites in it.
+    //
+    // THE UNDERSCORE TEST THIS REPLACES WAS A PROXY, AND IT WAS WRONG TWICE.
+    // It read "name contains '_' => PWAD => no scene", which covers Retribution
+    // (d64rtr_v15_map01) but silently assumes every plain `map01` HAS a scene.
+    // That assumption is a property of the install, not of the name: this tree
+    // ships Retribution's rt/scenes and keeps Doom II's in scenes_doom2_backup,
+    // so stock doom2.wad rendered as pure sky. It also fails the other way for
+    // any PWAD that DOES ship a scene, whose baked geometry would be ignored.
+    //
+    // Asking the filesystem answers both, and it is the same question RTGL1
+    // itself asks when it loads rt/scenes/<name>/<name>.gltf.
     const char* mapname = RT_GetMapName();
-    return mapname != nullptr && strchr( mapname, '_' ) != nullptr;
+    if( mapname == nullptr || mapname[ 0 ] == '\0' )
+    {
+        return false;
+    }
+
+    // Cached because this is called per SEG, per frame -- tens of thousands of
+    // times a second -- and a stat() on each would be a hitch, not a cost.
+    // Keyed on the name so it re-resolves on level change and nothing else.
+    static std::string g_cached_mapname;
+    static bool        g_cached_needslive = false;
+
+    if( g_cached_mapname != mapname )
+    {
+        g_cached_mapname = mapname;
+
+        std::error_code ec;
+        const auto      scene = std::filesystem::path{ "rt" } / "scenes" / mapname /
+                           ( std::string{ mapname } + ".gltf" );
+
+        g_cached_needslive = !std::filesystem::exists( scene, ec );
+
+        Printf( RT_DiagPrintLevel(),
+                "RT geometry: %s -- %s\n",
+                mapname,
+                g_cached_needslive ? "no baked scene, uploading world live"
+                                   : "baked scene found, static geometry" );
+    }
+
+    return g_cached_needslive;
 }
 
 #ifdef _WIN32
