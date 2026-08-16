@@ -49,6 +49,12 @@ class FKeyBindings
 {
 	FString Binds[NUM_KEYS];
 
+	// Doom64-RT: which keys were already written out by a CUSTOM KEY SECTION
+	// pass (KEYCONF addkeysection/addmenukey), so the general pass can skip
+	// them without destroying the live binding. Upstream marked the bind
+	// itself with "" and then blanked it -- see ArchiveBindings.
+	bool ArchivedInCustom[NUM_KEYS] = {};
+
 public:
 	void PerformBind(FCommandLine &argv, const char *msg);
 	bool DoKey(event_t *ev);

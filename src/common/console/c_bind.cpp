@@ -431,16 +431,26 @@ void FKeyBindings::ArchiveBindings(FConfigFile *f, const char *matchcmd)
 		}
 		else if (matchcmd == nullptr || Binds[i].CompareNoCase(matchcmd) == 0)
 		{
-			if (Binds[i][0] == '\1')
+			// Doom64-RT: THIS USED TO DESTROY THE BINDING IT HAD JUST SAVED.
+			// A custom key section (KEYCONF addkeysection) is archived first,
+			// by name, and upstream marked each key it wrote by overwriting the
+			// bind with "\\1" -- purely so the general pass below would not
+			// write it twice. The general pass then turned that marker into "",
+			// so the moment you pressed Save current settings the key stopped
+			// working and the menu showed no shortcut, until a restart reloaded
+			// the config. That is exactly the flashlight report.
+			//
+			// Same two-pass contract, recorded BESIDE the binding instead of on
+			// top of it.
+			if (matchcmd == nullptr && ArchivedInCustom[i])
 			{
-				Binds[i] = "";
+				ArchivedInCustom[i] = false;
 				continue;
 			}
 			f->SetValueForKey(ConfigKeyName(i), Binds[i].GetChars());
 			if (matchcmd != nullptr)
-			{ // If saving a specific command, set a marker so that
-			  // it does not get saved in the general binding list.
-				Binds[i] = "\1";
+			{ // Saving one command: note it, so the general pass skips it.
+				ArchivedInCustom[i] = true;
 			}
 		}
 	}
