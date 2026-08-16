@@ -471,8 +471,20 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     // Otherwise: yellow key-door sectors look neon-emissive, and lightlevel-0 rooms
     // get black vertex color so flashlight / ceiling lamps are absorbed.
     // IMPORTANT: doors/lifts are NOT ExportMap (movable) — still force white on them.
+    // rt_world_white DECOUPLES THIS FROM rt_mod_compat. The two behaviours have
+    // nothing to do with each other and only ever shared a cvar by accident:
+    // rt_mod_compat also gates FLevelLocals::ReplaceTextures (p_sectors.cpp), so a
+    // mod that retextures maps at runtime -- Doom 64: Unseen Evil -- MUST run
+    // rt_mod_compat 0 to be visible at all, and that silently took this protection
+    // with it. The result is the bug the comment above warns about, across a whole
+    // level: Unseen Evil's Terraformer paints every sector from an authored palette
+    // (9E321E, C85F4B, FF7E66 ...), all of which then baked into albedo and read as
+    // a red glow with no light source anywhere in the room.
+    //
+    // Default off, so rt_mod_compat alone decides exactly as before and Retribution
+    // is untouched; Unseen Evil pins it on in tools/d64ue-lighting.cfg.
     const bool forceWorldWhiteRgb =
-        rt_mod_compat && !isUI &&
+        ( rt_mod_compat || bool{ cvar::rt_world_white } ) && !isUI &&
         !rtstate.is< RtPrim::ExportInstance >() &&
         !rtstate.is< RtPrim::FirstPerson >() &&
         !rtstate.is< RtPrim::FirstPersonViewer >() &&
@@ -948,6 +960,39 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             { "D64SLDG1", true, 2 },  { "D64SLDG2", true, 2 },
             { "D64B1_", false, 3 },   { "D64B2_", false, 3 },
             { "D64BLOD1", true, 3 },  { "D64BLOD2", true, 3 },
+
+            // Doom 64: Unseen Evil's liquids. Same four-palette design, different
+            // names, so the treatment above did nothing on a DOOM 1/2 map and its
+            // pools stayed opaque and near-black -- the exact problem this table
+            // exists to solve.
+            //
+            // The ids are NOT guessed from the names; they come from the mod's own
+            // replacement table (resources/d64ue_textures.floors), which is what
+            // decides which stock liquid becomes which of its flats:
+            //
+            //   FWATER1..4  -> WATERA    water
+            //   NUKAGE1..3  -> SLIMEB    nukage  (Doom's green nukage)
+            //   SLIME01..08 -> SLUDGEA/B sludge  (NOT nukage, despite the name)
+            //   BLOOD1..3   -> BLOODB    blood
+            //
+            // That SLIME/SLUDGE crossover is the trap: reading "SLIMEA" as sludge
+            // would swap green for brown on every nukage pool in DOOM II.
+            //
+            // EXACT, not prefix. These are single flats rather than 64-frame
+            // sequences, so there is no frame suffix to match past, and a prefix
+            // on a name this short would over-reach ("BLOOD" would also catch the
+            // mod's BLOODFALL wall sheets, which must stay opaque for the
+            // shadow-leak reason given above).
+            //
+            // textures/special/{WATERS,SLIMES,BLOODS}.png are the mod's swimmable
+            // surfaces and are named by full path when placed directly.
+            { "WATERA", true, 0 },  { "WATERB", true, 0 },
+            { "SLIMEA", true, 1 },  { "SLIMEB", true, 1 },
+            { "SLUDGEA", true, 2 }, { "SLUDGEB", true, 2 },
+            { "BLOODA", true, 3 },  { "BLOODB", true, 3 },
+            { "textures/special/WATERS.png", true, 0 },
+            { "textures/special/SLIMES.png", true, 1 },
+            { "textures/special/BLOODS.png", true, 3 },
         };
         static const char* const kLiquidName[] = { "water", "nukage", "sludge", "blood" };
 

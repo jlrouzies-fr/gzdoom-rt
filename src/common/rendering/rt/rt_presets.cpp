@@ -9,6 +9,10 @@
 
 #include "rt_internal.h"
 
+// fileSystem.GetMaxIwadNum(): which container a map lump came from, used by the
+// IWAD guard in RT_OnLevelLoadPresets below.
+#include "filesystem.h"
+
 // The shared internals (RG_CHECK, ONEGAMEUNIT_IN_METERS, RT_SectorHue, the
 // light-ID bases) come in unqualified, exactly as when this code lived inside
 // rt_main.cpp's anonymous namespace.
@@ -915,6 +919,49 @@ void RT_OnLevelLoadPresets( const char* mapname )
     // No stale cover from the previous map's sky dimming this one's moon before
     // the first frame's RT_DrawCloudDeck gets to answer.
     RT_SetCloudSunTransmittance( 1.f, 1.f, 1.f );
+
+    // IWAD MAPS TAKE NO PRESET. Every table here -- moon, cloud, tint, fog -- is
+    // keyed on a BARE map name ("map25") and every row in them was measured on
+    // Doom 64 Retribution. Retribution's maps arrive as "d64r-seqlight-fix_map25",
+    // so the tables only ever matched because the lookup is handed the plain
+    // level name.
+    //
+    // That means stock DOOM II's MAP25 matches Retribution's MAP25 row exactly --
+    // and gets a fire-sky moon aim, a fog deck and an albedo tint authored for a
+    // completely different level. Playing Unseen Evil (a DOOM 1/2 overhaul) is
+    // what surfaced it: the moon leaks through rooms that have no opening it
+    // could arrive by, because the row aiming it belongs to another game's map.
+    //
+    // ASK THE FILESYSTEM WHICH CONTAINER THE MAP LUMP CAME FROM. The first
+    // attempt tested RT_GetMapName() for a wad prefix, and it was wrong in the
+    // one way that matters: RT_MapName is not updated yet when this runs, so it
+    // still holds the PREVIOUS level's name (or none at all on the first load).
+    // Retribution's own MAP25 was therefore classified as an IWAD map and lost
+    // its VOIDSKY row -- a preset system silently switching itself off, which is
+    // exactly the class of bug this guard was added to prevent.
+    //
+    // GetMaxIwadNum() is the boundary the engine itself uses for "shipped with
+    // the game" (see c_bind.cpp), and it is correct at this point in the load
+    // because the file system is built long before any level.
+    const int  maplump    = fileSystem.CheckNumForName( mapname );
+    const bool is_pwadmap = maplump >= 0 &&
+                            fileSystem.GetFileContainer( maplump ) >
+                                fileSystem.GetMaxIwadNum();
+
+    if( !is_pwadmap )
+    {
+        Printf( RT_DiagPrintLevel(),
+                "RT presets: %s is an IWAD map -- skipping moon/cloud/tint/fog "
+                "tables (they are keyed on Retribution map names)\n",
+                mapname ? mapname : "?" );
+
+        // The baselines still have to be captured, or the FIRST preset map of the
+        // session would take an IWAD map's cvars as its "launcher's values".
+        RT_ApplyMoonPreset( nullptr );
+        g_fog_pending_map = "";
+        g_fog_pending     = false;
+        return;
+    }
 
     RT_ApplyCloudPreset( mapname );
     RT_ApplyMoonPreset( mapname );

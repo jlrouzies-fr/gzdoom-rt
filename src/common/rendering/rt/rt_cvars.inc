@@ -166,6 +166,18 @@
                                                 "list and wreck ReSTIR/RR temporal reuse" )
     RT_CVAR( rt_wall_strip_debug,       false,  "periodic console dump of wall strip light uploads + rejection tally" )
 
+    RT_CVAR( rt_keytrim_lights,         false,  "key-coloured lights on locked-door trim: STRAKR/STRAKB/STRAKY, the "
+                                                "CRTRAKA/CBTRAKA/CYTRAKA door plates, and Unseen Evil's keytrim_* strips. "
+                                                "Rides the rt_wall_strip_* walk but takes its colour from WHICH KEY the "
+                                                "trim is for rather than from the sector, which is the whole point -- a red "
+                                                "door should read red across a dark room. OFF BY DEFAULT, DELIBERATELY: "
+                                                "these are Doom 64's own texture names, so Retribution uses them too, and "
+                                                "enabling it globally would move a look that is already signed off. Unseen "
+                                                "Evil pins it on in tools/launch-unseenevil-rt.cmd." )
+    RT_CVAR( rt_keytrim_intensity,      120.f,  "RT intensity per key-trim segment. Below rt_wall_strip_intensity's 180 on "
+                                                "purpose: a door frame is a marker, not a room light, and a saturated hue "
+                                                "reads further than a white one at equal intensity." )
+
     RT_CVAR( rt_switch_lights,          true,   "a thrown switch lights the wall it is set into. Retribution's switches change "
                                                 "art when used -- SWXC's demon face gains red eyes, SWXSG's plate gains a pink "
                                                 "gem -- and gen_world_emissives.py makes those texels GLOW, but an emissive "
@@ -818,6 +830,15 @@
                                                 "notably MAP02, whose switch-triggered blue room is the effect the 1.0 default "
                                                 "was chosen for. 0 turns the whole table off" )
 
+    RT_CVAR( rt_world_white,            false,  "keep sector lightlevel/lightcolor OUT of world albedo even when rt_mod_compat "
+                                                "is 0. That protection normally rides on rt_mod_compat, but rt_mod_compat also "
+                                                "gates FLevelLocals::ReplaceTextures -- so a mod that retextures maps at "
+                                                "runtime (Doom 64: Unseen Evil) has to run rt_mod_compat 0 to be visible at "
+                                                "all, and loses the protection as a side effect. Its Terraformer paints every "
+                                                "sector from an authored palette, which then bakes into albedo and reads as a "
+                                                "coloured glow with no light source in the room. Hue is still preserved -- this "
+                                                "drops LIGHTLEVEL from the vertex colour, it does not wash the map white. "
+                                                "Default off so rt_mod_compat alone decides, exactly as before." )
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
                                                 "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
     RT_CVAR( rt_spectre_alpha,          0.24f,  "the single alpha a LIVING 64Spectre (SAR2) renders at, in every state "

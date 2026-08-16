@@ -1913,12 +1913,20 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
 
     RgStaticSceneStatusFlags staticscene_status = 0;
 
-    // Mod maps (RT_MapName like "d64rtr_v15_map01") must not auto-export until a scene exists:
-    // export + uncull-all freezes the main thread on large UDMF maps.
+    // Maps with no baked rt/scenes must not auto-export and must not be
+    // uncull-alled: export + uncull-all freezes the main thread while the whole
+    // map is uploaded at once, which is seen as a multi-second hang at the level
+    // transition (press EXIT, wait, THEN the intermission appears).
+    //
+    // THE TEST IS "HAS A BAKED SCENE", NOT "IS A PWAD". It used to be an
+    // underscore check on the map name, which protected Retribution's maps and
+    // left every IWAD map exposed -- harmless while IWAD maps took their geometry
+    // from a baked scene, and not harmless at all now that they upload live
+    // (see RT_ModMapNeedsLiveGeometryUpload). A stock DOOM II map uploading its
+    // whole world with culling disabled is the same stall, for the same reason.
     const char* mapname_for_rt = RT_GetMapName();
-    const bool  is_mod_map =
-        mapname_for_rt && strchr( mapname_for_rt, '_' ) != nullptr;
-    const bool allow_autoexport = cvar::rt_autoexport && !is_mod_map;
+    const bool  is_mod_map     = RT_ModMapNeedsLiveGeometryUpload();
+    const bool  allow_autoexport = cvar::rt_autoexport && !is_mod_map;
 
     auto info = RgStartFrameInfo{
         .sType                  = RG_STRUCTURE_TYPE_START_FRAME_INFO,

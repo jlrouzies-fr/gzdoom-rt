@@ -717,6 +717,78 @@ static bool RT_IsWallStripLampTexture( const char* name )
            strcmp( name, "SFLATAS" ) == 0;
 }
 
+// Locked-door trim, coloured by WHICH KEY rather than by the sector it sits in.
+//
+// Doom 64 paints the key colour into the door frame and lights it with nothing, so
+// under RT a red door and a blue door are the same dark strip -- the one piece of
+// signage in the game that has to read at a distance reads as neither.
+//
+// Two families, both Doom 64's own names and therefore shared with Retribution:
+//   STRAKR / STRAKB / STRAKY      the thin key stripe
+//   CRTRAKA / CBTRAKA / CYTRAKA   the wider door plate
+// plus Unseen Evil's keytrim_* strips, which its Terraformer maps DOORRED/DOORBLU/
+// DOORYEL onto (resources/d64ue_textures.txt).
+//
+// GATED ON rt_keytrim_lights, default OFF, precisely because of that sharing.
+//
+// The hues are the GAME'S key colours, not the texture's average: the trim art is
+// mostly dark metal around a coloured inlay, so an averaged colour comes out grey
+// and defeats the entire purpose.
+static bool RT_KeyTrimHue( const char* name, FVector3& out )
+{
+    if( !cvar::rt_keytrim_lights || !name || !*name )
+    {
+        return false;
+    }
+
+    struct Trim
+    {
+        const char* name;
+        bool        exact;
+        float       r, g, b;
+    };
+    static const Trim kTrims[] = {
+        { "STRAKR", true, 1.00f, 0.18f, 0.18f },
+        { "STRAKB", true, 0.24f, 0.42f, 1.00f },
+        { "STRAKY", true, 1.00f, 0.82f, 0.20f },
+        { "CRTRAKA", true, 1.00f, 0.18f, 0.18f },
+        { "CBTRAKA", true, 0.24f, 0.42f, 1.00f },
+        { "CYTRAKA", true, 1.00f, 0.82f, 0.20f },
+        // Unseen Evil's, matched as PREFIXES: it ships _thin and _wide variants of
+        // each, and its texture names arrive as full paths.
+        { "textures/pepy/keytrims/d64_keytrim_red", false, 1.00f, 0.18f, 0.18f },
+        { "textures/pepy/keytrims/d64_keytrim_blue", false, 0.24f, 0.42f, 1.00f },
+        { "textures/pepy/keytrims/d64_keytrim_yellow", false, 1.00f, 0.82f, 0.20f },
+    };
+
+    for( const Trim& t : kTrims )
+    {
+        const bool hit = t.exact ? ( stricmp( name, t.name ) == 0 )
+                                 : ( strnicmp( name, t.name, strlen( t.name ) ) == 0 );
+        if( hit )
+        {
+            out = FVector3{ t.r, t.g, t.b };
+
+            // One line per distinct trim texture per session, like the liquid
+            // tagging in rt_draw.cpp. Without it "0 key doors lit" and "the key
+            // doors are lit but you have not walked to one" look identical, and
+            // that ambiguity has cost this project whole sessions.
+            static std::unordered_set< std::string > s_seen;
+            if( s_seen.insert( name ).second )
+            {
+                Printf( RT_DiagPrintLevel(),
+                        "RT keytrim: \"%s\" lit as key colour %.2f %.2f %.2f\n",
+                        name,
+                        t.r,
+                        t.g,
+                        t.b );
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 // Doom 64 wall light strips carry their light in the texture only. Under RTGL1 an
 // emissive surface is not a light source (see rt_wall_strips), so the strip glows but
 // lights nothing — the corridor reads flat and shadowless. Place real area lights along
@@ -741,7 +813,13 @@ void RT_UploadWallStripLights()
     const bool  fauxOn   = bool{ cvar::rt_faux_lamps } &&
                           float{ cvar::rt_faux_lamp_intensity } > 0.01f &&
                           int{ cvar::rt_faux_lamp_max } > 0;
-    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn )
+    // Key trim is a third class with its own intensity, so it keeps the walk alive on
+    // its own: turning the real strips down to zero to judge them must not silently
+    // take the door trim out with them.
+    const bool keytrimOn = bool{ cvar::rt_keytrim_lights } &&
+                           float{ cvar::rt_keytrim_intensity } > 0.01f && maxLights > 0;
+
+    if( ( peak <= 0.01f || maxLights <= 0 ) && !fauxOn && !keytrimOn )
     {
         return;
     }
@@ -808,7 +886,14 @@ void RT_UploadWallStripLights()
                 }
                 const char* wtname = gtex->GetName().GetChars();
                 const bool  isFaux = RT_IsFauxLampWall( wtname );
-                if( !isFaux && !RT_IsWallStripLampTexture( wtname ) )
+                // Key trim rides this walk rather than getting its own: the geometry
+                // work -- which vertical band a sidedef part covers, the off-wall nudge,
+                // the segment split -- is identical, and duplicating it would mean two
+                // copies of the winding-convention bug that buried these lights inside
+                // solid geometry the first time.
+                FVector3   keyHue{};
+                const bool isKeyTrim = RT_KeyTrimHue( wtname, keyHue );
+                if( !isFaux && !isKeyTrim && !RT_IsWallStripLampTexture( wtname ) )
                 {
                     continue;
                 }
@@ -826,7 +911,10 @@ void RT_UploadWallStripLights()
                 // double-light it; but a faux panel's only job is to lift a room that is
                 // too dark, so applying the gate would reject precisely the sectors the
                 // feature was asked for and leave it looking like it does nothing.
-                if( !isFaux && float( thisSec->lightlevel ) < minLight )
+                // Key trim is exempt from the minlight gate for the same reason the
+                // faux panels are, only more so: a locked door is most often at the end
+                // of a DARK corridor, which is exactly where its colour has to read.
+                if( !isFaux && !isKeyTrim && float( thisSec->lightlevel ) < minLight )
                 {
                     rejLight++;
                     continue;
@@ -935,10 +1023,16 @@ void RT_UploadWallStripLights()
                         continue;
                     }
 
+                    // Key trim keeps its OWN hue, untouched by the sector tint. Passing
+                    // it through RT_SectorHue would be the sector-colormap trap from
+                    // docs/rt-lighting-practices: on a cool-tinted map the tint can only
+                    // remove channels, and red is most of what it would remove -- the
+                    // red door would come out grey, which is the bug being fixed.
                     const FVector3 hue =
-                        isFaux ? RT_FauxLampHue()
-                               : RT_SectorHue( thisSec->Colormap.LightColor,
-                                               float{ cvar::rt_sector_tint_lights } );
+                        isKeyTrim ? keyHue
+                        : isFaux  ? RT_FauxLampHue()
+                                  : RT_SectorHue( thisSec->Colormap.LightColor,
+                                                  float{ cvar::rt_sector_tint_lights } );
 
                     auto toM = [ & ]( double x, double y, double z ) -> RgFloat3D {
                         return { float( x + nx * ofs ) * ONEGAMEUNIT_IN_METERS,
@@ -957,7 +1051,9 @@ void RT_UploadWallStripLights()
                         .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                         .pNext     = nullptr,
                         .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
-                        .intensity = isFaux
+                        .intensity = isKeyTrim
+                                         ? std::max( 0.f, float{ cvar::rt_keytrim_intensity } )
+                                     : isFaux
                                          ? std::max( 0.f,
                                                      float{ cvar::rt_faux_lamp_intensity } )
                                          : peak,
