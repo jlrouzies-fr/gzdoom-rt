@@ -1019,6 +1019,13 @@
     RT_CVAR( rt_upscale_fsr2,           0,      "0 - off, 1 - quality, 2 - balanced, 3 - perf, 4 - ultra perf, 5 - FSR2 with rt_renderscale, 6 - native. "
                                                 "This controls the FSR3 / FSR2 upscaling (Super Resolution), but not the Frame Generation.")
     RT_CVAR( rt_sharpen,                0,      "image sharpening; 0 - auto, 1 - naive, 2 - AMD CAS, 3 - force disable" )
+    RT_CVAR_NOARCH( rt_dlss_preset,     5,      "DLSS render preset, as the raw NVSDK_NGX_DLSS_Hint_Render_Preset value. "
+                                                "0 - Default (the DLL picks; K on a 310.x runtime), 5 - E (deprecated CNN, "
+                                                "what RTGL1 hard-coded), 10 - J (transformer), 11 - K (transformer, the SDK's "
+                                                "'best image quality'). Presets A-D were removed by NVIDIA and fall back to "
+                                                "Default. Changing this re-creates the DLSS feature, so it takes effect live. "
+                                                "NOARCH: it is an A/B knob, and a preset saved into the ini would silently "
+                                                "become every later session's control" )
 
     RT_CVAR( rt_rayreconstr,            false,  "native DLSS Ray Reconstruction (replaces A-SVGF + DLSS-SR). Requires rt_upscale_dlss>0 and nvngx_dlssd.dll. Disables frame generation." )
     RT_CVAR( rt_remix_rayreconstr,      false,  "[only for RTX Remix] DLSS Ray Reconstruction - denoise path tracing with AI" )
@@ -2499,8 +2506,19 @@
     RT_CVAR( rt_volume_dither,          5.f,    "how far, in FROXELS, each pixel jitters its volume sample. Stock 2 hides "
                                                 "the grid in a low-contrast medium, but against dense smoke the jitter "
                                                 "reaches across geometry SILHOUETTES into columns belonging to a "
-                                                "different surface -- which is what draws dark outlines around things "
-                                                "seen through smoke. Lower trades those outlines for more visible grid. "
+                                                "different surface. THAT WAS BLAMED FOR THE DARK OUTLINES AROUND THINGS "
+                                                "SEEN THROUGH SMOKE AND IT IS NOT THE CAUSE: measured on MAP93, zeroing "
+                                                "this (with the blur and the depth bias too) removes 0.2 of a 1.0 "
+                                                "artefact and leaves the outline in place. The TEMPORAL UPSCALER draws "
+                                                "it -- gone with DLSS and FSR both off, worst under DLAA. See "
+                                                "docs/rt-volumetric-edge-outlines.md. "
+                                                "SO DO NOT LOWER THIS. 5 IS LOAD-BEARING: the volume is lit at one "
+                                                "sample per cell with one shadow ray and has no spatial denoiser of "
+                                                "its own, so this jitter is most of what stands between you and "
+                                                "extremely noisy smoke. It was raised 2 -> 5 from play for exactly "
+                                                "that reason. Winding it down to chase the outlines buys 0.2 of them "
+                                                "and hands the smoke its boiling back -- a much worse trade, and the "
+                                                "0 arm exists to MEASURE, never to ship. "
                                                 "SCREEN AXES ONLY since the shaft fix -- the depth axis is "
                                                 "rt_volume_dither_z, and it is a different problem." )
     RT_CVAR( rt_volume_dither_z,        1.f,    "the same jitter ALONG THE VIEW, in FROXELS, and split off "
@@ -2583,6 +2601,165 @@
                                                 "foreground edge alive. Under-culling is the safe direction here: the "
                                                 "centre tap alone cuts a hard edge along every silhouette. Drop to 1 only "
                                                 "to measure what the four extra fetches cost." )
+
+    // --- The upscaler bias mask (docs/rt-volumetric-edge-outlines.md) --------
+    //
+    // The thin dark line around everything seen through smoke or fog is drawn
+    // by the TEMPORAL UPSCALER. Measured on MAP93: DLSS and FSR both off
+    // removes it entirely, DLAA is the worst arm, and the depth gate, the
+    // dither, the blur, the depth bias, the scattering history and the slice
+    // thickness each move it by 0.3 luminance levels or less. The composite
+    // (CmPrepareFinal) runs at render resolution and the upscaler runs after
+    // it, so a silhouette reaches DLSS with two different media states already
+    // added into either side of it and nothing says which is which.
+    RT_CVAR( rt_volume_ubias,           0.f,    "strength of the SILHOUETTE MASK handed to the upscaler, 0..1. Both DLSS "
+                                                "(pInBiasCurrentColorMask) and FSR2 (transparencyAndComposition) take a "
+                                                "mask meaning 'favour the current frame over history here', and RTGL1 "
+                                                "passed neither -- so at a silhouette inside a medium the upscaler "
+                                                "reconstructs from history that belongs to the other side of the edge, "
+                                                "and draws a one-pixel dark line. "
+                                                "MEASURED AND REJECTED, and it ships at 0 for a reason: discarding "
+                                                "history is discarding the thing that averages out the volume's noise "
+                                                "-- it is lit at one sample per cell with one shadow ray and has no "
+                                                "spatial denoiser of its own -- so in PLAY this reads as 'the smoke got "
+                                                "noisy, as if the dither stopped being applied', while the edges are "
+                                                "still visible. A broad mask removes ~40% of the outline and is the "
+                                                "noisy one; a tight mask is quiet and removes ~12%. There is no setting "
+                                                "that removes the outline and leaves the smoke alone. "
+                                                "AND DO NOT JUDGE IT FROM A STILL: after a few seconds of standing "
+                                                "still the temporal history has converged and throwing it away costs "
+                                                "almost nothing, so a settled capture measures the one case that hides "
+                                                "the entire cost. Kept as a switch and a measured negative result. "
+                                                "0 = off, and off does not even bind the mask -- the control arm is the "
+                                                "old path exactly. docs/rt-volumetric-edge-outlines.md" )
+    RT_CVAR( rt_volume_ubias_edge,      0.15f,  "the RELATIVE DEPTH STEP between neighbouring pixels that counts as a "
+                                                "full-strength silhouette: 0.15 = a 15% jump in distance. Relative "
+                                                "rather than absolute because a 1 m step is a silhouette at 2 m and "
+                                                "nothing at 40, and one room contains both. Smaller marks more pixels. "
+                                                "IT IS DEPTH AND NOT THE TRANSMITTANCE GRADIENT, which was tried first "
+                                                "and is the wrong signal: a puff's own falloff is smooth over most of "
+                                                "its area, so that version marked the whole cloud plus its froxel "
+                                                "banding -- rt_volume_ubias_debug 1 showed a white blob with rings in "
+                                                "it. The whole point is to spend temporal history only where the "
+                                                "artefact is." )
+    RT_CVAR( rt_volume_ubias_floor,     0.f,    "constant bias wherever the medium is present at all, before the edge "
+                                                "term. 0 = silhouettes only, which is the intent. Raise it only to "
+                                                "answer 'is the mask reaching the upscaler at all' -- it is still "
+                                                "multiplied by the veil's opacity, so it cannot mark clear air." )
+    // NOARCH, and that is not a detail: this one shipped ARCHIVED for exactly
+    // one session and cost four captures. It saved into the ini on the run that
+    // used it, so every later launch -- including the CONTROL -- came back
+    // rendering the mask instead of the game, and the measurements taken from
+    // them were of a debug view. A view mode must never outlive its own run.
+    RT_CVAR_NOARCH( rt_volume_ubias_debug, false, "draw the mask instead of the image. NOT optional for judging this: "
+                                                "the mask goes into a black box, so without it 'the fix did nothing' "
+                                                "and 'the mask is all zeros' are the same screenshot." )
+
+    // --- The real fix: apply the medium AFTER the upscaler ------------------
+    RT_CVAR( rt_volume_postcomp,        false,  "APPLY THE MEDIUM AFTER THE UPSCALER instead of before it, which removes "
+                                                "the cause of the outlines rather than treating them. Today "
+                                                "CmPrepareFinal composites hdr*T + S at RENDER resolution and DLSS/FSR "
+                                                "run after it, so a silhouette reaches the upscaler with two very "
+                                                "different media states already added into either side of it, plus a "
+                                                "jitter flicker between them -- and it reconstructs that as surface "
+                                                "detail and biases dark along the edge. With this on, the upscaler gets "
+                                                "an ordinary surface image and the veil is applied at OUTPUT resolution "
+                                                "afterwards (CmVolumeCompose.comp). The arithmetic is identical term "
+                                                "for term; what changes is only WHEN it happens. "
+                                                "TWO SIDE EFFECTS: it forces rt_volume_occlude_emis (the transmittance "
+                                                "factor moves into the post pass), and it is IGNORED under DLSS Ray "
+                                                "Reconstruction and under frame generation -- RR denoises from the "
+                                                "composed radiance, and FG interpolates frames past this point, so "
+                                                "generated frames would have no fog and the image would strobe. "
+                                                "docs/rt-volumetric-edge-outlines.md" )
+    RT_CVAR( rt_volume_edgesoft,        2.f,    "soften the medium's step across a silhouette by this many PIXELS "
+                                                "before compositing. The mitigation for the paths rt_volume_postcomp "
+                                                "has to leave alone. It attacks the step's CONTRAST rather than the "
+                                                "ordering, and unlike rt_volume_ubias it never touches temporal "
+                                                "history -- which is what made that one unshippable. Costs a slightly "
+                                                "soft haze edge; 0 = off. 2 measured better than 5, which is the "
+                                                "signature of a STEP being removed rather than a blur being applied. "
+                                                "SHIPS AT 2: it takes the outline from -1.0 to -0.4 on the MAP93 lab "
+                                                "with the temporal noise inside its own repeatability floor, and it "
+                                                "removes the reported symptom -- the lines around sprites and geometry. "
+                                                "What survives it traces flat-surface TEXTURE seams, where there is no "
+                                                "depth break and no step in the medium, and is a different artefact." )
+    RT_CVAR( rt_volume_edgesoft_edge,   0.05f,  "how big a depth break counts as a silhouette for rt_volume_edgesoft: "
+                                                "the second difference of 1/DEPTH, relative. LOWER MARKS MORE EDGES, "
+                                                "and that is the reach knob -- at 0.15 the strong silhouettes (a "
+                                                "monster, a pillar corner) are caught while fainter ones (a floor seam, "
+                                                "a shallow step) are not, and those are what is left of the artefact. "
+                                                "Second difference because a FIRST difference fires on any receding "
+                                                "surface and marks every floor in the room; of the RECIPROCAL because "
+                                                "screen space interpolates 1/depth, so a plane at any angle gives "
+                                                "exactly zero. Both were measured wrong first. "
+                                                "0.05 rather than 0.15 because it measured slightly better (-0.4 "
+                                                "against -0.5) and nothing measured worse; below that it stops "
+                                                "mattering, because what is left is not on depth edges at all." )
+
+    RT_CVAR_NOARCH( rt_volume_fp,        1.f,   "the FIRST-PERSON WEAPON must not damage the medium. 0 = old path, "
+                                                "1 = fix, 2 = debug (paint the weapon's pixels cyan in the scattering "
+                                                "buffer -- the paint accumulates, so watching it smear IS watching the "
+                                                "history work, not the mask being wrong). "
+                                                "THE BUG, in two halves. The weapon is real geometry at ~0.3 m: (a) "
+                                                "the accumulator's history under it was discarded and refilled with "
+                                                "the medium integrated TO THE WEAPON -- i.e. nothing -- so the reload "
+                                                "animation swept a stripe of emptied fog across the frame that took "
+                                                "rt_volume_history frames to heal: the dark trail. (b) a freeze was "
+                                                "tried first and dragged the fog around WITH the gun, because motion "
+                                                "vectors under the weapon are the WEAPON'S own. "
+                                                "THE FIX: under the weapon the accumulator integrates the volume TO "
+                                                "FAR at the same screen pixel -- a live estimate of the WORLD's fog, "
+                                                "kept flowing under the sprite and accepted seamlessly on uncover via "
+                                                "a sign bit in the history buffer -- and CmPrepareFinal composites NO "
+                                                "fog on first-person pixels, which is also the physically right image "
+                                                "of a gun 30 cm from the eye. The depth gate likewise skips weapon "
+                                                "depth, or it would cull the very cells that far integral reads. "
+                                                "NOARCH: 2 is a debug view, and an archived debug view silently "
+                                                "becomes every later session's control (see rt_volume_ubias_debug)." )
+    RT_CVAR_NOARCH( rt_volume_reproj,    1,     "how the medium's temporal history is validated when reprojected. "
+                                                "0 = the surface rules (strict depth + normal agreement, the stock "
+                                                "path), 1 = MEDIA rules: relative path length within 25%, no normal "
+                                                "test at all. The medium is an integral along the ray -- it cares how "
+                                                "far the ray goes, not which surface ends it or which way it faces. "
+                                                "The surface rules reject history at every billboard silhouette under "
+                                                "camera motion, though fog-to-a-monster at 20 m vs fog-to-the-wall at "
+                                                "24 m is a few percent of veil; each rejected band restarts from one "
+                                                "noisy sample, and against a transient light (muzzle flash, MAP12 "
+                                                "thunder) a restarted band disagrees with its lagging neighbours by "
+                                                "most of the flash -- every sprite edge becomes a smear. Rejections "
+                                                "that survive even the media rules borrow validated neighbour history "
+                                                "(radius-2 dilation, capped at 3 frames) before starting from nothing." )
+    RT_CVAR_NOARCH( rt_volume_spriteshadow, false, "do sprites shadow the froxel medium? 0 = no: billboards and their "
+                                                "axis-plane shadow proxies are invisible to the volumetric pass's "
+                                                "shadow rays -- proxies by cull mask, billboards via a media any-hit "
+                                                "that drops GEOM_INST_FLAG_SPRITE; alpha-tested WALLS (grates, "
+                                                "fences) still cut their shafts. 1 = the old behaviour. "
+                                                "WHY 0: a camera-facing cutout cannot meaningfully shadow a volume. "
+                                                "The proxies are SOLID PLANES -- the ejected shell casing stamped a "
+                                                "rectangle of shadow into the muzzle smoke, bigger than the casing "
+                                                "because a shadow volume grows with distance from the light -- and "
+                                                "billboards rotate with the camera, so their shadow sheets sweep the "
+                                                "fog as the view turns: MAP12's 'any sprite smears the shafts'." )
+    RT_CVAR_NOARCH( rt_volume_taccum,    8.f,   "IN-GRID temporal accumulation of the froxel volume, in frames; 0 = off "
+                                                "(the legacy screen-space accumulation runs instead). THE STRUCTURAL "
+                                                "FIX for the whole trail family: upstream shipped this mechanism and "
+                                                "left it hard-disabled (g_temporalWeight = 0.0 in CmVolumetricProcess), "
+                                                "and screen-space accumulation -- which must validate history against "
+                                                "SURFACE depth -- replaced it. Every sprite silhouette, ejected casing "
+                                                "and geometry edge under camera motion rejected that history and "
+                                                "restarted from one noisy sample: the weapon trail, the casing trail, "
+                                                "the thunder smears. In-grid accumulation blends each froxel cell "
+                                                "against its own WORLD position in the previous frame's grid -- no "
+                                                "surfaces involved, nothing to reject, nothing to restart -- and the "
+                                                "ray integral is recomputed fresh every frame (4 spatial dither "
+                                                "samples replace the lost temporal averaging). Exact under camera "
+                                                "rotation; under translation the error is the fog inside one frame of "
+                                                "movement, corrected continuously by the EMA. When this is ON, "
+                                                "rt_volume_history, rt_volume_reproj and the accumulator half of "
+                                                "rt_volume_fp are all inert -- there is no screen history for them to "
+                                                "govern. docs/rt-volumetric-weapon-trails.md" )
+
     RT_CVAR( rt_volume_type,            1,      "0 - none, 1 - volumetric, 2 - distance based" )
     RT_CVAR( rt_volume_far,             60.f,   "max distance of the scattering volume, in metres, and therefore the RENDER DISTANCE OF SMOKE: the froxel grid is camera-fitted, so a puff past this plane is not represented at all. 30 -> 60 to double it. THE COST IS RESOLUTION: the grid is 64 slices whatever the reach, so the slice thickness goes 0.47 -> 0.94 m and puffs get coarser and noisier. It is NO LONGER A DENSITY KNOB -- it was one, silently, because the shader applies scattering per CELL: 30 -> 60 halved how many cells a given metre of air occupies and so halved the medium, which is what took the moon's shafts down on MAP01 after the smoke work. rt_main.cpp now normalises rt_volume_scatter per METRE against a 30 m reference, so a value means the same thing at any reach and only the far haze extends. A FOGGED map is unaffected either way -- it uses rt_fog_far / rt_fog_density, which keep the per-cell contract RT_FOG_PRESETS is tuned in." )
     RT_CVAR( rt_volume_scatter,         1.f,    "density of the global medium, PER METRE -- rt_main.cpp scales it by rt_volume_far/30 before upload, so it does not change meaning when the reach moves (see rt_volume_far). Unfogged maps only: a fogged map takes rt_fog_density instead. This is the medium the moon's light shafts are scattered out of, so it is the first knob for shafts that read too weak -- rt_volume_lintensity is the second, and brightens the lit shaft without thickening the haze around it. tools/arms/moon-*.cfg are the A/B." )

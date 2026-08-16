@@ -1166,6 +1166,13 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
     }
 
     pDst->sharpenTechnique = RT_GetSharpenTechniqueFromCvar( amdFsr || nvDlss );
+
+    // Doom64-RT: which DLSS render preset RTGL1 creates the feature with. It was
+    // hard-coded to E, and the DLSS runtime shipped in rt\bin is 310.7, on which
+    // E is a deprecated CNN preset. Passed through raw; RTGL1 clamps nothing,
+    // and NGX falls back to Default for any value it no longer recognises.
+    pDst->dlssPreset =
+        static_cast< uint32_t >( std::max< int >( 0, int{ cvar::rt_dlss_preset } ) );
 }
 
 template< typename T >
@@ -2779,6 +2786,24 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .depthGateBias    = std::max( 0.f, float{ cvar::rt_volume_depthgate_bias } ),
         .depthGateFeather = std::max( 0.f, float{ cvar::rt_volume_depthgate_feather } ),
         .depthGateTaps    = uint32_t( int{ cvar::rt_volume_depthgate_taps } >= 5 ? 5 : 1 ),
+        // THE UPSCALER BIAS MASK. The dark outline at every edge seen through a
+        // medium is the upscaler's, not the froxel grid's -- measured, see
+        // docs/rt-volumetric-edge-outlines.md -- and this is what tells DLSS and
+        // FSR2 where the medium's silhouettes are.
+        .volumeUpscaleBias      = std::clamp( float{ cvar::rt_volume_ubias }, 0.f, 1.f ),
+        .volumeUpscaleBiasEdge  = std::max( 0.001f, float{ cvar::rt_volume_ubias_edge } ),
+        .volumeUpscaleBiasFloor = std::clamp( float{ cvar::rt_volume_ubias_floor }, 0.f, 1.f ),
+        .volumeUpscaleBiasDebug = uint32_t( bool{ cvar::rt_volume_ubias_debug } ? 1 : 0 ),
+        // THE FIX, rather than the mitigation: move the composite past the
+        // upscaler. RTGL gates it off under Ray Reconstruction and frame
+        // generation by itself -- see rt_volume_postcomp.
+        .volumePostComp = uint32_t( bool{ cvar::rt_volume_postcomp } ? 1 : 0 ),
+        .volumeEdgeSoft     = std::max( 0.f, float{ cvar::rt_volume_edgesoft } ),
+        .volumeEdgeSoftEdge = std::max( 0.001f, float{ cvar::rt_volume_edgesoft_edge } ),
+        .volumeFp           = std::clamp( float{ cvar::rt_volume_fp }, 0.f, 2.f ),
+        .volumeReproj       = ( cvar::rt_volume_reproj ? 1u : 0u ),
+        .volumeSpriteShadow = ( cvar::rt_volume_spriteshadow ? 1u : 0u ),
+        .volumeGridHistory  = std::clamp( float{ cvar::rt_volume_taccum }, 0.f, 64.f ),
     };
 
     auto texture_params = RgDrawFrameTexturesParams{
