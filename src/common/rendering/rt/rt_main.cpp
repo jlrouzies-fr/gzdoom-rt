@@ -2883,12 +2883,28 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .restirInitialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_initial ), 1, 32 ) ),
         .restirSpatialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_spatial ), 0, 16 ) ),
         .restirSpatialRadius                = std::clamp( float( cvar::rt_restir_spatial_radius ), 1.0f, 64.0f ),
-        .restirTemporalMCap                 = uint32_t( std::clamp( int( cvar::rt_restir_mcap ), 1, 64 ) ),
+        // RR-scoped decorrelation: ReSTIR's temporal reuse keeps a reservoir
+        // winner for up to mcap frames, so a bad shadowed sample persists as a
+        // STABLE dark dot -- structure a temporal denoiser preserves as
+        // detail. A-SVGF's spatial atrous blurs those away; DLSS-RR has no
+        // equivalent and its guide (S3.5) asks for minimally correlated
+        // samples outright. Toggling the flashlight reseeds the reservoirs,
+        // which is why the dot PATTERN visibly switched with it. Override only
+        // on frames where RR actually runs (g_rr_dbg_rrRequested is this
+        // frame's RT_UpscaleCvarsToRtgl decision); -1 disables the override.
+        .restirTemporalMCap                 = uint32_t( std::clamp(
+            ( g_rr_dbg_rrRequested && int( cvar::rt_rr_restir_mcap ) >= 0 )
+                                ? int( cvar::rt_rr_restir_mcap )
+                                : int( cvar::rt_restir_mcap ),
+            1,
+            64 ) ),
         .rrGuideMin                         = std::clamp( float( cvar::rt_rr_guide_min ), 0.0f, 1.0f ),
         .rrGuideMode                        = uint32_t( std::clamp( int( cvar::rt_rr_guide_mode ), 0, 2 ) ),
         .restirIndirAntilag                 = static_cast< RgBool32 >( bool( cvar::rt_restir_indir_antilag ) ),
         .rrPreExposure                      = static_cast< RgBool32 >( bool( cvar::rt_rr_preexposure ) ),
         .rrPreExposureDebug                 = static_cast< RgBool32 >( bool( cvar::rt_rr_preexp_debug ) ),
+        .rrExposureTexture                  = static_cast< RgBool32 >( bool( cvar::rt_rr_exptex ) ),
+        .rrTransparencyLayer                = static_cast< RgBool32 >( bool( cvar::rt_rr_translayer ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{

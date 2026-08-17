@@ -1916,6 +1916,35 @@
                                                 "absurd arm. 'No visible difference' and 'the pass never ran' are the "
                                                 "same image without this; magenta proves the plumbing is live. Check "
                                                 "rt-console.log prints 'preExposure=on (post-RR pass)' too." )
+    RT_CVAR_NOARCH( rt_rr_exptex,              true,   "DLSS-RR: bind the 1x1 GPU exposure texture (pInExposureTexture, 'a 1x1 "
+                                                "texture containing the final exposure scale'). With rt_rr_preexposure "
+                                                "the network's input is raw radiance whose absolute scale swings ~52x "
+                                                "with auto-exposure, and a neural denoiser is NOT scale-invariant -- "
+                                                "without this it sees a dark crypt as near-black input and a lit hall as "
+                                                "hundreds of times brighter, with no way to normalise. Written by "
+                                                "CmPrepareFinal thread (0,0) from the same tonemapping value the post-RR "
+                                                "pass multiplies by. No effect when rt_rr_preexposure is 0. Confirm in "
+                                                "rt-console.log: 'RR guides: ... pInExposureTexture=BOUND'." )
+    RT_CVAR_NOARCH( rt_rr_translayer,          true,   "DLSS-RR: route rasterized content into the NGX transparency layer "
+                                                "(pInTransparencyLayer, composited AFTER denoise+upscale) instead of "
+                                                "baking it into RR's color input. Every translucent sprite in this game "
+                                                "-- fireballs, torch flames, plasma, smoke -- is RASTERIZED, and baked "
+                                                "in it sits in the denoiser's input while every guide (albedo, normal, "
+                                                "depth, MV) describes the wall BEHIND it: content the network is told is "
+                                                "not there, i.e. noise to remove. Same geometry, same depth test; "
+                                                "additive sprites are blended so they occlude nothing (no dark halos). "
+                                                "RR frames only. Confirm: 'RR guides: ... pInTransparencyLayer=BOUND'." )
+    RT_CVAR_NOARCH( rt_rr_restir_mcap,         4,      "DLSS-RR: override rt_restir_mcap on RR frames only [-1..64]; -1 = no "
+                                                "override. ReSTIR temporal reuse keeps a reservoir winner for up to mcap "
+                                                "frames, so a bad shadowed sample persists as a STABLE dark dot -- "
+                                                "structure a temporal denoiser preserves as detail (RR guide S3.5 asks "
+                                                "for minimally correlated samples; Duke-RT feeds RR plain path tracing "
+                                                "with no reuse at all). A-SVGF's spatial atrous blurs these away, which "
+                                                "is why it never showed them; toggling the flashlight reseeds the "
+                                                "reservoirs, which is why the dot pattern switched with it. Lower = "
+                                                "faster reservoir refresh = temporally whiter noise RR can average; "
+                                                "costs some direct-light stability that RR's own accumulation replaces. "
+                                                "A-SVGF frames always use rt_restir_mcap." )
 
     // --- Samples per pixel ---------------------------------------------------
     RT_CVAR( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "
