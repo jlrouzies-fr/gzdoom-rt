@@ -1934,6 +1934,15 @@
                                                 "not there, i.e. noise to remove. Same geometry, same depth test; "
                                                 "additive sprites are blended so they occlude nothing (no dark halos). "
                                                 "RR frames only. Confirm: 'RR guides: ... pInTransparencyLayer=BOUND'." )
+    RT_CVAR_NOARCH( rt_rr_glowpre,             true,   "DLSS-RR: add the screen-emission glow into RR's INPUT (pre-exposure "
+                                                "units, algebraically exact) instead of after RR. The post-RR add "
+                                                "resamples the JITTERED render-res glow buffer with one bilinear tap at "
+                                                "a different sub-texel phase every frame -- every sharp emissive edge "
+                                                "shimmers, reported from play as flickery/unstable lamp bulbs. In the "
+                                                "input, RR dejitters and temporally stabilizes the glow with the rest "
+                                                "of the frame, exactly as the pre-reorder pipeline always did. Only "
+                                                "meaningful with rt_rr_preexposure. 0 = post-RR add (the A/B arm for "
+                                                "the bulb flicker: rr-no-glowpre)." )
     RT_CVAR_NOARCH( rt_nrd,                    false,  "NVIDIA NRD denoiser lane (ReBLUR/ReLAX/SIGMA via NRI wrapping RTGL's "
                                                 "VkDevice). STAGE 1 -- liveness probe: setting this brings the full NRD "
                                                 "stack up (embedded SPIR-V unpacked, pipelines and history pools "
