@@ -1934,7 +1934,7 @@
                                                 "not there, i.e. noise to remove. Same geometry, same depth test; "
                                                 "additive sprites are blended so they occlude nothing (no dark halos). "
                                                 "RR frames only. Confirm: 'RR guides: ... pInTransparencyLayer=BOUND'." )
-    RT_CVAR_NOARCH( rt_rr_glowpre,             0,      "DLSS-RR: where the screen-emission glow goes under rt_rr_preexposure. "
+    RT_CVAR_NOARCH( rt_rr_glowpre,             2,      "DLSS-RR: where the screen-emission glow goes under rt_rr_preexposure. "
                                                 "0 = added AFTER RR (jitter-corrected Catmull-Rom; residual shimmer on "
                                                 "sharp emissive edges is irreducible in this mode -- measured). "
                                                 "1 = in RR's input divided by LIVE exposure (exact brightness, but the "
@@ -1944,7 +1944,8 @@
                                                 "temporally stable input (no shimmer, no pulse); the glow rides the "
                                                 "exposure like the emissive surface it halos, brighter in dark rooms "
                                                 "and dimmer in bright ones exactly as the bulb itself already does. "
-                                                "The candidate fix for the RR emissive jitter: arm rr-glow-aslight." )
+                                                "Mode 2 is the DEFAULT since the 2026-08-17 ladder: it fixed the "
+                                                "emissive jitter in play (arm rr-glow-aslight)." )
     RT_CVAR_NOARCH( rt_rr_glowscale,           35.0f,  "DLSS-RR glow mode 2: the fixed pre-exposure scale. 35 = 1/exposure at "
                                                 "the EV100 midpoint, matching the old post-add brightness mid-range. "
                                                 "Raise if halos read too dim overall, lower if too hot in dark rooms." )
@@ -2069,14 +2070,14 @@
     // come up enabled on every launch. It stays a cvar only so it can be flipped
     // off for an in-session A/B -- a stuck 0 in the ini silently reinstates the
     // ~3-7s flashlight linger, and this project has lost sessions to exactly that.
-    RT_CVAR_NOARCH( rt_rr_reset_on_lightcut, true,
+    RT_CVAR_NOARCH( rt_rr_reset_on_lightcut, false,
                                                 "DLSS-RR: flush temporal history (InReset) on an abrupt light "
                                                 "cut ??? flashlight on/off. Fixes ~3-7s linger under RR's "
                                                 "stabilized history. Always on at launch (not saved to the ini); "
                                                 "set to 0 only for a temporary A/B. See rt_rr_reset_on_dynlight." )
     RT_CVAR( rt_rr_reset_delta,         0.5f,   "DLSS-RR reset: min abrupt change in emitted flashlight scale "
                                                 "(0..1) that counts as a light cut" )
-    RT_CVAR( rt_rr_reset_on_dynlight,   true,   "DLSS-RR: also flush temporal history when a GZDoom dynamic "
+    RT_CVAR( rt_rr_reset_on_dynlight,   false,   "DLSS-RR: also flush temporal history when a GZDoom dynamic "
                                                 "light (barrel/rocket explosion flash, pickup glow, etc.) newly "
                                                 "appears or disappears from the uploaded light list. Steady "
                                                 "flicker/pulse lights don't count (they never leave the list). "
