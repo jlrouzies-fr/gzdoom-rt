@@ -23,12 +23,12 @@
     RT_CVAR( rt_sector_lights,          false,  "upload per-sector center point lights for ALL sectors (stock autoexport). "
                                                 "Default false: floods mod maps with fake white wash" )
     RT_CVAR( rt_sector_flicker,         false,  "upload sector-center lights for flicker/strobe sector specials. "
-                                                "Off by default — that blinks wall/monitor alcoves, not ceiling inset lamps" )
+                                                "Off by default ??? that blinks wall/monitor alcoves, not ceiling inset lamps" )
 
     RT_CVAR( rt_dynlight,               true,   "upload GZDoom map/GLDEFS dynamic lights (PointLight / Flicker / Pulse) into RT" )
-    RT_CVAR( rt_dynlight_intensity,     40.0f,  "RT spherical intensity scale for GZDoom dynlights (× map radius)" )
+    RT_CVAR( rt_dynlight_intensity,     40.0f,  "RT spherical intensity scale for GZDoom dynlights (?? map radius)" )
     RT_CVAR( rt_dynlight_max,           500.0f, "hard cap on uploaded dynlight intensity after scale/stack (0 = no cap). "
-                                                "Retribution key-door jambs stack 3× PointLights — uncapped blooms white" )
+                                                "Retribution key-door jambs stack 3?? PointLights ??? uncapped blooms white" )
     RT_CVAR( rt_dynlight_rsoft,         40.f,   "map-unit radius above which dynlight energy rolls off (inv-square). "
                                                 "MAP04 hall PointLights use r=88 and hit max as flat flood; door jambs "
                                                 "stay at r=32 (unaffected). 0 = disable roll-off" )
@@ -116,37 +116,37 @@
                                                 "'the wall monitors work'. Compare arms with tools/ab-smon.cmd (2026-08-11)" )
 
     RT_CVAR( rt_ceiling_lamps,          true,   "upload blinking shadow-casting lights under SFLATAS/SFLATAQ/SFLATAP/SPORT* ceilings "
-                                                "(Doom 64 inset 'head lights') — only small sectors (see maxspan)" )
+                                                "(Doom 64 inset 'head lights') ??? only small sectors (see maxspan)" )
     RT_CVAR( rt_ceiling_lamp_intensity, 700.f,  "peak RT intensity for ceiling inset lamps (soft fade + RR boiling keep this usable)" )
     RT_CVAR( rt_ceiling_lamp_radius,    0.10f,  "RT source radius in meters for ceiling inset lamps" )
     RT_CVAR( rt_ceiling_lamp_zofs,      8.f,    "drop light this many map units below the ceiling plane" )
     RT_CVAR( rt_ceiling_lamp_off,       0.12f,  "intensity scale when blinking out. >0 keeps the light in ReSTIR/RR "
-                                                "history (0 = hard extinguish — very noisy under DLSS-RR)" )
+                                                "history (0 = hard extinguish ??? very noisy under DLSS-RR)" )
     RT_CVAR( rt_ceiling_lamp_fade,      40.f,   "tics to ease between on/off (0 = instant). Softens ReSTIR/RR history cuts. "
                                                 "Was 8 -- too abrupt an intensity swing for ReSTIR's temporal reservoir "
                                                 "reuse, producing salt localized right at the lamp (2026-08-07)." )
     RT_CVAR( rt_ceiling_lamp_maxspan,   128.f,  "skip analytic ceiling lamps if sector AABB width OR height exceeds this "
-                                                "(map units). Large SFLATAQ halls only have edge texture blobs — a center "
+                                                "(map units). Large SFLATAQ halls only have edge texture blobs ??? a center "
                                                 "sphere looks like a fake mid-ceiling light (MAP02)" )
     RT_CVAR( rt_ceiling_lamp_debug,     false,  "periodic console dump of ceiling inset lamp uploads + cyan marker spheres" )
     RT_CVAR( rt_wall_tex_debug,         false,  "periodic console dump of sidedef texture names + sector lightlevel near the "
                                                 "camera. Used to name wall light-strip fixtures so they can be matched by "
-                                                "texture instead of by map position. Covers sidedefs AND sector flats — Doom 64 "
+                                                "texture instead of by map position. Covers sidedefs AND sector flats ??? Doom 64 "
                                                 "puts fixtures on thin sector steps too, which a sidedef-only walk cannot see" )
     RT_CVAR( rt_wall_tex_debug_dist,    256.f,  "search radius in map units for rt_wall_tex_debug" )
 
     RT_CVAR( rt_wall_strips,            true,   "upload analytic lights along Doom 64 wall light strips (SPACEAR* bulb trim). "
-                                                "RTGL1 emissive surfaces are NOT light sources — emission is only collected "
+                                                "RTGL1 emissive surfaces are NOT light sources ??? emission is only collected "
                                                 "when an indirect bounce ray happens to hit them (HitInfo.inl / "
-                                                "RtRaygenIndirect.inl), never through processDirectIllumination — so an "
+                                                "RtRaygenIndirect.inl), never through processDirectIllumination ??? so an "
                                                 "emissive strip can never cast a pool of light or a shadow at any strength. "
                                                 "Real analytic lights are the only way to make these fixtures light the room. "
                                                 "Spherical, not polygonal: RgLightPolygonalEXT exists in RTGL1's header but "
                                                 "LightManager.cpp compiles it out behind #if TRIANGLE_LIGHTS and hard-errors "
                                                 "on upload (2026-08-07)" )
     RT_CVAR( rt_wall_strip_intensity,   180.f,  "RT intensity per strip segment. Was 500, chosen when 120 and 250 both read as no "
-                                                "light at all — a strip sits flush against the wall it lights, so most of its "
-                                                "sphere is occluded (§19). That premise did not survive: those readings were "
+                                                "light at all ??? a strip sits flush against the wall it lights, so most of its "
+                                                "sphere is occluded (??19). That premise did not survive: those readings were "
                                                 "taken while ONE sector could consume the whole light budget, so only a handful "
                                                 "of lights ever reached the scene. With the budget distributed by distance and "
                                                 "both flat planes walked, 500 overexposed and fizzled. 180 confirmed by eye "
@@ -154,10 +154,10 @@
     RT_CVAR( rt_wall_strip_minlight,    120.f,  "skip strips in sectors dimmer than this: the same trim texture is used in "
                                                 "unlit maintenance areas where the bulbs are meant to be dead. Was 140, which "
                                                 "only ever saw MAP03's SPACEAR strips at lightlevel 180 and silently dropped "
-                                                "MAP02's STRAKR/STRAKX strips at 130 — dim, but nowhere near dead against that "
+                                                "MAP02's STRAKR/STRAKX strips at 130 ??? dim, but nowhere near dead against that "
                                                 "map's median of 160. Dead bulbs sit at 0-64 (2026-08-08)" )
     RT_CVAR( rt_wall_strip_seglen,      64.f,   "map units between strip lights. Keep at or below rt_wall_strip_radius in map "
-                                                "units so neighbouring pools overlap — a chain of point lights spaced too far "
+                                                "units so neighbouring pools overlap ??? a chain of point lights spaced too far "
                                                 "apart scallops along the wall instead of reading as one strip" )
     RT_CVAR( rt_wall_strip_radius,      0.35f,  "RT source radius in meters per strip light. Deliberately wider than ceiling "
                                                 "lamps (0.10): a big soft source is what makes discrete spheres blend into a "
@@ -220,7 +220,7 @@
     RT_CVAR( rt_ceiling_edge_lamps,     true,   "place lights around the PERIMETER of lamp ceilings (SFLATAS/SFLATAQ/SFLATAP/"
                                                 "SPORT*) instead of one sphere at the centre. rt_ceiling_lamps skips any sector "
                                                 "wider than rt_ceiling_lamp_maxspan precisely because a centre sphere in a big "
-                                                "hall looks like a fake mid-ceiling light — but those halls carry their bulbs as "
+                                                "hall looks like a fake mid-ceiling light ??? but those halls carry their bulbs as "
                                                 "blobs along the flat's EDGES, so skipping them left the bulbs casting nothing. "
                                                 "Independent of rt_ceiling_lamps so the centre-sphere path can stay off "
                                                 "(2026-08-07)" )
@@ -235,7 +235,7 @@
                                                 "in the geometry they light" )
     RT_CVAR( rt_ceiling_edge_max,       1024,    "hard cap on flat bulb lamps per frame, counting BOTH planes. Demand is ~800 "
                                                 "segments on MAP02 and MAP03, so this always binds and WHICH lights it drops is "
-                                                "the whole behaviour — the walk collects everything and keeps the nearest, rather "
+                                                "the whole behaviour ??? the walk collects everything and keeps the nearest, rather "
                                                 "than stopping at the cap in sector-index order. Emitting in index order let "
                                                 "MAP02's sector 16 (11,614u perimeter, 364 lights) take the entire budget and "
                                                 "leave the rest of the level dark (2026-08-08)" )
@@ -338,25 +338,25 @@
                                                 "like rt_faux_lamps does for SFLATC) instead of around the sector perimeter. The "
                                                 "perimeter walk lights a room's EDGES, but these two textures tile their bulbs "
                                                 "across the whole flat, so every bulb away from a wall cast nothing and a wide "
-                                                "panel stayed dark down its own middle — the exact objection the faux path was "
+                                                "panel stayed dark down its own middle ??? the exact objection the faux path was "
                                                 "built to answer, which was never applied to the real arrays. Off = the old "
                                                 "perimeter placement, for A/B. SPORT* keeps the perimeter walk either way: a "
                                                 "teleporter pad is one fixture per sector, not a lattice (2026-08-10)" )
 
     RT_CVAR( rt_faux_lamps,             true,   "treat SFLATC (flat) and SPACECE (wall) as if they were bulb arrays, and light "
                                                 "them with the same perimeter walks as the real ones. They are NOT lamp "
-                                                "textures — no bulbs in the art, nothing in the original game lights them — so "
+                                                "textures ??? no bulbs in the art, nothing in the original game lights them ??? so "
                                                 "this is a deliberate invention to lift rooms that are simply too dark, such as "
                                                 "MAP03's SFLATC-ceilinged stair hall. Kept behind its own cvar, colour and "
                                                 "budget precisely because it is a lie: everything the real bulb walk does stays "
                                                 "unchanged when this is off, and the two never share a light slot" )
     RT_CVAR_COLOR( rt_faux_lamp_color,  0x3C5078, "colour of the faux panel lights (hex): a dark blue-grey. Used RAW, not "
                                                 "normalised to hue the way sector-tint lights are, so the darkness is real "
-                                                "light output and not just a tint — 0x3C5078 emits (0.24,0.31,0.47), a "
+                                                "light output and not just a tint ??? 0x3C5078 emits (0.24,0.31,0.47), a "
                                                 "2.0x blue:red channel spread. That is the point: these fixtures do not "
                                                 "exist, so they should read as ambient fill the room happens to sit in "
                                                 "rather than as a lamp the player will look for. Brightness lives in "
-                                                "rt_faux_lamp_intensity — but so, partially, does hue: colour is RAW, so "
+                                                "rt_faux_lamp_intensity ??? but so, partially, does hue: colour is RAW, so "
                                                 "raising intensity scales all three channels together and pushes a weakly "
                                                 "saturated colour toward the tonemapper's white clip point faster than a "
                                                 "well-saturated one. 0x6E7F94 (1.35x spread) read as plain white once "
@@ -368,7 +368,7 @@
                                                 "'real bulbs should out-light fake ones' worry did not survive contact with "
                                                 "actually looking at it (2026-08-08)" )
     RT_CVAR( rt_faux_lamp_stride,       2,      "subsample the bulb lattice: place a faux light on every Nth socket, on both "
-                                                "axes. 1 lights every bulb and is unaffordable — SFLATC's sockets sit 16 units "
+                                                "axes. 1 lights every bulb and is unaffordable ??? SFLATC's sockets sit 16 units "
                                                 "apart, so a 512x512 room alone wants over a thousand lights. 2 gives 32-unit "
                                                 "spacing. The stride counts ABSOLUTE lattice position, not a per-sector counter, "
                                                 "so the chosen bulbs stay aligned across tile and sector seams" )
@@ -383,21 +383,21 @@
 
     RT_CVAR( rt_solo_lamps,             true,   "light SFLATDE and SFLATCH: single-bulb ceiling flats that DO show a lit bulb "
                                                 "in the art (unlike SFLATC/SPACECE's blank sockets) but that the original game "
-                                                "never gave a light to. Not part of the faux/invented family — the bulb is "
+                                                "never gave a light to. Not part of the faux/invented family ??? the bulb is "
                                                 "real, so the light is white and placed exactly on it, one per texture tile, "
                                                 "with its own cvars, colour and budget so it can never crowd rt_faux_lamps or "
                                                 "the real ceiling-edge walk out of their light slots (2026-08-08)" )
     RT_CVAR_COLOR( rt_solo_lamp_color,  0xFFFFFF, "colour of the solo bulb lights (hex): plain white, used RAW like the faux "
                                                 "colour. Unlike the faux panels, these fixtures genuinely show a lit bulb in "
-                                                "the art, so there is no case for tinting them — white is not a placeholder "
+                                                "the art, so there is no case for tinting them ??? white is not a placeholder "
                                                 "here, it is the answer" )
     RT_CVAR( rt_solo_lamp_intensity,    100.f,  "RT intensity per solo bulb light. Under rt_ceiling_edge_intensity (180), "
                                                 "rt_faux_lamp_intensity (500) and rt_ceiling_lamp_intensity (700), but well "
-                                                "above where it sat when a solo bulb was only a small recessed fitting — "
+                                                "above where it sat when a solo bulb was only a small recessed fitting ??? "
                                                 "because a solo bulb is the ONLY light on its pane and has to carry the room "
                                                 "a lattice used to carry with four. Was 90, halved to 45 on 2026-08-08; "
                                                 "raised to 200 on 2026-08-14 when SFLATAS became a broken-bulb ceiling PANE "
-                                                "lit by its one surviving bulb, then settled at 100 the same day — 200 read "
+                                                "lit by its one surviving bulb, then settled at 100 the same day ??? 200 read "
                                                 "too hot by eye. SFLATDE keeps the modest value through "
                                                 "rt_solo_small_intensity, which exists precisely so a pane and a recessed "
                                                 "fitting can differ" )
@@ -407,7 +407,7 @@
     RT_CVAR( rt_solo_lamp_zofs,         8.f,    "drop solo bulb lights this many map units below the ceiling plane" )
     RT_CVAR( rt_solo_lamp_max,          384,    "hard cap on solo bulb lights per frame, budgeted separately from "
                                                 "rt_faux_lamp_max and rt_ceiling_edge_max for the same reason those two are "
-                                                "split from each other — SFLATDE alone tiles across a 768x768 MAP03 room "
+                                                "split from each other ??? SFLATDE alone tiles across a 768x768 MAP03 room "
                                                 "(144 positions at stride 1), which must not be able to starve the real or "
                                                 "faux lattices of light slots. Was 64, which left only 64 of ~260 wanted lit "
                                                 "(~24%) -- the nearest-N cap, not rt_ceiling_edge_maxdist, was why a solo bulb "
@@ -429,7 +429,7 @@
                                                 "(docs/rt-lighting-practices.md 34)." )
     RT_CVAR( rt_solo_lamp_stride,       1,      "subsample the solo bulb lattice like rt_faux_lamp_stride. Default 1 (light "
                                                 "every bulb) because these are a handful of genuine fixtures per map, not a "
-                                                "dense invented grid — raise it if a large SFLATDE/SFLATCH room turns out to "
+                                                "dense invented grid ??? raise it if a large SFLATDE/SFLATCH room turns out to "
                                                 "want fewer, stronger lights instead" )
     // There is deliberately no rt_eye_panels family here, and the absence is the finding
     // (2026-08-10). C23 looked like a lamp nobody had wired: a yellow speckled panel on
@@ -526,7 +526,7 @@
     RT_CVAR( rt_light_mark_intensity,   25.f,   "intensity of every debug marker sphere. A marker is a real uploaded light, so N "
                                                 "markers flood the scene N times over: 320 cyan marks at 400 turned a whole MAP02 "
                                                 "room cyan and hid the fixtures being inspected. Section 10 recorded this for 67 "
-                                                "magenta marks and fixed it by splitting stats from marks — but the flood scales "
+                                                "magenta marks and fixed it by splitting stats from marks ??? but the flood scales "
                                                 "with COUNT, so the limit has to be on the aggregate, not the single marker "
                                                 "(2026-08-08)" )
     RT_CVAR( rt_light_mark_max,         24,     "mark only the N nearest lights of each path. Enough to read placement, few "
@@ -540,12 +540,12 @@
                                                 "problem is intensity; if they are not, the lights are occluded by geometry" )
 
     RT_CVAR( rt_hang_lamps,             true,   "upload warm shadow-casting lights at Doom 64 hanging tech lamps "
-                                                "(LMP1/LMP2 sprites — MAP04 first room etc.). Map often has the props "
+                                                "(LMP1/LMP2 sprites ??? MAP04 first room etc.). Map often has the props "
                                                 "with no co-located PointLight things" )
-    RT_CVAR( rt_hang_lamp_intensity,    220.f,  "RT intensity for hanging tech lamps (many per room — keep below ceiling lamps)" )
+    RT_CVAR( rt_hang_lamp_intensity,    220.f,  "RT intensity for hanging tech lamps (many per room ??? keep below ceiling lamps)" )
     RT_CVAR( rt_hang_lamp_radius,       0.09f,  "RT source radius in meters for hanging tech lamps" )
     RT_CVAR( rt_hang_lamp_zofs,         4.f,    "drop light this many map units below bulb estimate (SPAWNCEILING Z=bottom). "
-                                                "Hanging lamps only — on a floor-standing pole this would walk the light down "
+                                                "Hanging lamps only ??? on a floor-standing pole this would walk the light down "
                                                 "into the solid shaft" )
     RT_CVAR( rt_pole_lamp_intensity,    300.f,  "RT intensity for floor-standing tech pole lamps (64TechPoleLong/Short, sprites "
                                                 "A035/A036). Separate from rt_hang_lamp_intensity because they are a different "
@@ -558,8 +558,8 @@
                                                 "TOP; the hanging lamps' 0.35 would put the light inside the shaft" )
     RT_CVAR( rt_hang_lamp_debug,        false,  "periodic console dump + yellow marker spheres at hanging lamp lights" )
 
-    RT_CVAR( rt_hand_light_on,          true,   "upload one analytic light per FIST for the Baron family — BOS2 Hell Knight "
-                                                "(green) and BOSS Baron of Hell (red) — at the fist's real body-relative "
+    RT_CVAR( rt_hand_light_on,          true,   "upload one analytic light per FIST for the Baron family ??? BOS2 Hell Knight "
+                                                "(green) and BOSS Baron of Hell (red) ??? at the fist's real body-relative "
                                                 "position, instead of relying on the sprite's attached light. RTGL1 attaches "
                                                 "a sprite light at the CENTRE of the billboard quad (VulkanDevice.cpp: "
                                                 "center = average of the 4 quad verts), so the hand glow emitted from the "
@@ -569,7 +569,7 @@
                                                 "them at any emissiveMult. Offsets and per-monster colour are generated from "
                                                 "the mod's authored brightmaps by tools/gen_hand_light_offsets.py" )
     RT_CVAR( rt_hand_light_intensity,   45.f,   "RT intensity per FIST, shared by both monsters. Two lights each, so the "
-                                                "perceived total is roughly double this. Deliberately small — a passive "
+                                                "perceived total is roughly double this. Deliberately small ??? a passive "
                                                 "knight should barely wash its own hands, not light the room; its BAL7 "
                                                 "projectile (1000) is what lights a room during an attack" )
     RT_CVAR( rt_hand_light_radius,      0.06f,  "RT source radius in meters per fist. Small: a fist is a fist, and a wide "
@@ -702,7 +702,7 @@
     RT_CVAR( rt_lava_light_spacing,     96.f,   "grid spacing in MAP UNITS. Smaller is smoother and more expensive; the "
                                                 "per-light intensity is scaled by (spacing/96)^2 so changing this does "
                                                 "not change the room's brightness, only the evenness of it." )
-    RT_CVAR( rt_lava_light_radius,      0.3f,   "RT source radius in METRES. Wide on purpose — a lava lake is an area "
+    RT_CVAR( rt_lava_light_radius,      0.3f,   "RT source radius in METRES. Wide on purpose ??? a lava lake is an area "
                                                 "source, and a small radius gives every grid point its own hard little "
                                                 "shadow, which reads as a row of lamps under the floor." )
     RT_CVAR( rt_lava_light_z,           40.f,   "how far ABOVE the floor plane each light sits, map units. Lights placed "
@@ -732,9 +732,9 @@
     // observation was correct and measured nothing. This removes the step.
     RT_CVAR_NOARCH( rt_lava_autogoto,   false,  "on the first frame of a map that has lava, move the player onto it. "
                                                 "For the A/B arms only -- it teleports you." )
-    RT_CVAR( rt_flame_light_on,         true,   "upload one analytic, FLICKERING light per open flame — the standing torches "
+    RT_CVAR( rt_flame_light_on,         true,   "upload one analytic, FLICKERING light per open flame ??? the standing torches "
                                                 "(TL*/TS*), the wall torches (A030/A031/A032/GTCH), the loose fires "
-                                                "(BFLM/GFLM/RFLM/YFLM), the bonfire (FIRE) and the candle (CAND) — "
+                                                "(BFLM/GFLM/RFLM/YFLM), the bonfire (FIRE) and the candle (CAND) ??? "
                                                 "instead of the sprite's "
                                                 "attached light. Two reasons this cannot stay in texture meta. (1) POSITION: "
                                                 "RTGL1 attaches a sprite light at the CENTRE of the billboard quad, so a "
@@ -756,16 +756,16 @@
                                                 "GLDEFS asks for a hard two-state switch (size/secondarySize at chance 0.5); "
                                                 "that reads as strobing under a path tracer, where every flicker also moves "
                                                 "the indirect bounce, so the same depth is delivered smoothly instead. "
-                                                "Was 0.28 — too strong: a torch is the AMBIENT light of the room it stands "
+                                                "Was 0.28 ??? too strong: a torch is the AMBIENT light of the room it stands "
                                                 "in, so depth that would look right on a campfire in isolation swings the "
                                                 "whole room's indirect bounce with it (2026-08-10)" )
     RT_CVAR( rt_flame_light_speed,      0.25f,  "flicker rate in radians per tic of the base sine (0.25 ~= 1.4 Hz). The two "
                                                 "faster harmonics ride on top at 2.37x and 4.11x, so the fastest component "
-                                                "is what sets the perceived rate — keep this well under 0.4 or the top "
+                                                "is what sets the perceived rate ??? keep this well under 0.4 or the top "
                                                 "harmonic starts to read as a strobe. Was 0.42" )
     RT_CVAR( rt_flame_light_wobble,     2.0f,   "how far the light drifts from its anchor, in MAP UNITS, on each axis. This "
                                                 "is the 'moving' half of a real fire: a flame that only pulses reads as an "
-                                                "electrical fault, one that also wanders reads as combustion. Kept small — "
+                                                "electrical fault, one that also wanders reads as combustion. Kept small ??? "
                                                 "past ~4 units the light visibly detaches from the sprite it belongs to" )
     RT_CVAR( rt_flame_light_maxdist,    3072.f, "cull flame lights beyond this many map units from the viewpoint. Larger "
                                                 "than the fist cull: torches are static room lighting, and popping one in "
@@ -776,13 +776,13 @@
 
     RT_CVAR( rt_sector_emis,            0.35f,  "make bright world surfaces emit light themselves, scaled by sector lightlevel "
                                                 "(0 = off). Doom 64 draws its light features as flat-shaded bright surfaces with "
-                                                "no light actor anywhere — the red MAP02 corridor panels are lit purely by "
+                                                "no light actor anywhere ??? the red MAP02 corridor panels are lit purely by "
                                                 "sector lightlevel. Since RT must discard lightlevel (it is baked shading), those "
                                                 "rooms end up with no light source at all, and albedo tint cannot rescue them: "
                                                 "zero incident light times red albedo is still black. Emitting from the surface "
-                                                "is the right shape for this — a sector-center analytic sphere instead reads as a "
+                                                "is the right shape for this ??? a sector-center analytic sphere instead reads as a "
                                                 "light bulb floating in the corner" )
-    RT_CVAR( rt_sector_emis_minlight,   160.f,  "absolute floor for self-emission [0..255]. Only a floor — the effective threshold "
+    RT_CVAR( rt_sector_emis_minlight,   160.f,  "absolute floor for self-emission [0..255]. Only a floor ??? the effective threshold "
                                                 "is max(this, map median + rt_sector_emis_margin), so a uniformly dim map does not "
                                                 "start glowing just because its median is low" )
     RT_CVAR( rt_sector_emis_margin,     40.f,   "how far above the MAP'S OWN median sector lightlevel a surface must be to count as "
@@ -817,11 +817,11 @@
 
     RT_CVAR( rt_sector_tint_lights,     0.85f,  "how much of a sector's Doom 64 colormap hue tints the analytic lights inside it "
                                                 "(0 = hardcoded warm white everywhere, 1 = fully saturated sector hue). This is "
-                                                "where the colored-room atmosphere comes from — emissive blobs, bloom, speculars "
+                                                "where the colored-room atmosphere comes from ??? emissive blobs, bloom, speculars "
                                                 "and GI bounce all pick it up for free" )
     RT_CVAR( rt_sector_tint_albedo,     1.00f,  "surface tint from the sector colormap hue [0..1, values above 1 clamp]. 1.0 is "
                                                 "the full normalized hue and is what matches the original game (confirmed on "
-                                                "MAP02's blue armor room) — Doom 64's colored rooms are saturated, and because "
+                                                "MAP02's blue armor room) ??? Doom 64's colored rooms are saturated, and because "
                                                 "the hue is peak-normalized this only ever removes off-hue channels, never "
                                                 "brightens. Lower it toward 0 for a more neutral, less stylized look" )
     RT_CVAR_NOARCH( rt_sector_tint_presets, true, "apply the per-map albedo-tint table (RT_TINT_PRESETS) at level load, which "
@@ -840,45 +840,45 @@
                                                 "drops LIGHTLEVEL from the vertex colour, it does not wash the map white. "
                                                 "Default off so rt_mod_compat alone decides, exactly as before." )
     RT_CVAR( rt_translucent_minalpha,   0.80f,  "floor vertex alpha for soft-blend sprites under rt_mod_compat "
-                                                "(Retribution 64Spectre dips to 0.20 — pure ghost under PT alpha blend)" )
+                                                "(Retribution 64Spectre dips to 0.20 ??? pure ghost under PT alpha blend)" )
     RT_CVAR( rt_spectre_alpha,          0.24f,  "the single alpha a LIVING 64Spectre (SAR2) renders at, in every state "
                                                 "[0 = disable, use whatever DECORATE's A_SetTranslucent last set]. 0.20 is the "
                                                 "value the actor's own See/Melee/Pain states use, so this changes nothing "
-                                                "about a spectre that is awake and chasing you — it only pulls the Spawn/Idle "
+                                                "about a spectre that is awake and chasing you ??? it only pulls the Spawn/Idle "
                                                 "loop down to match. That loop calls A_SetTranslucent(1.0) once and then never "
                                                 "lowers it again, so an idle spectre used to sit at alpha 1.0 (clipped to "
-                                                "rt_translucent_minalpha 0.80) — 4x more opaque than the same monster after it "
+                                                "rt_translucent_minalpha 0.80) ??? 4x more opaque than the same monster after it "
                                                 "wakes up, which is why it still read as lit in a pitch black room while a "
                                                 "charging one looked correct. Cost: the Idle state's 0.25->1.0 alpha pulse is "
                                                 "flattened; under path tracing that pulse reads as the ghost glowing on and "
                                                 "off rather than as a shimmer (2026-08-09).\n"
                                                 "0.20 -> 0.24 on 2026-08-14: 20% MORE OPAQUE, asked for by eye. Read as a "
                                                 "20% cut in opacity's complement it would be 0.36, i.e. nearly twice as "
-                                                "solid — that is not what was wanted here, and the same 1.2x was applied "
+                                                "solid ??? that is not what was wanted here, and the same 1.2x was applied "
                                                 "to rt_nightmareimp_alpha so the pair keeps its relative spacing" )
     RT_CVAR( rt_nightmareimp_alpha,     0.42f,  "the single alpha a LIVING 64NightmareImp (TRO2) renders at, in every state "
                                                 "[0 = disable, use DECORATE's value]. The companion to rt_spectre_alpha, but "
                                                 "note the two monsters had DIFFERENT bugs. The imp declares a flat "
                                                 "\"Alpha 0.60\" and none of its states call A_SetTranslucent, so unlike the "
-                                                "spectre its idle and chase alpha already agreed — it never had the "
+                                                "spectre its idle and chase alpha already agreed ??? it never had the "
                                                 "Spawn-loop discrepancy. What it had instead was the opposite problem: the "
                                                 "rt_translucent_minalpha FLOOR (max(a, 0.80)) applied to soft-blend sprites "
                                                 "was raising it from the authored 0.60 to 0.80, i.e. making it MORE opaque "
                                                 "than the actor asks for, which is the same too-visible-in-a-dark-room "
                                                 "complaint by another route. Living ghosts now bypass that floor entirely. "
                                                 "The default was briefly 0.60 (the authored value, once the floor was gone) "
-                                                "and is now 0.35 by eye — deliberately BELOW what DECORATE asks for, on the "
+                                                "and is now 0.35 by eye ??? deliberately BELOW what DECORATE asks for, on the "
                                                 "same reasoning that settled the spectre: sector lightlevel is a poor proxy "
                                                 "for real RT brightness in this mod, so a faint sprite is what actually makes "
                                                 "imperfect light tracking stop being visible. Still well above the spectre's "
-                                                "0.20 — a nightmare imp is a semi-transparent monster, not an invisible one "
+                                                "0.20 ??? a nightmare imp is a semi-transparent monster, not an invisible one "
                                                 "(2026-08-09).\n"
                                                 "0.35 -> 0.42 on 2026-08-14, the same 1.2x applied to rt_spectre_alpha in "
-                                                "the same pass — 20% more opaque, keeping the two monsters' relative "
+                                                "the same pass ??? 20% more opaque, keeping the two monsters' relative "
                                                 "spacing" )
     RT_CVAR( rt_spectre_corpse_solid,   true,   "stop treating a 64Spectre as a spectre once it is dead (SAR2 frames I-N). "
                                                 "A spectre carries RG_MESH_PRIMITIVE_TRANSLUCENT, so RTGL1 rasterizes it and "
-                                                "RsWorld.inl draws vertexColor*texture with NO lighting term — the corpse "
+                                                "RsWorld.inl draws vertexColor*texture with NO lighting term ??? the corpse "
                                                 "takes light from nothing and reads as self-lit. The DECORATE Death sequence "
                                                 "ends on A_SetTranslucent(1.0) anyway, so the corpse is meant to be solid: as "
                                                 "an ordinary alpha-tested sprite it goes in the BLAS, gets lit and casts a "
@@ -886,14 +886,14 @@
     RT_CVAR( rt_ghost_solid,            false,  "render a LIVING soft-blend monster (64Spectre SAR2, 64NightmareImp TRO2) as an "
                                                 "ordinary solid sprite instead of the rasterized translucent overlay. "
                                                 "Superseded by rt_ghost_lightscale, which fixes the baked-lit look WITHOUT "
-                                                "giving up transparency — leave this at 0. When on: alpha-tested at alpha 1, so the sprite is "
-                                                "traced, lit and shadow-casting, and its _e eye mask emits as a real material — "
+                                                "giving up transparency ??? leave this at 0. When on: alpha-tested at alpha 1, so the sprite is "
+                                                "traced, lit and shadow-casting, and its _e eye mask emits as a real material ??? "
                                                 "but the ghost look is gone; the body is a solid dark silhouette. Two other "
                                                 "routes to solving the darkening problem were tried and rejected first: a "
-                                                "vertex-colour dimmer (cannot work — RsWorld.inl derives its emissive from "
+                                                "vertex-colour dimmer (cannot work ??? RsWorld.inl derives its emissive from "
                                                 "baseColor(), so darkening the body darkens the eyes by the same factor) and "
                                                 "GLASS (traced and see-through, but a refractive billboard is the wrong look). "
-                                                "Corpses are unaffected by this cvar — see "
+                                                "Corpses are unaffected by this cvar ??? see "
                                                 "rt_spectre_corpse_solid, which stays on: a dead spectre/imp is meant to read "
                                                 "as a solid body, not a ghost (2026-08-08)" )
     RT_CVAR( rt_ghost_lightscale,       1.00f,  "how strongly a LIVING soft-blend monster (64Spectre SAR2, 64NightmareImp "
@@ -902,20 +902,20 @@
                                                 "looks baked-lit / self-lit in a pitch black room'. "
                                                 "\n"
                                                 "It works by scaling the sprite's ALPHA, not its colour, which is what "
-                                                "separates the body from the eyes — the thing the vertex-colour attempt could "
+                                                "separates the body from the eyes ??? the thing the vertex-colour attempt could "
                                                 "not do. RasterizerPipelines.cpp gives the two rasterizer outputs different "
                                                 "blend factors: attachment 0 (the body) blends SRC_ALPHA, while attachment 1 "
-                                                "(outScreenEmission — the _e eye mask) blends ONE/ONE and so ignores alpha "
+                                                "(outScreenEmission ??? the _e eye mask) blends ONE/ONE and so ignores alpha "
                                                 "completely. Fading alpha to 0 therefore dissolves the body while leaving the "
                                                 "eyes at full strength: in pure dark a nightmare imp is a pair of floating "
                                                 "eyes, and a spectre (whose _e is fully transparent) disappears outright. "
                                                 "\n"
                                                 "Unlike rt_illum_volume this is per-primitive, costs nothing, touches no "
                                                 "other effect, and adds no temporal lag or froxel fuzz. It reads "
-                                                "Sector->GetSpriteLight() via rtstate.m_lightlevel — static sector light only, "
+                                                "Sector->GetSpriteLight() via rtstate.m_lightlevel ??? static sector light only, "
                                                 "so the flashlight and muzzle flashes do NOT brighten the ghost back up. That "
                                                 "is deliberate: routing dynamic lights here is what made the illumination "
-                                                "volume look foggy. Corpses are excluded — they are solid and genuinely traced "
+                                                "volume look foggy. Corpses are excluded ??? they are solid and genuinely traced "
                                                 "and lit, see rt_spectre_corpse_solid (2026-08-09)" )
     RT_CVAR( rt_ghost_emis_split,       true,   "put a living ghost's EYES on their own primitive, so the body can be a "
                                                 "normal alpha-blended sprite. This is what makes rt_spectre_alpha and "
@@ -975,14 +975,14 @@
                                                 "name mismatch from the monster being off screen (2026-08-14)" )
     RT_CVAR_NOARCH( rt_prim_debug,     false,   "Debug: list world textures RTGL1 will RASTERIZE rather than ray-trace. A "
                                                 "rasterized primitive is never added to the acceleration structure, so it "
-                                                "renders normally and can never block a shadow ray — which looks exactly like "
+                                                "renders normally and can never block a shadow ray ??? which looks exactly like "
                                                 "a lighting problem and is not one. Prints vertex alpha, the alpha actually "
                                                 "sent, mAlphaThreshold and whether forcealpha1 fired, so a fix aimed at this "
                                                 "can be confirmed live instead of judged by eye (2026-08-08)" )
     RT_CVAR( rt_force_mask_opaque,      true,   "force vertex alpha to 1 on alpha-TESTED world geometry (fences, grates, the "
                                                 "MAP01 cage). RTGL1 rasterizes any primitive whose packed vertex alpha is below "
                                                 "MESH_TRANSLUCENT_ALPHA_THRESHOLD (0.98), and a rasterized primitive is never "
-                                                "added to the acceleration structure — so it renders perfectly and casts NO "
+                                                "added to the acceleration structure ??? so it renders perfectly and casts NO "
                                                 "shadow from any light at any intensity. That is exactly what the MAP01 fence "
                                                 "did while sprites in the same room cast fine. The cutout is unaffected: "
                                                 "RtAlphaTest.rahit tests the TEXTURE's alpha per texel, which is a separate "
@@ -1117,7 +1117,7 @@
     RT_CVAR( rt_flsh_f,                 0.0f,   "flashlight position offset - forward (in meteres)")
     RT_CVAR_COLOR( rt_flsh_color,     0xFFBE82, "flashlight color (hex); warm horror tint default" )
 
-    RT_CVAR( rt_flsh_battery,           true,   "horror battery cycle: on → dying flicker → recharge → repeat" )
+    RT_CVAR( rt_flsh_battery,           true,   "horror battery cycle: on ??? dying flicker ??? recharge ??? repeat" )
     RT_CVAR( rt_flsh_on_secs,           30.f,   "seconds the flashlight stays lit before dying (before jitter)" )
     RT_CVAR( rt_flsh_die_secs,          4.f,    "seconds of irregular blackouts at the end of the on-phase" )
     RT_CVAR( rt_flsh_off_secs,          5.f,    "seconds of full recharge (light off)" )
@@ -1768,7 +1768,7 @@
     // everything not listed here (pistol / shotgun / SSG / rocket: their flash art means
     // out warm, #ffd5ae, which is what that default already is).
     //
-    // These four are NOT invented — each is the mean of the bright texels of that
+    // These four are NOT invented ??? each is the mean of the bright texels of that
     // weapon's own flash sprite in D64RTR_v15.WAD, peak-normalised:
     //   CHGF (chaingun) #9677ff   BFGF (BFG) #a0ffa0
     //   UNMF (unmaker)  #ff1111   PLSF (plasma) #7dbfff
@@ -1788,7 +1788,7 @@
     // electric core). This CANNOT be done with a lightIntensity on the sprite's own
     // texture: a first-person prim is rasterized, so RTGL1 attaches the light to the
     // very quad it is meant to illuminate, and the plasma rifle was the only weapon
-    // carrying one — which is exactly why the artefact showed up on that gun and on no
+    // carrying one ??? which is exactly why the artefact showed up on that gun and on no
     // other. Emission cannot do it either: RsWorld.inl writes a view weapon's emission
     // to outScreenEmission, a screen-space additive overlay that lights nothing.
     // So the light lives here, at the viewer, like the flashlight and the muzzle flash.
@@ -1824,24 +1824,24 @@
     RT_CVAR( rt_illum_sens_direct,      1.0f,   "[0,1] lighting-change sensitivity for direct diffuse (higher = faster history invalidation)" )
     RT_CVAR( rt_illum_sens_indirect,    0.75f,  "[0,1] lighting-change sensitivity for indirect diffuse (stock RTGL default bias)" )
     RT_CVAR( rt_illum_sens_spec,        1.0f,   "[0,1] lighting-change sensitivity for specular" )
-    RT_CVAR( rt_rr_temporal,            false,  "DLSS-RR: A-SVGF temporal before ComposeNoisy. Default OFF — "
+    RT_CVAR( rt_rr_temporal,            false,  "DLSS-RR: A-SVGF temporal before ComposeNoisy. Default OFF ??? "
                                                 "caused faded duplicate/ghost depth view (double reprojection + "
                                                 "checkerboard coord mismatch). Keep soft lamp fades instead." )
 
-    RT_CVAR( rt_rr_disocc,              true,   "DLSS-RR: disocclusion mask — force RR to drop temporal history where "
+    RT_CVAR( rt_rr_disocc,              true,   "DLSS-RR: disocclusion mask ??? force RR to drop temporal history where "
                                                 "scene luminance changed sharply vs previous frame (motion-reprojected, "
                                                 "per 16x16 tile). Fixes barrel/muzzle flash linger and occluded-glow ghosting." )
     RT_CVAR( rt_rr_disocc_ratio,        3.0f,   "DLSS-RR disocclusion: tile luminance ratio (cur vs prev, symmetric) above "
                                                 "which history is discarded. Lower = more responsive, noisier. [1.0, +inf)" )
     RT_CVAR( rt_rr_disocc_mindelta,     0.01f,  "DLSS-RR disocclusion: minimum absolute tile luminance delta to fire "
                                                 "(guards against false positives in near-black areas)" )
-    RT_CVAR( rt_rr_disocc_show,         false,  "DLSS-RR disocclusion: debug — tint fired tiles red in final image" )
+    RT_CVAR( rt_rr_disocc_show,         false,  "DLSS-RR disocclusion: debug ??? tint fired tiles red in final image" )
 
     RT_CVAR_NOARCH( rt_rr_firefly,             0.0f,   "DLSS-RR: neighbourhood firefly clamp on the noisy lighting before RR. "
                                                 "A pixel is scaled down only if it out-shines the brightest of its 4 "
                                                 "neighbours by this factor. Lower = more aggressive. 0 = off (default). "
                                                 "A/B'd 2026-08-07 at 4.0/2.0: barely reduced motion noise and ADDED a "
-                                                "trail behind the weapon sprite — suppressing outliers removes the local "
+                                                "trail behind the weapon sprite ??? suppressing outliers removes the local "
                                                 "contrast RR uses to detect change, so it over-trusts history. Kept as a "
                                                 "knob, off by default; it trades noise for ghosting rather than fixing it." )
     RT_CVAR_NOARCH( rt_rr_firefly_minlum,      0.01f,  "DLSS-RR firefly clamp: absolute luminance floor below which the clamp "
@@ -1857,11 +1857,11 @@
 
     RT_CVAR( rt_shadow_samples,            1,   "Shadow rays per pixel for DIRECT lighting [1..8]. Direct illumination "
                                                 "multiplies by a single binary visibility ray, so at 1 spp a pixel is "
-                                                "fully lit or fully black — that 0/1 term dominates the raw noise and is "
+                                                "fully lit or fully black ??? that 0/1 term dominates the raw noise and is "
                                                 "untouched by ReSTIR or by any denoiser tuning. Averaging N points on the "
                                                 "chosen light makes it a soft fraction; noise falls roughly as 1/sqrt(N). "
                                                 "Costs N-1 extra rays per pixel. Judge in the Dev 'Unfiltered diffuse "
-                                                "direct' view — the effect should be obvious there if anywhere." )
+                                                "direct' view ??? the effect should be obvious there if anywhere." )
 
     RT_CVAR_NOARCH( rt_debug_visibility,         0,    "Debug: show the shadow-ray visibility term instead of radiance. "
                                                 "1 = greyscale, BLACK where the shadow ray was blocked. 2 = normal "
@@ -1869,7 +1869,7 @@
                                                 "the geometry casting it. "
                                                 "Exists because the final image cannot separate \"the occluder never "
                                                 "blocked the ray\" from \"the shadow is cast but drowned in fill light "
-                                                "or smeared away by the denoiser\" — both read as no shadow, and four "
+                                                "or smeared away by the denoiser\" ??? both read as no shadow, and four "
                                                 "A/B ladders failed to tell them apart (2026-08-08). If an occluder "
                                                 "shows black here, shadow casting works and the problem is downstream; "
                                                 "if it does not, the ray is not being blocked and the cause is in the "
@@ -1879,20 +1879,20 @@
                                                 "radiance, as a green ramp (M/32; black = M=1, the worst case). ReSTIR at "
                                                 "1 spp only converges because temporal reuse grows M. Stand still and "
                                                 "watch it brighten, then move: if it goes dark, history is being rejected "
-                                                "and the RAW signal really is noisier in motion — upstream of every "
+                                                "and the RAW signal really is noisier in motion ??? upstream of every "
                                                 "denoiser, so no denoiser tuning can fix it." )
 
     RT_CVAR_NOARCH( rt_restir_tjitter,        2.0f,   "ReSTIR temporal reuse tap jitter radius, in pixels (stock 2). The jitter "
                                                 "decorrelates the tap, but on grazing surfaces a 2px offset moves depth "
                                                 "well past the flat 10%% reuse threshold, so the tap is rejected and M "
-                                                "collapses to 1 exactly where variance is already worst — visible as the "
+                                                "collapses to 1 exactly where variance is already worst ??? visible as the "
                                                 "sides going dark under rt_debug_restir_m 1 while moving. 0 = reproject "
                                                 "exactly (what RTXDI does)." )
 
     RT_CVAR_NOARCH( rt_rr_spechitdist,         true,   "DLSS-RR: feed pInSpecularHitDistance (world distance from the shading "
                                                 "point to whatever produced the highlight). Specular does not live ON the "
                                                 "surface, so without it RR reprojects highlights as if it did and glossy "
-                                                "surfaces smear/fizzle in motion — the exact symptom, on a full PBR/ORM "
+                                                "surfaces smear/fizzle in motion ??? the exact symptom, on a full PBR/ORM "
                                                 "texture set. Was nullptr because the old binding (FB_DEPTH_WORLD) was the "
                                                 "primary-hit CAMERA distance, the wrong signal; this is the right one. "
                                                 "Shipping RR integrations all provide it." )
@@ -1934,15 +1934,18 @@
                                                 "not there, i.e. noise to remove. Same geometry, same depth test; "
                                                 "additive sprites are blended so they occlude nothing (no dark halos). "
                                                 "RR frames only. Confirm: 'RR guides: ... pInTransparencyLayer=BOUND'." )
-    RT_CVAR_NOARCH( rt_rr_glowpre,             true,   "DLSS-RR: add the screen-emission glow into RR's INPUT (pre-exposure "
-                                                "units, algebraically exact) instead of after RR. The post-RR add "
-                                                "resamples the JITTERED render-res glow buffer with one bilinear tap at "
-                                                "a different sub-texel phase every frame -- every sharp emissive edge "
-                                                "shimmers, reported from play as flickery/unstable lamp bulbs. In the "
-                                                "input, RR dejitters and temporally stabilizes the glow with the rest "
-                                                "of the frame, exactly as the pre-reorder pipeline always did. Only "
-                                                "meaningful with rt_rr_preexposure. 0 = post-RR add (the A/B arm for "
-                                                "the bulb flicker: rr-no-glowpre)." )
+    RT_CVAR_NOARCH( rt_rr_glowpre,             false,  "DLSS-RR: add the screen-emission glow into RR's INPUT (pre-exposure "
+                                                "units, algebraically exact) instead of after RR. Calms emissive-edge "
+                                                "shimmer completely (measured on lamp bulbs), BUT the 1/exposure term "
+                                                "makes the glow in RR's input swell and shrink while auto-exposure "
+                                                "ADAPTS -- flashlight toggles and room transitions read as the scene "
+                                                "changing, reported from play as noise/instability at exactly those "
+                                                "moments. Default 0: the post-RR add, upgraded from one bilinear tap "
+                                                "to a 9-tap Catmull-Rom that cuts the shimmer at its source "
+                                                "(phase-varying reconstruction error) while staying exposure-neutral. "
+                                                "1 = glow in input (arm rr-glowpre-on) if bulbs still bother you and "
+                                                "the adaptation cost is acceptable. Only meaningful with "
+                                                "rt_rr_preexposure." )
     RT_CVAR_NOARCH( rt_nrd,                    false,  "NVIDIA NRD denoiser lane (ReBLUR/ReLAX/SIGMA via NRI wrapping RTGL's "
                                                 "VkDevice). STAGE 1 -- liveness probe: setting this brings the full NRD "
                                                 "stack up (embedded SPIR-V unpacked, pipelines and history pools "
@@ -1966,18 +1969,18 @@
 
     // --- Samples per pixel ---------------------------------------------------
     RT_CVAR( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "
-                                                "only converges via temporal accumulation, which camera motion destroys — "
+                                                "only converges via temporal accumulation, which camera motion destroys ??? "
                                                 "so the raw signal is what you see while moving. N independent estimates "
                                                 "averaged cut that noise ~1/sqrt(N) at the SOURCE, which is upstream of the "
                                                 "denoiser and so helps A-SVGF and DLSS-RR equally. Costs 1 extra shadow ray "
                                                 "per extra sample. 1 = stock (bit-identical)." )
     RT_CVAR( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
-                                                "into the initial reservoir. Costs ~4 extra rays per extra sample — the "
+                                                "into the initial reservoir. Costs ~4 extra rays per extra sample ??? the "
                                                 "expensive one. 1 = stock (bit-identical)." )
 
     // --- ReSTIR quality (previously hardcoded) -------------------------------
-    RT_CVAR( rt_restir_initial,           32,   "ReSTIR RIS candidate lights per pixel [1..32] (was hardcoded 8). Traces "
-                                                "NO rays — pure light importance-sampling quality, so this is close to "
+    RT_CVAR( rt_restir_initial,           32,   "ReSTIR RIS candidate lights per pixel [1..64] (was hardcoded 8). Traces "
+                                                "NO rays ??? pure light importance-sampling quality, so this is close to "
                                                 "free. Raise before reaching for rt_spp_direct." )
     RT_CVAR( rt_restir_spatial,            8,   "ReSTIR spatial reuse taps in the direct pass [0..16] (was hardcoded 8). "
                                                 "Image reads, no rays." )
@@ -1995,7 +1998,7 @@
                                                 "temporal reuse [0/1]. The gradient buffer that gate reads "
                                                 "(framebufDISGradientHistory) is written ONLY by "
                                                 "CmASVGFGradientAtrous, which runs only inside "
-                                                "Denoiser::Denoise() — and DLSS-RR skips Denoise() in favour of "
+                                                "Denoiser::Denoise() ??? and DLSS-RR skips Denoise() in favour of "
                                                 "ComposeNoisy(). So under RR the gate tests a buffer nothing "
                                                 "updates: either it is a dead no-op, or it rejects GI temporal "
                                                 "reuse every frame, leaving indirect lighting at 1 spp with no "
@@ -2009,14 +2012,14 @@
                                                 "throughput * ambient (the 2026-08-06 rework; folds in throughput, which "
                                                 "is fetched in CHECKERBOARD space so neighbouring output pixels read "
                                                 "non-adjacent texels, and getMaterialAmbient(), a thresholded quadratic "
-                                                "that hits exactly 0 at black albedo — a derivative kink along dark "
+                                                "that hits exactly 0 at black albedo ??? a derivative kink along dark "
                                                 "texture contours that no guide FLOOR can remove). 2 = ro_d/envBRDF only, "
                                                 "no throughput/ambient, to separate the two changes. Does not affect the "
                                                 "composed colour, only what RR is told the albedo is." )
 
     RT_CVAR_NOARCH( rt_rr_guide_min,          0.01f,   "DLSS-RR: floor for the diffuse/specular albedo guides. RR demodulates "
                                                 "colour by these (lighting ~ colour/guide) and remodulates with the same "
-                                                "values, so a small floor costs almost nothing — but without it the "
+                                                "values, so a small floor costs almost nothing ??? but without it the "
                                                 "division explodes wherever albedo*throughput approaches 0 (dark rooms, "
                                                 "and exactly 0 on metallic), producing correlated dark worms in dim "
                                                 "distant areas while lit near surfaces stay clean. A-SVGF never reads "
@@ -2031,7 +2034,7 @@
                                                 "over-sharp texture inside a NOISY albedo guide. Positive = softer (+1.0 "
                                                 "cancels the -1.0 term). A/B'd at +1.0 and +1.8: does NOT fix the RR worm "
                                                 "artifact on distant textures. Render resolution only makes it LESS "
-                                                "VISIBLE (Balanced worst, DLAA best) — it is still present at DLAA, where "
+                                                "VISIBLE (Balanced worst, DLAA best) ??? it is still present at DLAA, where "
                                                 "A-SVGF is clean, so resolution is not the cause. Still unexplained." )
 
     // NOT archived (RT_CVAR_NOARCH): this is a fix, not a preference, and it must
@@ -2040,7 +2043,7 @@
     // ~3-7s flashlight linger, and this project has lost sessions to exactly that.
     RT_CVAR_NOARCH( rt_rr_reset_on_lightcut, true,
                                                 "DLSS-RR: flush temporal history (InReset) on an abrupt light "
-                                                "cut — flashlight on/off. Fixes ~3-7s linger under RR's "
+                                                "cut ??? flashlight on/off. Fixes ~3-7s linger under RR's "
                                                 "stabilized history. Always on at launch (not saved to the ini); "
                                                 "set to 0 only for a temporary A/B. See rt_rr_reset_on_dynlight." )
     RT_CVAR( rt_rr_reset_delta,         0.5f,   "DLSS-RR reset: min abrupt change in emitted flashlight scale "
@@ -2049,15 +2052,15 @@
                                                 "light (barrel/rocket explosion flash, pickup glow, etc.) newly "
                                                 "appears or disappears from the uploaded light list. Steady "
                                                 "flicker/pulse lights don't count (they never leave the list). "
-                                                "Muzzle flash is intentionally excluded — too frequent, already "
+                                                "Muzzle flash is intentionally excluded ??? too frequent, already "
                                                 "soft-faded via rt_mzlflsh_fade." )
     RT_CVAR( rt_rr_reset_min_ms,        250,    "DLSS-RR reset: minimum milliseconds between history flushes "
                                                 "(rate limit, avoids back-to-back flushes during rapid triggers)" )
-    RT_CVAR( rt_rr_reset_hold,          false,  "DLSS-RR reset: diagnostic — force InReset every frame "
+    RT_CVAR( rt_rr_reset_hold,          false,  "DLSS-RR reset: diagnostic ??? force InReset every frame "
                                                 "(image should go visibly noisy if this reaches NGX)" )
-    RT_CVAR( rt_rr_reset_now,           false,  "DLSS-RR reset: diagnostic — fire a single history flush, "
+    RT_CVAR( rt_rr_reset_now,           false,  "DLSS-RR reset: diagnostic ??? fire a single history flush, "
                                                 "then self-clears" )
-    RT_CVAR( rt_rr_reset_debug,         false,  "DLSS-RR reset: diagnostic — log every history flush (with its "
+    RT_CVAR( rt_rr_reset_debug,         false,  "DLSS-RR reset: diagnostic ??? log every history flush (with its "
                                                 "cause) plus a once-a-second fired/suppressed tally. Use this to "
                                                 "check whether a trigger is over-firing." )
 
@@ -4109,7 +4112,7 @@
     // exposed, at RTGL's own default speed and a tighter tile scale. They still
     // also drive the partial-invisibility warp, which is only cosmetic there.
     RT_CVAR( rt_water_wavespeed,        0.2f,   "water wave scroll speed (also the partial-invisibility warp). "
-                                                "0.05 was the old hardcoded value — effectively static." )
+                                                "0.05 was the old hardcoded value ??? effectively static." )
     RT_CVAR( rt_water_areascale,        0.35f,  "world area one tile of the water normal texture covers. Larger "
                                                 "= broader, slower swells; smaller = tighter ripples." )
 
@@ -4117,7 +4120,7 @@
     //
     // RTGL's stock water is physical: refract into the media, absorb with
     // Beer-Lambert, mirror-reflect the rest. That reads far too real next to
-    // Doom 64's art, and for these maps it is also plain wrong — D64W2_01 /
+    // Doom 64's art, and for these maps it is also plain wrong ??? D64W2_01 /
     // D64W1_01 are opaque FLOOR flats, there is no sector under them to
     // refract into, so the refraction half of the split has nothing to show.
     //
@@ -4143,7 +4146,7 @@
     // and a CREST colour (what the caustic veins tend to at full mask). Crest is
     // never the body brightened: water's body is deep blue but its crests are
     // pale cyan, which is what the source art's brightest texels actually are.
-    // Pale, not white — white crests read as foam or plastic.
+    // Pale, not white ??? white crests read as foam or plastic.
     RT_CVAR( rt_water_liquids,          true,   "apply the stylized water surface to nukage / sludge / blood as "
                                                 "well as water (D64N*, D64S*, D64B*). 0 = water only, the other "
                                                 "three go back to being flat near-black floors." )
@@ -4191,7 +4194,7 @@
                                                 "light. 0 = fully lighting-dependent." )
     RT_CVAR( rt_water_veinref,          0.1f,   "stylized water: LINEAR luminance that saturates the caustic "
                                                 "vein mask. Measured on D64W2_01: median texel 0.0024, p90 "
-                                                "0.0064, p95 0.0113, p99 0.0161, max 0.0327 — the flat is far "
+                                                "0.0064, p95 0.0113, p99 0.0161, max 0.0327 ??? the flat is far "
                                                 "darker in linear space than its sRGB thumbnail suggests, so a "
                                                 "value near the p99 is what makes the vein cores read while the "
                                                 "body stays deep. Lower = wider, brighter veins." )
@@ -4241,7 +4244,7 @@
                                                 "itself 5cm below). Probe colours: black = hit nothing, blue = "
                                                 "hit non-water geometry, green = hit water. "
                                                 "Mode 1 also means: no colour at all on the surface means the "
-                                                "primitive never got RG_MESH_PRIMITIVE_WATER — i.e. the JSON "
+                                                "primitive never got RG_MESH_PRIMITIVE_WATER ??? i.e. the JSON "
                                                 "meta never reached it (run tools/set_water_meta.py --apply)." )
 
     RT_CVAR( rt_bloom,                  true,   "enable bloom" )
@@ -4279,3 +4282,4 @@
 	// and after that changes to dlss/fsr2, then this value will be set to the cvars;
 	// 2 = balanced; non-archived
     RT_CVAR( _rt_cachedpreset,          2,      "internal variable for menu UX" )
+

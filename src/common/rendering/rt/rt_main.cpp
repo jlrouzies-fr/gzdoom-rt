@@ -2880,7 +2880,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .rrSpecularHitDistance              = static_cast< RgBool32 >( bool( cvar::rt_rr_spechitdist ) ),
         .directSamples                      = uint32_t( std::clamp( int( cvar::rt_spp_direct ), 1, 8 ) ),
         .indirectSamples                    = uint32_t( std::clamp( int( cvar::rt_spp_indirect ), 1, 8 ) ),
-        .restirInitialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_initial ), 1, 32 ) ),
+        .restirInitialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_initial ), 1, 64 ) ),
         .restirSpatialSamples               = uint32_t( std::clamp( int( cvar::rt_restir_spatial ), 0, 16 ) ),
         .restirSpatialRadius                = std::clamp( float( cvar::rt_restir_spatial_radius ), 1.0f, 64.0f ),
         // RR-scoped decorrelation: ReSTIR's temporal reuse keeps a reservoir
