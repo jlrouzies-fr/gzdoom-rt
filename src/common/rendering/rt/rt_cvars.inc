@@ -1959,6 +1959,28 @@
     RT_CVAR_NOARCH( rt_nrd_validation,         false,  "NRD lane: paint NRD's own OUT_VALIDATION overlay instead of the image "
                                                 "-- the vendor-supplied view of guide sanity, reprojection and history "
                                                 "length. The fastest answer to 'did the inputs arrive correctly'." )
+    // --- ReLAX tuning: pushed to NRD every frame, so all of these are LIVE
+    // (console-tunable mid-game, no rebuild). 0 = ReLAX default. Read back
+    // via the 'NRD/ReLAX settings:' line in rt-console.log.
+    RT_CVAR_NOARCH( rt_nrd_maxaccum,           0,      "ReLAX: max linearly accumulated frames (default 30). More = smoother "
+                                                "and laggier; the primary noise-vs-responsiveness trade. Try 60 to "
+                                                "close the gap to A-SVGF before paying for 2 spp." )
+    RT_CVAR_NOARCH( rt_nrd_fastaccum,          0,      "ReLAX: fast-history frames (default 6). The responsive short history "
+                                                "the main one is clamped against; higher = calmer but slower to react "
+                                                "to lighting changes (flashlight)." )
+    RT_CVAR_NOARCH( rt_nrd_atrous,             0,      "ReLAX: a-trous wavelet iterations [2..8] (default 5). More = wider "
+                                                "spatial smoothing; 6-7 approaches A-SVGF's blur at some detail cost." )
+    RT_CVAR_NOARCH( rt_nrd_prepass_diff,       0.0f,   "ReLAX: diffuse pre-pass blur radius in pixels (default 30). Spatial "
+                                                "reuse before accumulation; directly attacks raw 1-spp grain." )
+    RT_CVAR_NOARCH( rt_nrd_prepass_spec,       0.0f,   "ReLAX: specular pre-pass blur radius in pixels (default 50)." )
+    RT_CVAR_NOARCH( rt_nrd_philum,             0.0f,   "ReLAX: diffuse a-trous luminance sensitivity (default 2.0). Higher = "
+                                                "blurs across luminance edges more aggressively (smoother, softer "
+                                                "lighting detail)." )
+    RT_CVAR_NOARCH( rt_nrd_minhitdist,         0.0f,   "ReLAX: min hit-distance weight (0;0.2], default 0.1. NVIDIA: smaller "
+                                                "values recommended for ReSTIR-class signals with clean hit distance -- "
+                                                "which is exactly this renderer. Try 0.02." )
+    RT_CVAR_NOARCH( rt_nrd_antifirefly,        true,   "ReLAX: anti-firefly pass (default on -- this game's 1-spp ReSTIR "
+                                                "genuinely produces fireflies)." )
     RT_CVAR_NOARCH( rt_rr_restir_mcap,         4,      "DLSS-RR: override rt_restir_mcap on RR frames only [-1..64]; -1 = no "
                                                 "override. ReSTIR temporal reuse keeps a reservoir winner for up to mcap "
                                                 "frames, so a bad shadowed sample persists as a STABLE dark dot -- "

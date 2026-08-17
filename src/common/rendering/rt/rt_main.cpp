@@ -2908,6 +2908,14 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .nrdDenoiser                        = static_cast< RgBool32 >( bool( cvar::rt_nrd ) ),
         .rrGlowPre                          = static_cast< RgBool32 >( bool( cvar::rt_rr_glowpre ) ),
         .nrdValidation                      = static_cast< RgBool32 >( bool( cvar::rt_nrd_validation ) ),
+        .nrdMaxAccumFrames                  = uint32_t( std::max( 0, int( cvar::rt_nrd_maxaccum ) ) ),
+        .nrdFastAccumFrames                 = uint32_t( std::max( 0, int( cvar::rt_nrd_fastaccum ) ) ),
+        .nrdAtrousIterations                = uint32_t( std::max( 0, int( cvar::rt_nrd_atrous ) ) ),
+        .nrdPrepassDiffuse                  = std::max( 0.0f, float( cvar::rt_nrd_prepass_diff ) ),
+        .nrdPrepassSpecular                 = std::max( 0.0f, float( cvar::rt_nrd_prepass_spec ) ),
+        .nrdPhiLuminance                    = std::max( 0.0f, float( cvar::rt_nrd_philum ) ),
+        .nrdMinHitDistWeight                = std::max( 0.0f, float( cvar::rt_nrd_minhitdist ) ),
+        .nrdAntiFirefly                     = static_cast< RgBool32 >( bool( cvar::rt_nrd_antifirefly ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
