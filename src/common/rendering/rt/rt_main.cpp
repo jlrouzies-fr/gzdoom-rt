@@ -2908,6 +2908,8 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .nrdDenoiser                        = static_cast< RgBool32 >( bool( cvar::rt_nrd ) ),
         .rrGlowPre                          = uint32_t( std::clamp( int( cvar::rt_rr_glowpre ), 0, 2 ) ),
         .rrGlowScale                        = std::max( 0.0f, float( cvar::rt_rr_glowscale ) ),
+        .rrDemod                            = static_cast< RgBool32 >( bool( cvar::rt_rr_demod ) ),
+        .rrDemodFilter                      = uint32_t( std::clamp( int( cvar::rt_rr_demod_filter ), 0, 2 ) ),
         .nrdValidation                      = static_cast< RgBool32 >( bool( cvar::rt_nrd_validation ) ),
         .nrdMaxAccumFrames                  = uint32_t( std::max( 0, int( cvar::rt_nrd_maxaccum ) ) ),
         .nrdFastAccumFrames                 = uint32_t( std::max( 0, int( cvar::rt_nrd_fastaccum ) ) ),

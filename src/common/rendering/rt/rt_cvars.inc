@@ -1946,6 +1946,17 @@
                                                 "and dimmer in bright ones exactly as the bulb itself already does. "
                                                 "Mode 2 is the DEFAULT since the 2026-08-17 ladder: it fixed the "
                                                 "emissive jitter in play (arm rr-glow-aslight)." )
+    RT_CVAR_NOARCH( rt_rr_demod,               true,   "DLSS-RR albedo demodulation (the RTX Remix approach): RR denoises "
+                                                "LIGHTING ONLY; the modulation factor carrying the crisp albedo/texel "
+                                                "content -- which the network was blurring, soft even at DLAA -- is "
+                                                "divided out before RR and re-multiplied AFTER, at output resolution. "
+                                                "The pixel-art texel edges never enter the network. Trade: diffuse and "
+                                                "specular share one combined factor, so strong highlights on metals "
+                                                "carry a small approximation (Remix ships the same one)." )
+    RT_CVAR_NOARCH( rt_rr_demod_filter,        1,      "DLSS-RR demodulation: how the modulation factor is re-applied at "
+                                                "output res. 0 = bilinear (softest), 1 = Catmull-Rom (sharp edges, no "
+                                                "blockiness -- default), 2 = nearest (full chunky pixel-art reapply; "
+                                                "may stair-step at Balanced's 1.7x scale)." )
     RT_CVAR_NOARCH( rt_rr_glowscale,           35.0f,  "DLSS-RR glow mode 2: the fixed pre-exposure scale. 35 = 1/exposure at "
                                                 "the EV100 midpoint, matching the old post-add brightness mid-range. "
                                                 "Raise if halos read too dim overall, lower if too hot in dark rooms." )
