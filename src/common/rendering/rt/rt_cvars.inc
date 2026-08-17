@@ -1028,6 +1028,14 @@
                                                 "become every later session's control" )
 
     RT_CVAR( rt_rayreconstr,            false,  "native DLSS Ray Reconstruction (replaces A-SVGF + DLSS-SR). Requires rt_upscale_dlss>0 and nvngx_dlssd.dll. Disables frame generation." )
+    RT_CVAR_NOARCH( rt_rr_preset,       5,      "DLSS-RR render preset, as the raw NVSDK_NGX_RayReconstruction_Hint_Render_Preset "
+                                                "value; the Ray Reconstruction twin of rt_dlss_preset, and the value sets are "
+                                                "NOT the same: for RR only 0 - Default (the DLL picks; NVIDIA's current "
+                                                "recommendation), 4 - D (default transformer), 5 - E (latest transformer, what "
+                                                "was hard-coded) mean anything -- A-C were removed in SDK 310.4.0 and 6..15 "
+                                                "revert to Default, so the SR presets J/K do NOT exist here. Changing this "
+                                                "re-creates the RR feature, so it takes effect live. NOARCH: an A/B knob; a "
+                                                "preset saved into the ini would silently become every later session's control" )
     RT_CVAR( rt_remix_rayreconstr,      false,  "[only for RTX Remix] DLSS Ray Reconstruction - denoise path tracing with AI" )
     RT_CVAR( rt_remix_reflex,           true,   "[only for RTX Remix] Reflex - reduce latency between inputs and visible results" )
     RT_CVAR( rt_remix_taa,              0,      "[only for RTX Remix] temporal anti aliasing. 0 - off, 1 - quality, 2 - balanced, 3 - perf, 4 - ultra perf, 5 - FSR2 with rt_renderscale, 6 - native" )
@@ -1888,6 +1896,26 @@
                                                 "texture set. Was nullptr because the old binding (FB_DEPTH_WORLD) was the "
                                                 "primary-hit CAMERA distance, the wrong signal; this is the right one. "
                                                 "Shipping RR integrations all provide it." )
+
+    // NOT archived (RT_CVAR_NOARCH): this is a fix, not a preference -- it must
+    // come back ON at every launch, and an A/B arm that turned it off must not
+    // outlive its session.
+    RT_CVAR_NOARCH( rt_rr_preexposure,         true,   "DLSS-RR: feed RR PRE-exposure radiance. CmPrepareFinal normally bakes "
+                                                "EV100 auto-exposure (and the screen emissive) into the image BEFORE the "
+                                                "upscaler, so RR denoised post-exposure color while being told "
+                                                "InPreExposure=1.0 -- and whenever adaptation moved (EV100 2.0..7.7, a "
+                                                "~52x swing in this game), RR's temporal history mixed frames captured at "
+                                                "different exposures. NVIDIA's RR guide (S3.7) declares exposure "
+                                                "unsupported: the model wants linear pre-exposure radiance, which is also "
+                                                "exactly what A-SVGF accumulates -- the one structural asymmetry "
+                                                "RAYRECONSTRUCTION.md blamed. With this ON, exposure + screen emissive "
+                                                "move to a new pass AFTER RR (CmRrPostExposure). Only affects frames "
+                                                "where RR actually runs; A-SVGF / DLSS-SR / FSR2 are untouched. "
+                                                "0 = old behaviour, for the A/B (tools/arms/rr-preexp-*.cfg)." )
+    RT_CVAR_NOARCH( rt_rr_preexp_debug,        false,  "DLSS-RR pre-exposure: tint the post-RR pass's output magenta -- the "
+                                                "absurd arm. 'No visible difference' and 'the pass never ran' are the "
+                                                "same image without this; magenta proves the plumbing is live. Check "
+                                                "rt-console.log prints 'preExposure=on (post-RR pass)' too." )
 
     // --- Samples per pixel ---------------------------------------------------
     RT_CVAR( rt_spp_direct,                1,   "Direct-lighting samples per pixel [1..8]. The path tracer is 1 spp and "

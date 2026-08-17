@@ -1173,6 +1173,13 @@ void RT_UpscaleCvarsToRtgl( RgStartFrameRenderResolutionParams* pDst )
     // and NGX falls back to Default for any value it no longer recognises.
     pDst->dlssPreset =
         static_cast< uint32_t >( std::max< int >( 0, int{ cvar::rt_dlss_preset } ) );
+
+    // Doom64-RT: the Ray Reconstruction twin. Raw
+    // NVSDK_NGX_RayReconstruction_Hint_Render_Preset value; for RR only
+    // 0 (Default) / 4 (D) / 5 (E) mean anything -- NGX reverts everything else
+    // to Default. RTGL1 re-creates the RR feature when this changes.
+    pDst->dlssRrPreset =
+        static_cast< uint32_t >( std::max< int >( 0, int{ cvar::rt_rr_preset } ) );
 }
 
 template< typename T >
@@ -2880,6 +2887,8 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .rrGuideMin                         = std::clamp( float( cvar::rt_rr_guide_min ), 0.0f, 1.0f ),
         .rrGuideMode                        = uint32_t( std::clamp( int( cvar::rt_rr_guide_mode ), 0, 2 ) ),
         .restirIndirAntilag                 = static_cast< RgBool32 >( bool( cvar::rt_restir_indir_antilag ) ),
+        .rrPreExposure                      = static_cast< RgBool32 >( bool( cvar::rt_rr_preexposure ) ),
+        .rrPreExposureDebug                 = static_cast< RgBool32 >( bool( cvar::rt_rr_preexp_debug ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
