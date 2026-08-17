@@ -2907,6 +2907,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .rrTransparencyLayer                = static_cast< RgBool32 >( bool( cvar::rt_rr_translayer ) ),
         .nrdDenoiser                        = static_cast< RgBool32 >( bool( cvar::rt_nrd ) ),
         .rrGlowPre                          = static_cast< RgBool32 >( bool( cvar::rt_rr_glowpre ) ),
+        .nrdValidation                      = static_cast< RgBool32 >( bool( cvar::rt_nrd_validation ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{

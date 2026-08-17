@@ -1946,15 +1946,19 @@
                                                 "1 = glow in input (arm rr-glowpre-on) if bulbs still bother you and "
                                                 "the adaptation cost is acceptable. Only meaningful with "
                                                 "rt_rr_preexposure." )
-    RT_CVAR_NOARCH( rt_nrd,                    false,  "NVIDIA NRD denoiser lane (ReBLUR/ReLAX/SIGMA via NRI wrapping RTGL's "
-                                                "VkDevice). STAGE 1 -- liveness probe: setting this brings the full NRD "
-                                                "stack up (embedded SPIR-V unpacked, pipelines and history pools "
-                                                "created) and prints 'NRD: instance ALIVE ... pools N MB' to "
-                                                "rt-console.log; A-SVGF keeps denoising until the stage-2 data path "
-                                                "lands. Built after the full DLSS-RR input contract A/B'd null on "
-                                                "2026-08-17 (docs/plan-nrd-denoiser.md); ReLAX is co-designed for the "
-                                                "1-spp ReSTIR signal whose correlated reservoir noise RR preserved as "
-                                                "dark dots. Ignored while rt_rayreconstr is active (RR > NRD > A-SVGF)." )
+    RT_CVAR_NOARCH( rt_nrd,                    false,  "NVIDIA NRD denoiser lane: ReLAX replaces A-SVGF for the frame "
+                                                "(CmNrdPack stages the same raw ReSTIR signals -> NRDIntegration runs "
+                                                "ReLAX -> CmNrdCompose remodulates into PreFinal with CmNoisyCompose's "
+                                                "exact arithmetic). Everything downstream is the untouched A-SVGF "
+                                                "frame shape -- exposure baked in CmPrepareFinal, glow before the "
+                                                "upscaler, DLSS-SR reconstructing -- i.e. none of the RR-lane "
+                                                "exposure/glow/reset problems can exist here by construction. ReLAX "
+                                                "was co-designed for 1-spp ReSTIR input (RTXDI). Any bring-up failure "
+                                                "falls back to A-SVGF loudly ('NRD:' lines in rt-console.log). "
+                                                "Ignored while rt_rayreconstr is active (RR > NRD > A-SVGF)." )
+    RT_CVAR_NOARCH( rt_nrd_validation,         false,  "NRD lane: paint NRD's own OUT_VALIDATION overlay instead of the image "
+                                                "-- the vendor-supplied view of guide sanity, reprojection and history "
+                                                "length. The fastest answer to 'did the inputs arrive correctly'." )
     RT_CVAR_NOARCH( rt_rr_restir_mcap,         4,      "DLSS-RR: override rt_restir_mcap on RR frames only [-1..64]; -1 = no "
                                                 "override. ReSTIR temporal reuse keeps a reservoir winner for up to mcap "
                                                 "frames, so a bad shadowed sample persists as a STABLE dark dot -- "
