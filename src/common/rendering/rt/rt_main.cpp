@@ -3069,12 +3069,26 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .pDither               = &ef_dither,
     };
 
-    // DLSS-RR: flush temporal history this frame if any transient-light source
-    // flagged an abrupt cut (flashlight on/off, a dynlight appearing/
+    // DLSS-RR ONLY: flush temporal history this frame if any transient-light
+    // source flagged an abrupt cut (flashlight on/off, a dynlight appearing/
     // disappearing, or a fresh level load -- see g_rt_lightcut's setters) or a
     // diagnostic cvar asked for it. Rate-limited so rapid triggers (e.g. quick
     // flashlight double-tap) don't chain resets back-to-back.
-    bool wantResetHistory = bool{ cvar::rt_rr_reset_hold };
+    //
+    // SCOPED TO RR because the flush exists to paper over what DLSS-RR lacks:
+    // it has no lighting-change handling of its own, so transient lights
+    // linger in its history for seconds. A-SVGF (gradient antilag) and
+    // NRD/ReLAX (fast-history clamping) both handle lighting changes BY
+    // DESIGN -- and drawInfo.resetHistory reaches every consumer, so with the
+    // NRD lane it was translating each flashlight toggle into a full ReLAX
+    // CLEAR_AND_RESTART: the whole frame visibly re-converged from 1 spp on
+    // every toggle, while plain A-SVGF (which ignores the flag) was clean.
+    // Reported from play 2026-08-17 night; this gate is the fix.
+    // rt_rr_reset_now below stays unconditional -- an explicit diagnostic
+    // flush must work on any path.
+    const bool rrHistoryFlushApplies = g_rr_dbg_rrRequested;
+
+    bool wantResetHistory = bool{ cvar::rt_rr_reset_hold } && rrHistoryFlushApplies;
 
     // rt_rr_reset_debug tallies: how many flushes actually reached NGX this
     // second, and how many the rate limit swallowed. A trigger that over-fires
@@ -3087,7 +3101,8 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     if( g_rt_lightcut )
     {
         g_rt_lightcut = false;
-        if( curtime - g_rt_lastresetat >= double( cvar::rt_rr_reset_min_ms ) / 1000.0 )
+        if( rrHistoryFlushApplies &&
+            curtime - g_rt_lastresetat >= double( cvar::rt_rr_reset_min_ms ) / 1000.0 )
         {
             wantResetHistory = true;
             g_rt_lastresetat = curtime;
