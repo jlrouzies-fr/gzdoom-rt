@@ -1957,9 +1957,11 @@
                                                 "output res. 0 = bilinear (softest), 1 = Catmull-Rom (sharp edges, no "
                                                 "blockiness -- default), 2 = nearest (full chunky pixel-art reapply; "
                                                 "may stair-step at Balanced's 1.7x scale)." )
-    RT_CVAR_NOARCH( rt_rr_glowscale,           35.0f,  "DLSS-RR glow mode 2: the fixed pre-exposure scale. 35 = 1/exposure at "
-                                                "the EV100 midpoint, matching the old post-add brightness mid-range. "
-                                                "Raise if halos read too dim overall, lower if too hot in dark rooms." )
+    RT_CVAR_NOARCH( rt_rr_glowscale,           1.0f,   "DLSS-RR glow mode 2: artistic multiplier on the glow overlay. Mode 2 "
+                                                "now divides by a SMOOTHED exposure (1x1 EMA), so at 1.0 the glow "
+                                                "matches its old calibrated brightness in every room, steady-state "
+                                                "exact -- the first cut's fixed mid-exposure constant ran it ~7x hot "
+                                                "in dark rooms (MAP02 floor emissives, reported from play)." )
     RT_CVAR_NOARCH( rt_nrd,                    false,  "NVIDIA NRD denoiser lane: ReLAX replaces A-SVGF for the frame "
                                                 "(CmNrdPack stages the same raw ReSTIR signals -> NRDIntegration runs "
                                                 "ReLAX -> CmNrdCompose remodulates into PreFinal with CmNoisyCompose's "
