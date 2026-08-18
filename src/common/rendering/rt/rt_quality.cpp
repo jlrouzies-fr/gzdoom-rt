@@ -193,6 +193,36 @@ CUSTOM_CVAR( Int, rt_quality_preset, RTQ_HIGH, CVAR_ARCHIVE | CVAR_GLOBALCONFIG 
     ApplyQualityPreset( self, true );
 }
 
+void RT_ApplyQualityPresetOnce()
+{
+    // WHY THIS EXISTS, and why the CUSTOM_CVAR handler below is not enough.
+    //
+    // Three of the owned cvars -- d64_dropcasings, rt_gore_max, rt_gore_life --
+    // are CVARINFO cvars declared by the mod pk3s, and those are created when
+    // the WAD is loaded, which is AFTER the config is read. So at the moment
+    // gzdoom applies rt_quality_preset from the ini, FindCVar cannot see them
+    // and they are silently skipped. On a fresh config the handler does not run
+    // at all, because taking a default is not a set.
+    //
+    // That is not theoretical. d64_dropcasings defaults to 0 in the WAD's
+    // CVARINFO and the launcher pin was forcing it to 1; unpinning it in favour
+    // of the preset turned shell casings off for everybody until this ran.
+    //
+    // So: apply once more when the level exists, which is the first moment every
+    // cvar the preset owns is guaranteed to be registered.
+    static bool s_done = false;
+    if( s_done || !primaryLevel )
+    {
+        return;
+    }
+    s_done = true;
+
+    // Verbose on purpose. This is the one apply nobody asked for, so the log has
+    // to show it happened and that every name resolved -- "0 not present" is the
+    // liveness check for the ordering problem described above.
+    ApplyQualityPreset( rt_quality_preset, true );
+}
+
 // Re-apply without going through the archived cvar, for a launcher or an A/B arm
 // that wants to state the preset rather than inherit whatever was saved.
 CCMD( rt_quality_apply )

@@ -1969,6 +1969,7 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
     // Doom64-RT: the frame's cost accounting starts here. Reset before
     // rgStartFrame, because rgStartFrame is itself one of the four phases.
     RT_StatsNewFrame();
+    RT_ApplyQualityPresetOnce();
 
     RTStartFrame.Clock();
     RgResult r = rt.rgStartFrame( &info );

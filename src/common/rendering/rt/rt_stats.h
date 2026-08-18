@@ -69,3 +69,9 @@ void RT_StatsPeriodicDump();
 
 // Called once, after rgLoadLibraryAndCreate has filled the RgInterface.
 void RT_InstallStatThunks();
+
+// Options -> Quality (rt_quality.cpp). Applies the archived preset once the
+// level exists -- see the note at its definition for why the cvar's own handler
+// cannot do it. Declared here rather than in a header of its own because this is
+// the only other thing RT_BeginFrame calls for bookkeeping.
+void RT_ApplyQualityPresetOnce();
