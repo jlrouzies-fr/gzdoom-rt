@@ -206,6 +206,18 @@ bool glcycle_t::active = false;
 void  checkBenchActive()
 {
 	FStat *stat = FStat::FindStat("rendertimes");
-	glcycle_t::active = ((stat != NULL && stat->isActive()) || printstats);
+	// Doom64-RT: `stat rt` (rt_stats.cpp) uses the same glcycle_t counters, and
+	// they are compiled to a no-op unless this flag is set. Without the second
+	// FindStat, `stat rt` on its own reports a flat 0.000 for every phase --
+	// which reads as "the RT path costs nothing" rather than "the timers are
+	// switched off".
+	FStat *rtstat = FStat::FindStat("rt");
+	// ...and rt_stat_force keeps them on with nothing on screen, which is what a
+	// scripted -timedemo + rt_stat_dump run needs. Declared here rather than
+	// pulled in from the RT cvar table so common/ keeps no dependency on it.
+	extern bool rt_stat_force_counters;
+	glcycle_t::active = ((stat != NULL && stat->isActive()) ||
+	                     (rtstat != NULL && rtstat->isActive()) ||
+	                     rt_stat_force_counters || printstats);
 }
 

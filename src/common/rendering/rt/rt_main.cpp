@@ -3,6 +3,7 @@
 #endif
 
 #include "i_mainwindow.h"
+#include "rt_stats.h"
 #include "i_time.h"
 #include "m_argv.h"
 #include "win32rtvideo.h"
@@ -564,6 +565,13 @@ Win32RTVideo::Win32RTVideo()
     const char* remixdll = g_isremix ? "\\bin_remix\\RTGL1.dll" : nullptr;
 
     RgResult r = rgLoadLibraryAndCreate( &info, isdebug, remixdll, &rt, nullptr );
+
+    // Doom64-RT: swap the two upload entry points for counting thunks BEFORE
+    // anything can call them. Done here rather than at each of the 36 call sites
+    // -- see rt_stats.h. A failed load leaves rt zeroed and the install is a
+    // no-op, so this is safe to run before the error check below.
+    RT_InstallStatThunks();
+
     if( r != RG_RESULT_SUCCESS )
     {
         auto msg = std::string{ "RgResult code: " };
@@ -1958,7 +1966,13 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
     };
     g_resetfluid = false;
 
+    // Doom64-RT: the frame's cost accounting starts here. Reset before
+    // rgStartFrame, because rgStartFrame is itself one of the four phases.
+    RT_StatsNewFrame();
+
+    RTStartFrame.Clock();
     RgResult r = rt.rgStartFrame( &info );
+    RTStartFrame.Unclock();
     RG_CHECK( r );
 
 
@@ -2171,6 +2185,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // BEFORE the fixture walks: they offer their lights into this list as they
     // upload them, and RT_ShaftLightsSelect() reads it when the volumetric
     // params are built further down. See rt_light_shafts.cpp.
+    // Doom64-RT: everything from here to RT_DebugNearbyWallTextures() is OUR
+    // per-frame light generation -- ten systems, each walking the whole level.
+    // Timed as one block because that is the unit a fix would move: see
+    // rt_stats.h and the Stage 2 fixture-candidate bake.
+    RTLightGen.Clock();
+
     RT_ShaftLightsBegin();
 
     RT_UploadExportableSectorLights();
@@ -2204,6 +2224,8 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UploadSparkLights();
     RT_SparkDebugTick();
     RT_DebugNearbyWallTextures();
+
+    RTLightGen.Unclock();
 
     auto tm_params = RgDrawFrameTonemappingParams{
         .sType                = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS,
@@ -3163,7 +3185,13 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .currentTime      = curtime,
     };
 
+    RTDrawFrame.Clock();
     RgResult r = rt.rgDrawFrame( &info );
+    RTDrawFrame.Unclock();
+
+    // After the accounting is complete for this frame, and only if
+    // rt_stat_every asked for it.
+    RT_StatsPeriodicDump();
     RG_CHECK( r );
 
     if( g_cpu_latency_get )

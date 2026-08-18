@@ -991,6 +991,48 @@ void HWDrawInfo::RenderBSPNode (void *node)
 
 			const auto viewbox = FBoundingBox( Viewpoint.Pos.X, Viewpoint.Pos.Y, nocullradius );
 
+			// Doom64-RT: "does this candidate share a two-sided seg with an
+			// already-visible sector?" used to be answered by scanning EVERY seg
+			// in the level, inside the loop over every sector -- O(sectors x segs)
+			// every frame. On MAP34 (706 sectors, ~20k segs) that measured 3.8 ms
+			// of a ~6 ms frame, the single largest CPU item in the game.
+			//
+			// The same question can be answered for ALL sectors in one pass over
+			// the segs, because it is a property of the seg, not of the candidate.
+			// Same predicate, same result, same visible set -- see the equivalence
+			// note at the test below.
+			static auto rt_adjtovisible = std::vector< bool >{};
+			rt_adjtovisible.resize( Level->sectors.size() );
+			rt_adjtovisible.assign( rt_adjtovisible.size(), false );
+
+			for( const seg_t& seg : Level->segs )
+			{
+				int fs = ( seg.frontsector && seg.frontsector->sectornum >= 0 &&
+				           seg.frontsector->sectornum < int( rt_sectorvis.size() ) )
+				             ? seg.frontsector->sectornum
+				             : -1;
+				int bs = ( seg.backsector && seg.backsector->sectornum >= 0 &&
+				           seg.backsector->sectornum < int( rt_sectorvis.size() ) )
+				             ? seg.backsector->sectornum
+				             : -1;
+
+				// Both sides required, exactly as the old inner loop demanded:
+				// it `continue`d on fs < 0 and again on bs < 0 before testing.
+				if( fs < 0 || bs < 0 )
+				{
+					continue;
+				}
+
+				if( rt_sectorvis[ fs ] )
+				{
+					rt_adjtovisible[ bs ] = true;
+				}
+				if( rt_sectorvis[ bs ] )
+				{
+					rt_adjtovisible[ fs ] = true;
+				}
+			}
+
 			sectorvis_expanded.assign( sectorvis_expanded.size(), false );
 			for( const sector_t& candidate : Level->sectors )
 			{
@@ -1003,6 +1045,21 @@ void HWDrawInfo::RenderBSPNode (void *node)
 				if( rt_sectorvis[ candidate.sectornum ] )
 				{
 					sectorvis_expanded[ candidate.sectornum ] = true;
+					continue;
+				}
+
+				// EQUIVALENCE. The old code marked the candidate when some seg had
+				// both sectors valid and (candidate == fs && vis[bs]) ||
+				// (candidate == bs && vis[fs]). rt_adjtovisible[candidate] is true
+				// under exactly that condition, so this test and the seg scan it
+				// replaces accept the same sectors.
+				//
+				// It is tested BEFORE the bounding-box walk on purpose: the two are
+				// a conjunction, so the order cannot change the outcome, and this
+				// one is a single array read where the other walks every line of
+				// the sector.
+				if( !rt_adjtovisible[ candidate.sectornum ] )
+				{
 					continue;
 				}
 
@@ -1020,34 +1077,70 @@ void HWDrawInfo::RenderBSPNode (void *node)
 				{
 					continue;
 				}
-				for( seg_t& seg : Level->segs )
+
+				sectorvis_expanded[ candidate.sectornum ] = true;
+			}
+
+			// Doom64-RT: the equivalence above is an argument, so here is the
+			// experiment. rt_cull_verify re-runs the ORIGINAL O(sectors x segs)
+			// predicate and reports any sector the two disagree on. Off by
+			// default and O(T x G) when on -- it is a correctness gate to run
+			// once after touching this, not something to leave enabled.
+			if( cvar::rt_cull_verify )
+			{
+				int mismatches = 0;
+				for( const sector_t& candidate : Level->sectors )
 				{
-					int fs = ( seg.frontsector && seg.frontsector->sectornum >= 0 &&
-					           seg.frontsector->sectornum < int( rt_sectorvis.size() ) )
-					             ? seg.frontsector->sectornum
-					             : -1;
-					if( fs < 0 )
+					if( rt_sectorvis[ candidate.sectornum ] )
 					{
 						continue;
 					}
 
-					int bs = ( seg.backsector && seg.backsector->sectornum >= 0 &&
-					           seg.backsector->sectornum < int( rt_sectorvis.size() ) )
-					             ? seg.backsector->sectornum
-					             : -1;
-					if( bs < 0 )
+					bool touches = false;
+					for( const line_t* l : candidate.Lines )
 					{
-						continue;
+						if( l && inRange( viewbox, l ) )
+						{
+							touches = true;
+							break;
+						}
 					}
 
-					// 'fs' is a neighbor, and 'fs' is visible => candidate is visible
-					// 'bs' is a neighbor, and 'bs' is visible => candidate is visible
-					if( ( candidate.sectornum == fs && rt_sectorvis[ bs ] ) ||
-					    ( candidate.sectornum == bs && rt_sectorvis[ fs ] ) )
+					bool oldresult = false;
+					if( touches )
 					{
-						sectorvis_expanded[ candidate.sectornum ] = true;
-						break;
+						for( seg_t& seg : Level->segs )
+						{
+							int fs = ( seg.frontsector && seg.frontsector->sectornum >= 0 &&
+							           seg.frontsector->sectornum < int( rt_sectorvis.size() ) )
+							             ? seg.frontsector->sectornum
+							             : -1;
+							if( fs < 0 ) continue;
+							int bs = ( seg.backsector && seg.backsector->sectornum >= 0 &&
+							           seg.backsector->sectornum < int( rt_sectorvis.size() ) )
+							             ? seg.backsector->sectornum
+							             : -1;
+							if( bs < 0 ) continue;
+							if( ( candidate.sectornum == fs && rt_sectorvis[ bs ] ) ||
+							    ( candidate.sectornum == bs && rt_sectorvis[ fs ] ) )
+							{
+								oldresult = true;
+								break;
+							}
+						}
 					}
+
+					if( oldresult != sectorvis_expanded[ candidate.sectornum ] )
+					{
+						mismatches++;
+					}
+				}
+
+				static int s_verifytick = 0;
+				if( ( s_verifytick++ % 35 ) == 0 )
+				{
+					Printf( "rt_cull_verify: %d sector(s) differ from the original predicate\n",
+					        mismatches );
 				}
 			}
 

@@ -16,6 +16,25 @@
     RT_CVAR( rt_cpu_cullmode,           0,      "[IMPACTS CPU PERFORMANCE HEAVILY] 0: BSP + all neighbor sectors of visible,  1 - original GZDoom's BSP/clip checks,  2: uploading whole map, no culling at all" )
     RT_CVAR( rt_cpu_nocullradius,       10.f,   "[IMPACTS CPU PERFORMANCE] Radius (in meters) in which culling must not be applied. Applicable with rt_cpu_cullmode=0" )
 
+    RT_CVAR_NOARCH( rt_cull_verify,     false,  "correctness gate for the hoisted visibility expansion in hw_bsp.cpp. Runs "
+                                                "the ORIGINAL O(sectors x segs) predicate alongside the hoisted one and "
+                                                "reports how many sectors the two disagree on -- it must print 0. Costs "
+                                                "exactly the loop the hoist removed, so it is for a verification run, not "
+                                                "for play." )
+
+    RT_CVAR_NOARCH( rt_stat_every,          0,  "print the `stat rt` numbers to the console every N TICS (0 = off). The "
+                                                "instrument for an unattended benchmark: -timedemo or a scripted run has "
+                                                "nothing on screen to read and no way to type rt_stat_dump, so without this "
+                                                "a measurement run produces a log with no measurements in it. Implies "
+                                                "rt_stat_force. 35 = once a second." )
+
+    RT_CVAR_NOARCH( rt_stat_force,      false,  "keep the `stat rt` cycle counters running even when the stat is not on "
+                                                "screen. glcycle_t compiles to a no-op unless a stat is displayed "
+                                                "(stats.h:273 / hw_clock.cpp checkBenchActive), so a SCRIPTED benchmark -- "
+                                                "-timedemo plus rt_stat_dump into a log -- would otherwise record a flat "
+                                                "0.000 for every phase and read as \"the RT path is free\". Set this for "
+                                                "measurement runs; it costs an rdtsc pair per upload." )
+
     RT_CVAR( rt_autoexport,             false,  "if true: if map's gltf doesn't exist on disk, export to gltf "
                                                 "and process the map as if it's static (which improves performance / stability). "
                                                 "Default false: auto-export freezes large UDMF mods (e.g. Doom 64 Retribution)." )

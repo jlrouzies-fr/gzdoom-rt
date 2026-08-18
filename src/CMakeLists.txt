@@ -787,6 +787,7 @@ if (HAVE_RT)
 	set(RT_SOURCES
 		common/rendering/rt/rt_main.cpp
 		common/rendering/rt/rt_cvars.cpp
+		common/rendering/rt/rt_stats.cpp
 		common/rendering/rt/rt_draw.cpp
 		common/rendering/rt/rt_weapon.cpp
 		common/rendering/rt/rt_lights_sector.cpp
