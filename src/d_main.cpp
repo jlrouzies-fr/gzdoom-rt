@@ -1042,7 +1042,28 @@ void D_Display ()
 			{
 				StatusBar->RefreshViewBorder ();
 			}
-			if (hud_althud && viewheight == SCREENHEIGHT && screenblocks > 10)
+			// Doom64-RT: a menu covers the HUD but does not stop it drawing, and it
+			// is drawn AFTER the menu's dim and at full opacity -- so the bottom
+			// of a long options page reads straight through the ammo counters.
+			//
+			// Only the status bar is skipped. V_DrawBlend, the automap and
+			// RefreshViewBorder above stay, because those are the view rather
+			// than the HUD: hiding the automap when its own menu opens, or
+			// leaving the border unpainted at screenblocks <= 10, would be a
+			// different bug in place of this one.
+			//
+			// MENU_OnNoPause is included: it is still a full menu on screen, it
+			// just does not pause. The console is NOT, because it is translucent
+			// and sized to the top of the screen, so it never reaches the HUD.
+			const bool rt_menuhideshud =
+				bool(cvar::rt_menu_hidehud) &&
+				(menuactive == MENU_On || menuactive == MENU_OnNoPause);
+
+			if (rt_menuhideshud)
+			{
+				// nothing: the HUD is what we are hiding
+			}
+			else if (hud_althud && viewheight == SCREENHEIGHT && screenblocks > 10)
 			{
 				StatusBar->DrawBottomStuff (HUD_AltHud);
 				if (DrawFSHUD || automapactive) StatusBar->DrawAltHUD();

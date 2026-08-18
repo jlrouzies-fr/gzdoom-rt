@@ -16,6 +16,13 @@
     RT_CVAR( rt_cpu_cullmode,           0,      "[IMPACTS CPU PERFORMANCE HEAVILY] 0: BSP + all neighbor sectors of visible,  1 - original GZDoom's BSP/clip checks,  2: uploading whole map, no culling at all" )
     RT_CVAR( rt_cpu_nocullradius,       10.f,   "[IMPACTS CPU PERFORMANCE] Radius (in meters) in which culling must not be applied. Applicable with rt_cpu_cullmode=0" )
 
+    RT_CVAR( rt_menu_hidehud,           true,   "hide the in-game HUD while a menu is open. The status bar is drawn every "
+                                                "frame regardless of what is on top of it, so a long options page runs its "
+                                                "last few lines straight through the ammo counters and the mugshot -- the "
+                                                "menu dim does not help, because the HUD is drawn AFTER the dim and at full "
+                                                "opacity. Only full menus count: the console and the automap keep the HUD, "
+                                                "and so does a HUD already hidden by the toggle_hud key." )
+
     RT_CVAR_NOARCH( rt_cull_hoist,       true,  "1 = the hoisted O(segs) visibility expansion in hw_bsp.cpp, 0 = the "
                                                 "original O(sectors x segs) one it replaced. Kept as a switch so the "
                                                 "saving can be measured in ONE build with one set of drivers, shaders and "
