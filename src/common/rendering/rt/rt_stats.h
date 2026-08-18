@@ -32,14 +32,18 @@
 // The four phases of an RT frame, in call order.
 //   RTStartFrame  -- rgStartFrame: swapchain acquire, scene import, the N-2 fence
 //   RTLightGen    -- OUR light walks (rt_main.cpp's RT_Upload*Lights block).
-//                    This is the one that is entirely Doom64-RT's own code.
+//   RTFx          -- OUR particle/effect systems: smoke, projectile impacts,
+//                    sparks, arcs, dust. Split from RTLightGen because the two
+//                    grow for different reasons and have different fixes: the
+//                    light walks scale with the LEVEL, the effects scale with
+//                    what is lying on the floor after a firefight.
 //   RTUploadPrim  -- summed rgUploadMeshPrimitive, via the thunk. Happens during
 //                    the drawlist walk, so it overlaps none of the others.
 //   RTUploadLight -- summed rgUploadLight, via the thunk. Mostly INSIDE
 //                    RTLightGen, which is why it is reported as a subset of it
 //                    rather than added into the total twice.
 //   RTDrawFrame   -- rgDrawFrame: BLAS/TLAS build, every GPU pass, present
-extern glcycle_t RTStartFrame, RTLightGen, RTUploadPrim, RTUploadLight, RTDrawFrame;
+extern glcycle_t RTStartFrame, RTLightGen, RTFx, RTUploadPrim, RTUploadLight, RTDrawFrame;
 
 // Per-frame counts. rt_prims_uploaded is the number that decides cost centre #1
 // (one BLAS per primitive, rebuilt every frame); rt_lights_uploaded is the one

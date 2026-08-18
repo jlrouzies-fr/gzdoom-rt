@@ -2206,6 +2206,14 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UploadWallStripLights();
     RT_UploadSpinPanelLights();
     RT_UploadCeilingEdgeLamps();
+    RTLightGen.Unclock();
+
+    // The effect systems. Separate from the light walks above because they grow
+    // with the persistent particle pool -- casings, debris, scorch marks -- and
+    // the light walks grow with the level. Measured 0.4 -> 1.6 ms across 40s of
+    // sustained fire before this split existed to attribute it.
+    RTFx.Clock();
+
     RT_UpdateSmokePuffs();
     // Impact sparks, in this order: step the pool, draw it, then light it. The
     // draw has to follow the sim or the batch is a frame stale, and the lights
@@ -2225,7 +2233,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_SparkDebugTick();
     RT_DebugNearbyWallTextures();
 
-    RTLightGen.Unclock();
+    RTFx.Unclock();
 
     auto tm_params = RgDrawFrameTonemappingParams{
         .sType                = RG_STRUCTURE_TYPE_DRAW_FRAME_TONEMAPPING_PARAMS,

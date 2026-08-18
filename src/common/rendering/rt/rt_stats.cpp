@@ -8,7 +8,7 @@
 #include "i_time.h"
 #include "hw_clock.h"
 
-glcycle_t RTStartFrame, RTLightGen, RTUploadPrim, RTUploadLight, RTDrawFrame;
+glcycle_t RTStartFrame, RTLightGen, RTFx, RTUploadPrim, RTUploadLight, RTDrawFrame;
 
 int rt_prims_uploaded  = 0;
 int rt_lights_uploaded = 0;
@@ -98,6 +98,7 @@ void RT_StatsNewFrame()
 
     RTStartFrame.Reset();
     RTLightGen.Reset();
+    RTFx.Reset();
     RTUploadPrim.Reset();
     RTUploadLight.Reset();
     RTDrawFrame.Reset();
@@ -123,6 +124,7 @@ FString FormatRtStats()
     const double startMs = RTStartFrame.TimeMS();
     const double lightMs = RTLightGen.TimeMS();
     const double lupMs   = RTUploadLight.TimeMS();
+    const double fxMs    = RTFx.TimeMS();
     const double primMs  = RTUploadPrim.TimeMS();
     const double drawMs  = RTDrawFrame.TimeMS();
 
@@ -132,15 +134,16 @@ FString FormatRtStats()
     // the lights to RTGL1 is slow" -- those have completely different fixes.
     FString out;
     out.Format(
-        "RT: start=%2.3f lightgen=%2.3f (upload %2.3f) primupload=%2.3f "
+        "RT: start=%2.3f lightgen=%2.3f (upload %2.3f) fx=%2.3f primupload=%2.3f "
         "drawframe=%2.3f  total=%2.3f\n"
         "prims=%d (peak %d, failed %d)  lights=%d of %d (peak %d)%s\n",
         startMs,
         lightMs,
         lupMs,
+        fxMs,
         primMs,
         drawMs,
-        startMs + lightMs + primMs + drawMs,
+        startMs + lightMs + fxMs + primMs + drawMs,
         rt_prims_uploaded,
         rt_prims_peak,
         rt_prims_failed,
