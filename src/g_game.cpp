@@ -725,6 +725,33 @@ void G_BuildTiccmd (ticcmd_t *cmd)
 			cmd->ucmd.buttons |= BT_ATTACK;
 		}
 	}
+
+	// Doom64-RT: the crowd for rt_autofire to shoot at. Engine-side for the same
+	// reason rt_autofire is: the obvious route -- a cfg of `wait 40; summon ...`
+	// passed as `+exec` on the launcher command line -- silently does nothing,
+	// because `wait` never fires there. A whole set of "firefight" measurements
+	// was taken against an empty room before that was noticed.
+	if (int(cvar::rt_autospawn) > 0 && primaryLevel != nullptr)
+	{
+		const int t0    = int(cvar::rt_autospawn);
+		const int waves = clamp(int(cvar::rt_autospawn_waves), 1, 40);
+		const int t     = primaryLevel->maptime;
+
+		if (t >= t0 && t < t0 + waves * 8 && ((t - t0) % 8) == 0)
+		{
+			// Spread over waves rather than one burst: `summon` puts everything
+			// at the same spot in front of the player, and a single pile
+			// telefrags itself down to a couple of survivors.
+			static const char* const kMobs[] = {
+				"summon 64ZombieMan", "summon 64DoomImp", "summon 64ZombieMan",
+				"summon 64DoomImp",   "summon 64Demon",
+			};
+			for (const char* c : kMobs)
+			{
+				AddCommandString(c);
+			}
+		}
+	}
 	if (buttonMap.ButtonDown(Button_AltAttack))		cmd->ucmd.buttons |= BT_ALTATTACK;
 	if (buttonMap.ButtonDown(Button_Use))			cmd->ucmd.buttons |= BT_USE;
 	if (buttonMap.ButtonDown(Button_Jump))			cmd->ucmd.buttons |= BT_JUMP;

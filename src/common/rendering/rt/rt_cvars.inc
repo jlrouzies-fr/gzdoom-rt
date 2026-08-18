@@ -41,6 +41,15 @@
                                                 "a measurement run produces a log with no measurements in it. Implies "
                                                 "rt_stat_force. 35 = once a second." )
 
+    RT_CVAR_NOARCH( rt_autospawn,           0,  "DIAGNOSTIC: summon a crowd of monsters starting at this maptime TIC (0 = "
+                                                "off), one wave every 8 tics. The companion to rt_autofire, and it exists "
+                                                "for the same reason: a cfg full of `wait 40; summon ...` exec'd from the "
+                                                "launcher command line does NOT run -- `wait` never fires there -- so a "
+                                                "measurement that thought it was profiling a firefight was really "
+                                                "profiling a player shooting at an empty room. Engine-side and keyed on "
+                                                "maptime, like rt_autofire and rt_autoshot, so it cannot fail silently." )
+    RT_CVAR_NOARCH( rt_autospawn_waves,     6,  "how many waves rt_autospawn summons, 5 monsters each, 8 tics apart." )
+
     RT_CVAR_NOARCH( rt_stat_force,      false,  "keep the `stat rt` cycle counters running even when the stat is not on "
                                                 "screen. glcycle_t compiles to a no-op unless a stat is displayed "
                                                 "(stats.h:273 / hw_clock.cpp checkBenchActive), so a SCRIPTED benchmark -- "
