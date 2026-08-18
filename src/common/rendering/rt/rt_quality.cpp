@@ -201,9 +201,10 @@ void ApplyQualityPreset( int level, bool verbose, bool includeArchived )
         static const char* const kNames[] = {
             "Custom", "Ultra", "High", "Balanced", "Performance"
         };
-        Printf( "RT quality preset: %s -- %d cvar(s) set, %d not present\n",
+        Printf( "RT quality preset: %s -- %d cvar(s) set, %d kept from config, %d not present\n",
                 kNames[ level ],
                 applied,
+                kept,
                 missing );
     }
 }
