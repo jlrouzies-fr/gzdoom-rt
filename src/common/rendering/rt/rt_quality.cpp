@@ -113,6 +113,15 @@ const QualityEntry g_quality[] = {
 };
 // clang-format on
 
+// False until RT_ApplyQualityPresetOnce has run. The CUSTOM_CVAR handler stays
+// inert before that: the config file sets rt_quality_preset like any other
+// archived cvar, and cvars load in ALPHABETICAL order -- so a handler that
+// applied at load time would clobber every owned cvar that sorts before
+// "rt_quality_preset" (rt_arc_burn_max, d64_dropcasings...) and spare every one
+// that sorts after. Which sliders survived a restart would depend on their
+// names. Startup belongs to the one-shot, which has the ISDEFAULT rule.
+bool g_booted = false;
+
 float ValueFor( const QualityEntry& e, int level )
 {
     switch( level )
@@ -125,7 +134,9 @@ float ValueFor( const QualityEntry& e, int level )
     }
 }
 
-void ApplyQualityPreset( int level, bool verbose )
+// includeArchived=false skips every cvar the config file already carries. See
+// the note on RT_ApplyQualityPresetOnce for why the startup pass must do that.
+void ApplyQualityPreset( int level, bool verbose, bool includeArchived )
 {
     if( level <= RTQ_CUSTOM || level > RTQ_PERFORMANCE )
     {
@@ -134,6 +145,7 @@ void ApplyQualityPreset( int level, bool verbose )
 
     int applied = 0;
     int missing = 0;
+    int kept    = 0;
 
     for( const QualityEntry& e : g_quality )
     {
@@ -143,6 +155,23 @@ void ApplyQualityPreset( int level, bool verbose )
             // A CVARINFO cvar whose pk3 is not loaded. Not an error: the base
             // game and the Unseen Evil overlay do not ship the same set.
             missing++;
+            continue;
+        }
+
+        // The player's own value outranks the preset at startup. A preset is a
+        // way to SET a group, not a claim to own it for the rest of time.
+        //
+        // "Their own value" is CVAR_ISDEFAULT, not CVAR_ARCHIVE: loading a value
+        // from the ini clears ISDEFAULT (c_cvars.cpp:266, any set does), so a
+        // cvar that still carries the flag has never been touched by the config
+        // OR the player and is safe to bring to the preset. A plain archived
+        // skip was tried first and had a fresh-config hole: d64_dropcasings is
+        // `server int` in the WAD's CVARINFO -- archived, default 0 -- so a new
+        // install would silently lose its casings (the project look is 1).
+        if( !includeArchived && ( v->GetFlags() & CVAR_ARCHIVE ) &&
+            !( v->GetFlags() & CVAR_ISDEFAULT ) )
+        {
+            kept++;
             continue;
         }
 
@@ -190,37 +219,53 @@ CUSTOM_CVAR( Int, rt_quality_preset, RTQ_HIGH, CVAR_ARCHIVE | CVAR_GLOBALCONFIG 
         self = RTQ_HIGH;
         return;
     }
-    ApplyQualityPreset( self, true );
+    // Inert until the one-shot has run -- see g_booted. Without this gate the
+    // config load itself triggers a full apply, mid-way through the ini.
+    if( !g_booted )
+    {
+        return;
+    }
+    // An explicit choice DOES set everything, archived included: that is what
+    // picking a preset in the menu means.
+    ApplyQualityPreset( self, true, true );
 }
 
 void RT_ApplyQualityPresetOnce()
 {
-    // WHY THIS EXISTS, and why the CUSTOM_CVAR handler below is not enough.
+    // WHY THIS EXISTS, and why it must NOT touch archived cvars.
     //
     // Three of the owned cvars -- d64_dropcasings, rt_gore_max, rt_gore_life --
     // are CVARINFO cvars declared by the mod pk3s, and those are created when
     // the WAD is loaded, which is AFTER the config is read. So at the moment
     // gzdoom applies rt_quality_preset from the ini, FindCVar cannot see them
     // and they are silently skipped. On a fresh config the handler does not run
-    // at all, because taking a default is not a set.
+    // at all, because taking a default is not a set. That is the whole job here:
+    // reach the cvars the config pass could not.
     //
-    // That is not theoretical. d64_dropcasings defaults to 0 in the WAD's
-    // CVARINFO and the launcher pin was forcing it to 1; unpinning it in favour
-    // of the preset turned shell casings off for everybody until this ran.
+    // The first version of this applied EVERYTHING, and that was a regression of
+    // exactly the kind tools/d64rt-pins.cfg:717 already warns about for
+    // rt_shadowrays: "it is exposed in the Quality menu and is an archived cvar,
+    // so a pin here silently overwrote the player's choice on the next launch".
+    // A startup re-apply is the same mistake wearing different clothes. It reset
+    // rt_shadowrays 1 -> 4 and rt_reflrefr_depth 1 -> 8 for a player who had
+    // deliberately lowered both, wiped every slider they then moved in the menu
+    // on the next launch, and produced a bug report of "indirect light is VERY
+    // noisy since the performance pass" that was entirely self-inflicted.
     //
-    // So: apply once more when the level exists, which is the first moment every
-    // cvar the preset owns is guaranteed to be registered.
+    // So: archived cvars already carry the player's answer and are left alone.
+    // Only the ones that cannot persist are restored here.
     static bool s_done = false;
     if( s_done || !primaryLevel )
     {
         return;
     }
-    s_done = true;
+    s_done   = true;
+    g_booted = true;
 
     // Verbose on purpose. This is the one apply nobody asked for, so the log has
     // to show it happened and that every name resolved -- "0 not present" is the
     // liveness check for the ordering problem described above.
-    ApplyQualityPreset( rt_quality_preset, true );
+    ApplyQualityPreset( rt_quality_preset, true, false );
 }
 
 // Re-apply without going through the archived cvar, for a launcher or an A/B arm
@@ -232,7 +277,7 @@ CCMD( rt_quality_apply )
         Printf( "rt_quality_apply <1=Ultra|2=High|3=Balanced|4=Performance>\n" );
         return;
     }
-    ApplyQualityPreset( atoi( argv[ 1 ] ), true );
+    ApplyQualityPreset( atoi( argv[ 1 ] ), true, true );
 }
 
 // What the preset WOULD set, beside what is actually live. The honest way to
