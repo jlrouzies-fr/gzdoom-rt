@@ -1005,6 +1005,9 @@ void HWDrawInfo::RenderBSPNode (void *node)
 			rt_adjtovisible.resize( Level->sectors.size() );
 			rt_adjtovisible.assign( rt_adjtovisible.size(), false );
 
+			// Skipped entirely when the switch is off, so rt_cull_hoist 0 costs
+			// exactly what the original code cost and the A/B is honest.
+			if( cvar::rt_cull_hoist )
 			for( const seg_t& seg : Level->segs )
 			{
 				int fs = ( seg.frontsector && seg.frontsector->sectornum >= 0 &&
@@ -1058,7 +1061,7 @@ void HWDrawInfo::RenderBSPNode (void *node)
 				// a conjunction, so the order cannot change the outcome, and this
 				// one is a single array read where the other walks every line of
 				// the sector.
-				if( !rt_adjtovisible[ candidate.sectornum ] )
+				if( cvar::rt_cull_hoist && !rt_adjtovisible[ candidate.sectornum ] )
 				{
 					continue;
 				}
@@ -1076,6 +1079,37 @@ void HWDrawInfo::RenderBSPNode (void *node)
 				if( !touches )
 				{
 					continue;
+				}
+
+				// rt_cull_hoist 0 restores the original inner scan, so the cost
+				// of the thing that was removed can be measured in this build
+				// rather than by rebuilding at an older commit.
+				if( !cvar::rt_cull_hoist )
+				{
+					bool adjacent = false;
+					for( seg_t& seg : Level->segs )
+					{
+						int fs = ( seg.frontsector && seg.frontsector->sectornum >= 0 &&
+						           seg.frontsector->sectornum < int( rt_sectorvis.size() ) )
+						             ? seg.frontsector->sectornum
+						             : -1;
+						if( fs < 0 ) continue;
+						int bs = ( seg.backsector && seg.backsector->sectornum >= 0 &&
+						           seg.backsector->sectornum < int( rt_sectorvis.size() ) )
+						             ? seg.backsector->sectornum
+						             : -1;
+						if( bs < 0 ) continue;
+						if( ( candidate.sectornum == fs && rt_sectorvis[ bs ] ) ||
+						    ( candidate.sectornum == bs && rt_sectorvis[ fs ] ) )
+						{
+							adjacent = true;
+							break;
+						}
+					}
+					if( !adjacent )
+					{
+						continue;
+					}
 				}
 
 				sectorvis_expanded[ candidate.sectornum ] = true;

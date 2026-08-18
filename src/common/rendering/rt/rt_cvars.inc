@@ -16,6 +16,12 @@
     RT_CVAR( rt_cpu_cullmode,           0,      "[IMPACTS CPU PERFORMANCE HEAVILY] 0: BSP + all neighbor sectors of visible,  1 - original GZDoom's BSP/clip checks,  2: uploading whole map, no culling at all" )
     RT_CVAR( rt_cpu_nocullradius,       10.f,   "[IMPACTS CPU PERFORMANCE] Radius (in meters) in which culling must not be applied. Applicable with rt_cpu_cullmode=0" )
 
+    RT_CVAR_NOARCH( rt_cull_hoist,       true,  "1 = the hoisted O(segs) visibility expansion in hw_bsp.cpp, 0 = the "
+                                                "original O(sectors x segs) one it replaced. Kept as a switch so the "
+                                                "saving can be measured in ONE build with one set of drivers, shaders and "
+                                                "textures -- comparing two builds measures the rebuild as well. Both "
+                                                "produce the same visible set; rt_cull_verify is the proof." )
+
     RT_CVAR_NOARCH( rt_cull_verify,     false,  "correctness gate for the hoisted visibility expansion in hw_bsp.cpp. Runs "
                                                 "the ORIGINAL O(sectors x segs) predicate alongside the hoisted one and "
                                                 "reports how many sectors the two disagree on -- it must print 0. Costs "

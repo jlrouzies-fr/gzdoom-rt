@@ -18,6 +18,20 @@ int rt_prims_failed    = 0;
 // know about the RT cvar table.
 bool rt_stat_force_counters = false;
 
+// End-to-end frame time, which none of the phase counters measure: they are CPU
+// wall-clock inside four brackets, and the frame also contains the playsim, the
+// 2D pass, audio, and whatever the driver does between our last submit and our
+// next BeginFrame. Reporting a phase total as if it were a frame time is how a
+// "3.5 ms saved" turns into a claimed FPS that never materialises.
+//
+// Averaged over the interval between reports rather than sampled per frame: at
+// 300 fps a single frame is ~3 ms and I_nsTime's jitter is a real fraction of
+// that, while frames/elapsed over a second is solid.
+static uint64_t s_fpsWindowStartNs = 0;
+static int      s_fpsFrames        = 0;
+static double   s_lastFps          = 0.0;
+static double   s_lastFrameMs      = 0.0;
+
 int rt_prims_peak      = 0;
 int rt_lights_peak     = 0;
 
@@ -89,6 +103,25 @@ void RT_InstallStatThunks()
 
 void RT_StatsNewFrame()
 {
+    {
+        const uint64_t now = I_nsTime();
+        if( s_fpsWindowStartNs == 0 )
+        {
+            s_fpsWindowStartNs = now;
+            s_fpsFrames        = 0;
+        }
+        s_fpsFrames++;
+
+        const uint64_t elapsed = now - s_fpsWindowStartNs;
+        if( elapsed >= 500000000ull ) // half a second
+        {
+            s_lastFps          = double( s_fpsFrames ) * 1e9 / double( elapsed );
+            s_lastFrameMs      = double( elapsed ) / 1e6 / double( s_fpsFrames );
+            s_fpsWindowStartNs = now;
+            s_fpsFrames        = 0;
+        }
+    }
+
     // rt_stat_every implies rt_stat_force: asking for periodic numbers and
     // getting 0.000 because the counters were gated would be the worst of both.
     rt_stat_force_counters = cvar::rt_stat_force || int{ cvar::rt_stat_every } > 0;
@@ -134,9 +167,12 @@ FString FormatRtStats()
     // the lights to RTGL1 is slow" -- those have completely different fixes.
     FString out;
     out.Format(
+        "FRAME: %2.3f ms  (%.1f fps, averaged over the last half second)\n"
         "RT: start=%2.3f lightgen=%2.3f (upload %2.3f) fx=%2.3f primupload=%2.3f "
         "drawframe=%2.3f  total=%2.3f\n"
         "prims=%d (peak %d, failed %d)  lights=%d of %d (peak %d)%s\n",
+        s_lastFrameMs,
+        s_lastFps,
         startMs,
         lightMs,
         lupMs,
