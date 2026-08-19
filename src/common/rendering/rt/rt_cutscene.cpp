@@ -12,6 +12,11 @@ EXTERN_CVAR( Float, snd_mastervolume )
 extern void RT_FirstStartDone();
 extern bool g_noinput_onstart;
 
+// Doom64-RT: is the on-screen first-run sequence wanted? Defined in d_main.cpp,
+// where the marker file is read -- see the note there for why it is off by
+// default. cvar::rt_firststart itself stays on: it drives the GPU upscaler probe.
+extern bool g_rt_firststart_sequence;
+
 extern bool   g_cpu_latency_get;
 extern double g_cpu_latency;
 
@@ -127,7 +132,14 @@ bool RT_ForceCaptureMouse()
 
 
 #define RT_HOOK_INTRO      1
-#define RT_INTRO_SKIPPABLE 0
+// Doom64-RT: hold ENTER to leave the intro. It shipped unskippable, and in the
+// release package the first 31 seconds of its 56 are black: rt/scenes is dropped
+// by tools/package_release.py, so cs_intro has no geometry and the title image is
+// the only thing left to draw -- and that does not begin until t=30.86. ESC only pauses, which reads as a hang. See also `justrestart` in
+// intro::tick: while the skip was off, that branch rewound the cutscene to t=29
+// instead of ending it, so switching this on alone would have made ENTER restart
+// the intro forever.
+#define RT_INTRO_SKIPPABLE 1
 
 #define RT_INTRO_CONTINUEMUSICTOMAINMENU 1
 
@@ -366,7 +378,10 @@ namespace intro
         {
             state.m_skipProgress = 0;
 
-            constexpr bool justrestart = true;
+            // false: end the cutscene. true was a debug affordance -- it jumps
+            // back to t=29, just before the title image appears, which is how you
+            // look at the logo again without restarting the game.
+            constexpr bool justrestart = false;
             if( justrestart )
             {
                 l_restart();
@@ -468,9 +483,22 @@ namespace intro
         }
 #endif
 
-        const char* text = g_cstime_paused && blink_timer( *g_cstime_paused, 0.9, 0.4 )
-                               ? "Press SPACE to continue"
-                               : nullptr;
+        const char* text = nullptr;
+        if( g_cstime_paused )
+        {
+            if( blink_timer( *g_cstime_paused, 0.9, 0.4 ) )
+            {
+                text = "Press SPACE to continue";
+            }
+        }
+#if RT_INTRO_SKIPPABLE
+        else if( state.m_skipProgress <= 0 )
+        {
+            // Only while the bar is empty: the skip bar above fills the same strip
+            // of the screen in white, and white text on it cannot be read.
+            text = "Hold ENTER to skip";
+        }
+#endif
 
         if( text )
         {
@@ -600,7 +628,7 @@ namespace firststart
         g_rt_mouse_x = 0;
         g_rt_mouse_y = 0;
 
-        if( !cvar::rt_firststart )
+        if( !cvar::rt_firststart || !g_rt_firststart_sequence )
         {
             state.finished = true;
             return;
@@ -964,7 +992,7 @@ namespace firststart
 #if RT_HOOK_INTRO
             // after settings, get to the intro
             // note: remix wrapper doesn't support animation :(
-            if( cvar::rt_firststart && !g_isremix )
+            if( cvar::rt_firststart && g_rt_firststart_sequence && !g_isremix )
             {
                 if( !state.introstate )
                 {

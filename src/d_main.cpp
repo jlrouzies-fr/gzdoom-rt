@@ -3880,6 +3880,41 @@ static FString RT_GetFirstStartMarker()
 	return M_GetConfigPath( false ) + ".firststart";
 }
 
+// Doom64-RT: does the player get RTGL1's on-screen first-run sequence -- the
+// "mainmenu" tutorial scene, its two settings pages, and the 56-second cs_intro
+// cutscene? No, unless -rtfirststart asks for it.
+//
+// It is inherited RTGL1 plumbing, and the RELEASE PACKAGE HAS NONE OF ITS ASSETS.
+// mainmenu and cs_intro live in rt/scenes, which tools/package_release.py drops on
+// purpose ("our maps have none") -- and it has to: the two are 164 MB and their
+// glTF references reach into rt/replace, the 1.9 GB folder of Doom II model
+// replacements we also do not ship. So what a first-time player actually got was a
+// red fog screen (scenes.json gives "mainmenu" volumeAmbient 1,0,0, and with no
+// geometry the fog is all there is to see), a rotate-the-model tutorial over
+// nothing, a settings page whose F description reads "NVIDIA DLSS 2 failed" on any
+// non-NVIDIA card, and then 56 unskippable seconds of black -- title/doom2logo is
+// not in the package either, and it would not have been drawn until t=30.86
+// anyway. Reported by an RX 9070 XT tester on 2026-08-19 as "my card can't play
+// it", which is what that sequence looks like.
+//
+// WHY NOBODY HERE EVER SAW IT, three deep:
+//   1. Every dev launcher passes +map, and autostart takes the other branch in
+//      D_InitGame below -- StartCutscene is never reached. Only a menu boot
+//      (`launch-retribution-rt.cmd menu`) can show this sequence at all.
+//   2. The marker file below turns it off, and it has existed on this machine
+//      since 2026-07-09. Note WHERE it lives: beside gzdoom-rt2.ini, the config
+//      name every gzdoom-rt build shares -- including the upstream Doom II RT
+//      release. Anyone who has ever run one of those is already marked, and their
+//      first start of THIS game is not a first start. That is most of the people
+//      who tried it here, and none of the people we ship to.
+//   3. Even past both of those, the dev tree HAS rt/scenes. The sequence renders
+//      a real room here. The broken version only exists in the package.
+//
+// cvar::rt_firststart stays on for a genuine first start regardless: it is what
+// makes rt_main.cpp probe the GPU and pick DLSS or FSR2, and reaching
+// RT_FirstStartDone() is what writes the marker so that happens once.
+bool g_rt_firststart_sequence = false;
+
 void RT_FirstStartDone()
 {
 	if( !cvar::rt_firststart )
@@ -3907,6 +3942,7 @@ static int D_DoomMain_Internal (void)
 	{
 		cvar::rt_firststart = true;
 	}
+	g_rt_firststart_sequence = Args->CheckParm( "-rtfirststart" ) > 0;
 
 	g_isremix = false;
 	if( Args->CheckParm( "-rtxremix" ) )
