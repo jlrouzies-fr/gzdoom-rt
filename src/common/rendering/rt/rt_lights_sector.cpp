@@ -687,7 +687,28 @@ void RT_UpdateSectorEmisThreshold()
 static std::vector< int16_t > g_sectorBaseLight     = {};
 // 1 = a DLighting thinker owned this sector when the frame started.
 static std::vector< uint8_t > g_sectorLightAnimated = {};
-// The level the two vectors above describe. Sector COUNT is not enough of an
+// Last lightlevel seen per sector, and the maptime it last moved. A THINKER IS
+// NOT ENOUGH to decide "this sector is animated": Retribution's OPEN scripts run
+// Light_Fade in a loop, and Light_Fade's DGlow2 is created per call and dies
+// when the fade ends -- docs/sequence-light-chains.md records exactly that for
+// MAP13's pillars ("zero light THINKERS running at level load"). A test that
+// only asks who owns the sector RIGHT NOW therefore lets go between calls, which
+// is a freeze that visibly blinks. Movement over TIME is the honest test.
+static std::vector< int16_t > g_sectorLastLight   = {};
+static std::vector< int32_t > g_sectorLastChange  = {};
+// How long a sector stays "animated" after its last move, in tics. A loop
+// re-triggers well inside this; a one-shot (Light_ChangeToValue, a fade that
+// ends) goes quiet and releases, so a scripted lights-out still reaches the
+// screen -- two seconds late, which is the price of not needing to know whether
+// a script intends to come back.
+static constexpr int32_t kAnimHoldTics = 70;
+// Surfaces whose emission was actually substituted last frame. Without this the
+// feature cannot be told apart from a no-op: "N sectors animated" says the set
+// was built, not that anything read it.
+static int g_freezeAppliedPrev = 0;
+static int g_freezeApplied     = 0;
+
+// The level the vectors above describe. Sector COUNT is not enough of an
 // identity: two maps can agree on it, and indexing one map's animation state
 // with another map's sectors is a silent wrong answer rather than a crash.
 static const void* g_sectorLightLevelId = nullptr;
@@ -706,10 +727,16 @@ void RT_SnapshotSectorLight( FLevelLocals* level )
     const unsigned n = level->sectors.Size();
     g_sectorBaseLight.resize( n );
     g_sectorLightAnimated.assign( n, uint8_t( 0 ) );
+    g_sectorLastLight.resize( n );
+    // Far enough in the past that a sector which never moves is never "animated".
+    g_sectorLastChange.assign( n, -( kAnimHoldTics + 1 ) );
+    g_freezeApplied     = 0;
+    g_freezeAppliedPrev = 0;
 
     for( unsigned i = 0; i < n; i++ )
     {
         g_sectorBaseLight[ i ] = int16_t( level->sectors[ i ].lightlevel );
+        g_sectorLastLight[ i ] = g_sectorBaseLight[ i ];
     }
 }
 
@@ -723,6 +750,8 @@ void RT_UpdateAnimatedSectorLights()
         return;
     }
     std::fill( g_sectorLightAnimated.begin(), g_sectorLightAnimated.end(), uint8_t( 0 ) );
+    g_freezeAppliedPrev = g_freezeApplied;
+    g_freezeApplied     = 0;
 
     if( !primaryLevel || primaryLevel != g_sectorLightLevelId ||
         primaryLevel->sectors.Size() != g_sectorLightAnimated.size() )
@@ -730,14 +759,35 @@ void RT_UpdateAnimatedSectorLights()
         return;
     }
 
-    // Every light animation in the game is a DLighting on STAT_LIGHT: the blink
-    // specials (DFlicker, DLightFlash, DStrobe, DFireFlicker), the sequence
-    // chains (DPhased) and the ACS calls (DGlow2 for Light_Glow/Light_Fade,
-    // DStrobe for Light_Strobe, DLightFlash for Light_Flicker). Walking the
-    // class covers all three families without naming any of them. There are a
-    // few dozen per map at most.
-    int   owned = 0;
-    auto  it    = primaryLevel->GetThinkerIterator< DLighting >( NAME_None, STAT_LIGHT );
+    const int32_t now = int32_t( primaryLevel->maptime );
+
+    // FIRST: who MOVED, recently. This is the test that actually holds, because it
+    // needs no thinker to be alive at the instant we look -- a script loop calling
+    // Light_Fade, or Light_ChangeToValue which creates no thinker at all, both show
+    // up here and neither shows up below.
+    for( unsigned i = 0; i < g_sectorLightAnimated.size(); i++ )
+    {
+        const int16_t live = int16_t( primaryLevel->sectors[ i ].lightlevel );
+        if( live != g_sectorLastLight[ i ] )
+        {
+            g_sectorLastLight[ i ]  = live;
+            g_sectorLastChange[ i ] = now;
+        }
+        if( now - g_sectorLastChange[ i ] <= kAnimHoldTics )
+        {
+            g_sectorLightAnimated[ i ] = 1;
+        }
+    }
+
+    // SECOND: who is owned right now. Redundant for anything already moving, and
+    // not redundant at level start: a strobe that has not reached its first flip
+    // yet has moved nothing, and a chain sitting at its trough looks static for as
+    // long as its phase says. Every light animation in the game is a DLighting on
+    // STAT_LIGHT -- the blink specials (DFlicker, DLightFlash, DStrobe,
+    // DFireFlicker), the sequence chains (DPhased) and the ACS calls (DGlow2 for
+    // Light_Glow/Light_Fade, DStrobe, DLightFlash) -- so the class covers all
+    // three families without naming any of them.
+    auto it = primaryLevel->GetThinkerIterator< DLighting >( NAME_None, STAT_LIGHT );
     while( DLighting* effect = it.Next() )
     {
         const sector_t* sec = effect->GetSector();
@@ -746,11 +796,16 @@ void RT_UpdateAnimatedSectorLights()
             continue;
         }
         const unsigned i = unsigned( sec->Index() );
-        if( i < g_sectorLightAnimated.size() && !g_sectorLightAnimated[ i ] )
+        if( i < g_sectorLightAnimated.size() )
         {
             g_sectorLightAnimated[ i ] = 1;
-            owned++;
         }
+    }
+
+    int owned = 0;
+    for( uint8_t f : g_sectorLightAnimated )
+    {
+        owned += f;
     }
 
     // A line whenever the owned set CHANGES, under the cvar that already explains
@@ -762,12 +817,18 @@ void RT_UpdateAnimatedSectorLights()
     static const void* s_level = nullptr;
     static int         s_owned = -1;
     static float       s_thr   = -1.f;
+    static int32_t     s_last  = -1000;
+    // Once a second as well as on every change: the held count only moves when
+    // the camera does, so a report that fires on set changes alone always reads
+    // zero -- it prints at level start, where nothing animated is on screen yet.
     if( bool{ cvar::rt_sector_emis_debug } &&
-        ( s_level != primaryLevel || s_owned != owned || s_thr != g_sectorEmisThreshold ) )
+        ( s_level != primaryLevel || s_owned != owned || s_thr != g_sectorEmisThreshold ||
+          now - s_last >= 35 ) )
     {
         s_level = primaryLevel;
         s_owned = owned;
         s_thr   = g_sectorEmisThreshold;
+        s_last  = now;
         RT_PrintEmisFreeze( false );
     }
 }
@@ -791,6 +852,10 @@ int RT_EmisLightLevel( const sector_t* sec, int live )
     // number -- and none of that is the animation's doing. Subtracting only the
     // thinker's offset leaves every other contribution exactly as it was.
     const int delta = int( g_sectorBaseLight[ i ] ) - int( sec->lightlevel );
+    if( delta != 0 )
+    {
+        g_freezeApplied++;
+    }
     return std::clamp( live + delta, 0, 255 );
 }
 
@@ -836,10 +901,11 @@ static void RT_PrintEmisFreeze( bool listSectors )
         }
     }
 
-    Printf( "RT emis freeze: %s -- %d sector(s) animated, %d crossing, threshold %.0f\n",
+    Printf( "RT emis freeze: %s -- %d sector(s) animated, %d crossing, %d surface(s) held last frame, threshold %.0f\n",
             bool{ cvar::rt_sector_emis_freeze } ? "on" : "OFF",
             animated,
             crossing,
+            g_freezeAppliedPrev,
             thr );
 }
 
