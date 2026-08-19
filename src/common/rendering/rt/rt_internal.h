@@ -535,6 +535,7 @@ void RT_UploadExportableSectorLights();
 void RT_UploadGzDoomDynamicLights();
 void RT_WatchLightlevels();
 void RT_UpdateSectorEmisThreshold();
+void RT_UpdateAnimatedSectorLights();
 
 // rt_lights_fixtures.cpp
 void RT_UploadSpinPanelLights();

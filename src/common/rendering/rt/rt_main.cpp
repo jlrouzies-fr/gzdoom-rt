@@ -1878,6 +1878,11 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
 
     classic_toggle::Animate();
 
+    // Which sectors a light thinker owns right now -- read by RT_EmisLightLevel
+    // during the world walk that follows, so it is refreshed before it, not in
+    // RT_DrawFrame with the rest of the light work.
+    RT_UpdateAnimatedSectorLights();
+
 
     auto resolution_params = RgStartFrameRenderResolutionParams{
         .sType             = RG_STRUCTURE_TYPE_START_FRAME_RENDER_RESOLUTION_PARAMS,

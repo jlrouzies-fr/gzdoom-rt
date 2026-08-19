@@ -267,7 +267,9 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 	float absalpha = fabsf(alpha);
 	if (lightlist == nullptr)
 	{
-		auto rtsectorlight = rtstate.push_sectorlight(Colormap.LightColor, lightlevel);
+		// See hw_flats.cpp -- rt_sector_emis_freeze, self-emission only.
+		auto rtsectorlight = rtstate.push_sectorlight(
+			Colormap.LightColor, RT_EmisLightLevel(frontsector, lightlevel));
 		if (type != RENDERWALL_M2SNF) SetFog(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), &Colormap, RenderStyle == STYLE_Add);
 		SetColor(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), Colormap, absalpha);
 		RenderWall(state, rflags);
@@ -290,7 +292,13 @@ void HWWall::RenderTexturedWall(HWWallDispatcher*di, FRenderState &state, int rf
 				thiscm.FadeColor = Colormap.FadeColor;
 				thiscm.FogDensity = Colormap.FogDensity;
 				CopyFrom3DLight(thiscm, &(*lightlist)[i]);
-				auto rtsectorlight = rtstate.push_sectorlight(thiscm.LightColor, thisll);
+				// The 3D-floor split: thisll comes from the CASTER's control sector when
+				// there is one, so that is the sector whose animation has to be undone.
+				auto rtsectorlight = rtstate.push_sectorlight(
+					thiscm.LightColor,
+					RT_EmisLightLevel((*lightlist)[i].caster ? (*lightlist)[i].caster->model
+					                                         : frontsector,
+					                  thisll));
 				SetColor(state, di->Level, di->lightmode, thisll, rel, false, thiscm, absalpha);
 				if (type != RENDERWALL_M2SNF) SetFog(state, di->Level, di->lightmode, thisll, rel, false, &thiscm, RenderStyle == STYLE_Add);
 				SetSplitPlanes(state, (*lightlist)[i].plane, lowplane);

@@ -11,6 +11,12 @@
 //   RT_WatchLightlevels           - periodic lightlevel report for a sector list
 //   RT_UpdateSectorEmisThreshold  - derives rt_sector_emis's cutoff from THIS
 //                                   map's lightlevel distribution
+//   RT_SnapshotSectorLight        - authored lightlevel per sector, taken
+//                                   before any light thinker exists
+//   RT_UpdateAnimatedSectorLights - which sectors a light thinker owns this
+//                                   frame
+//   RT_EmisLightLevel             - the lightlevel the self-emission ramp
+//                                   reads, with the animation undone
 //
 // Split out of rt_main.cpp. Behaviour unchanged; this is a move.
 
@@ -640,3 +646,204 @@ void RT_UpdateSectorEmisThreshold()
 }
 
 
+
+// ---------------------------------------------------------------------------
+// SECTOR SELF-EMISSION HOLDS STILL WHILE A LIGHT THINKER ANIMATES THE SECTOR.
+//
+// The defect: Retribution animates sector lightlevel from blink specials,
+// LightSequence chains and its own ACS -- 203 Light_Glow/Flicker/Strobe calls
+// across the game, none of which carry a sector special, so no survey of the
+// map geometry can see them. rt_sector_emis turns lightlevel into surface
+// emission above a per-map threshold, so an animation that crosses that
+// threshold switches a panel on and off with nothing in the world casting it.
+// MAP05 is the reported one: Light_Strobe(255 -> 200) against a threshold of
+// 240, on the SPACECE bulb panels beside the pylons.
+//
+// tools/make_seqlight_fix.py repairs this in the MAP DATA, one triaged case at
+// a time, by clearing the special so the sector rests at its authored
+// lightlevel. That is the right fix and it does not scale: 4 maps carry ACS
+// strips today out of 35, and each entry costs a play judgement.
+//
+// This is the same repair at runtime, for every map at once: while a light
+// thinker owns the sector, the emission ramp reads the AUTHORED lightlevel
+// instead of the animated one. Two properties that make it safe:
+//
+//   - Only the emission ramp reads it. Raster lighting, fog, colormap and the
+//     analytic light systems all still see the live value, so a monitor with
+//     its own 9802 FlickerLight thing keeps flickering -- only its painted
+//     glow holds steady.
+//   - Only while a thinker is alive. Light_ChangeToValue leaves none behind,
+//     so a scripted lights-out still puts the panels out; a one-shot
+//     Light_Fade holds through the fade and releases when the thinker dies,
+//     landing on the value the script asked for.
+//
+// The frozen value is the authored one and NOT the thinker's maximum, because
+// MAP03's sequence chains sit at base 180 with a crest of 255 against a 220
+// threshold: freezing at the maximum would make a sourceless emitter permanent
+// instead of removing it (2026-08-19).
+
+// Authored lightlevel per sector, taken before any light thinker exists --
+// see RT_SnapshotSectorLight's call site in MapLoader::LoadLevel.
+static std::vector< int16_t > g_sectorBaseLight     = {};
+// 1 = a DLighting thinker owned this sector when the frame started.
+static std::vector< uint8_t > g_sectorLightAnimated = {};
+// The level the two vectors above describe. Sector COUNT is not enough of an
+// identity: two maps can agree on it, and indexing one map's animation state
+// with another map's sectors is a silent wrong answer rather than a crash.
+static const void* g_sectorLightLevelId = nullptr;
+
+void RT_SnapshotSectorLight( FLevelLocals* level )
+{
+    g_sectorBaseLight.clear();
+    g_sectorLightAnimated.clear();
+    g_sectorLightLevelId = level;
+
+    if( !level )
+    {
+        return;
+    }
+
+    const unsigned n = level->sectors.Size();
+    g_sectorBaseLight.resize( n );
+    g_sectorLightAnimated.assign( n, uint8_t( 0 ) );
+
+    for( unsigned i = 0; i < n; i++ )
+    {
+        g_sectorBaseLight[ i ] = int16_t( level->sectors[ i ].lightlevel );
+    }
+}
+
+// Defined below, beside the CCMD that shares it.
+static void RT_PrintEmisFreeze( bool listSectors );
+
+void RT_UpdateAnimatedSectorLights()
+{
+    if( g_sectorLightAnimated.empty() )
+    {
+        return;
+    }
+    std::fill( g_sectorLightAnimated.begin(), g_sectorLightAnimated.end(), uint8_t( 0 ) );
+
+    if( !primaryLevel || primaryLevel != g_sectorLightLevelId ||
+        primaryLevel->sectors.Size() != g_sectorLightAnimated.size() )
+    {
+        return;
+    }
+
+    // Every light animation in the game is a DLighting on STAT_LIGHT: the blink
+    // specials (DFlicker, DLightFlash, DStrobe, DFireFlicker), the sequence
+    // chains (DPhased) and the ACS calls (DGlow2 for Light_Glow/Light_Fade,
+    // DStrobe for Light_Strobe, DLightFlash for Light_Flicker). Walking the
+    // class covers all three families without naming any of them. There are a
+    // few dozen per map at most.
+    int   owned = 0;
+    auto  it    = primaryLevel->GetThinkerIterator< DLighting >( NAME_None, STAT_LIGHT );
+    while( DLighting* effect = it.Next() )
+    {
+        const sector_t* sec = effect->GetSector();
+        if( !sec )
+        {
+            continue;
+        }
+        const unsigned i = unsigned( sec->Index() );
+        if( i < g_sectorLightAnimated.size() && !g_sectorLightAnimated[ i ] )
+        {
+            g_sectorLightAnimated[ i ] = 1;
+            owned++;
+        }
+    }
+
+    // A line whenever the owned set CHANGES, under the cvar that already explains
+    // the threshold, so "is the freeze doing anything here" is answerable from
+    // rt-console.log. Not once per level: the ACS that installs most of these runs
+    // in an OPEN script on the first tic, and the emission threshold is not
+    // computed until the first RT_DrawFrame -- a report on frame 1 says "5
+    // sectors, threshold 255" on a map that settles at 13 and 240.
+    static const void* s_level = nullptr;
+    static int         s_owned = -1;
+    static float       s_thr   = -1.f;
+    if( bool{ cvar::rt_sector_emis_debug } &&
+        ( s_level != primaryLevel || s_owned != owned || s_thr != g_sectorEmisThreshold ) )
+    {
+        s_level = primaryLevel;
+        s_owned = owned;
+        s_thr   = g_sectorEmisThreshold;
+        RT_PrintEmisFreeze( false );
+    }
+}
+
+int RT_EmisLightLevel( const sector_t* sec, int live )
+{
+    if( !bool{ cvar::rt_sector_emis_freeze } || !sec || g_sectorLightAnimated.empty() )
+    {
+        return live;
+    }
+
+    const unsigned i = unsigned( sec->Index() );
+    if( i >= g_sectorLightAnimated.size() || !g_sectorLightAnimated[ i ] )
+    {
+        return live;
+    }
+
+    // The DIFFERENCE is undone rather than the value replaced. `live` is what
+    // the renderer computed for this surface -- it can carry a glow, a
+    // linedef's relative light or hw_ClampLight on top of the sector's own
+    // number -- and none of that is the animation's doing. Subtracting only the
+    // thinker's offset leaves every other contribution exactly as it was.
+    const int delta = int( g_sectorBaseLight[ i ] ) - int( sec->lightlevel );
+    return std::clamp( live + delta, 0, 255 );
+}
+
+// What the freeze is actually holding, and whether it matters on this map: a
+// sector only LOOKS different if its animation crosses the emission threshold.
+// Without this the feature is unfalsifiable from a log -- the symptom it removes
+// is "a panel stopped blinking", which no counter reports.
+static void RT_PrintEmisFreeze( bool listSectors )
+{
+    if( !primaryLevel || g_sectorLightAnimated.empty() ||
+        primaryLevel != g_sectorLightLevelId )
+    {
+        Printf( "RT emis freeze: no snapshot for this level\n" );
+        return;
+    }
+
+    const float thr      = g_sectorEmisThreshold;
+    int         animated = 0;
+    int         crossing = 0;
+
+    for( unsigned i = 0; i < g_sectorLightAnimated.size(); i++ )
+    {
+        if( !g_sectorLightAnimated[ i ] )
+        {
+            continue;
+        }
+        animated++;
+
+        const int  base    = int( g_sectorBaseLight[ i ] );
+        const int  live    = int( primaryLevel->sectors[ i ].lightlevel );
+        const bool crosses = ( float( base ) > thr ) != ( float( live ) > thr );
+        if( crosses )
+        {
+            crossing++;
+        }
+        if( listSectors )
+        {
+            Printf( "  sector %4u  base=%3d  live=%3d%s\n",
+                    i,
+                    base,
+                    live,
+                    crosses ? "   CROSSES the emission threshold" : "" );
+        }
+    }
+
+    Printf( "RT emis freeze: %s -- %d sector(s) animated, %d crossing, threshold %.0f\n",
+            bool{ cvar::rt_sector_emis_freeze } ? "on" : "OFF",
+            animated,
+            crossing,
+            thr );
+}
+
+CCMD( rt_emis_freeze_show )
+{
+    RT_PrintEmisFreeze( true );
+}
