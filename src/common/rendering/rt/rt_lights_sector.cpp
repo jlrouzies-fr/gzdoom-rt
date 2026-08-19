@@ -894,6 +894,11 @@ static void RT_PrintEmisFreeze( bool listSectors )
     const float thr      = g_sectorEmisThreshold;
     int         animated = 0;
     int         crossing = 0;
+    // The number that answers "how much does mode 2 change on this map": sectors
+    // that self-emit at their authored value and whose animation takes them below
+    // the threshold, i.e. painted lights with nothing casting them. Counted from
+    // the trough seen so far, so it only rises as the map runs.
+    int         silenced = 0;
 
     for( unsigned i = 0; i < g_sectorLightAnimated.size(); i++ )
     {
@@ -910,6 +915,10 @@ static void RT_PrintEmisFreeze( bool listSectors )
         {
             crossing++;
         }
+        if( float( base ) > thr && float( g_sectorMinLight[ i ] ) <= thr )
+        {
+            silenced++;
+        }
         if( listSectors )
         {
             Printf( "  sector %4u  base=%3d  live=%3d%s\n",
@@ -920,11 +929,12 @@ static void RT_PrintEmisFreeze( bool listSectors )
         }
     }
 
-    Printf( "RT emis freeze: %s -- %d sector(s) animated, %d crossing, %d surface(s) held last frame, threshold %.0f\n",
+    Printf( "RT emis freeze: %s -- %d sector(s) animated, %d silenced by mode 2, %d crossing, %d surface(s) held last frame, threshold %.0f\n",
             int( cvar::rt_sector_emis_freeze ) >= 2   ? "on (dim end)"
             : int( cvar::rt_sector_emis_freeze ) >= 1 ? "on (authored)"
                                                       : "OFF",
             animated,
+            silenced,
             crossing,
             g_freezeAppliedPrev,
             thr );
