@@ -696,6 +696,10 @@ static std::vector< uint8_t > g_sectorLightAnimated = {};
 // is a freeze that visibly blinks. Movement over TIME is the honest test.
 static std::vector< int16_t > g_sectorLastLight   = {};
 static std::vector< int32_t > g_sectorLastChange  = {};
+// The dimmest lightlevel this sector has been seen at during the CURRENT run of
+// animation, seeded from the authored value and reset when the animation lets
+// go. Mode 2 holds here instead of at the authored value -- see the cvar.
+static std::vector< int16_t > g_sectorMinLight    = {};
 // How long a sector stays "animated" after its last move, in tics. A loop
 // re-triggers well inside this; a one-shot (Light_ChangeToValue, a fade that
 // ends) goes quiet and releases, so a scripted lights-out still reaches the
@@ -728,6 +732,7 @@ void RT_SnapshotSectorLight( FLevelLocals* level )
     g_sectorBaseLight.resize( n );
     g_sectorLightAnimated.assign( n, uint8_t( 0 ) );
     g_sectorLastLight.resize( n );
+    g_sectorMinLight.resize( n );
     // Far enough in the past that a sector which never moves is never "animated".
     g_sectorLastChange.assign( n, -( kAnimHoldTics + 1 ) );
     g_freezeApplied     = 0;
@@ -737,6 +742,7 @@ void RT_SnapshotSectorLight( FLevelLocals* level )
     {
         g_sectorBaseLight[ i ] = int16_t( level->sectors[ i ].lightlevel );
         g_sectorLastLight[ i ] = g_sectorBaseLight[ i ];
+        g_sectorMinLight[ i ]  = g_sectorBaseLight[ i ];
     }
 }
 
@@ -776,6 +782,13 @@ void RT_UpdateAnimatedSectorLights()
         if( now - g_sectorLastChange[ i ] <= kAnimHoldTics )
         {
             g_sectorLightAnimated[ i ] = 1;
+            g_sectorMinLight[ i ]      = std::min( g_sectorMinLight[ i ], live );
+        }
+        else
+        {
+            // Let go: the next animation to run here gets its own minimum rather
+            // than inheriting the trough of the last one.
+            g_sectorMinLight[ i ] = g_sectorBaseLight[ i ];
         }
     }
 
@@ -835,7 +848,7 @@ void RT_UpdateAnimatedSectorLights()
 
 int RT_EmisLightLevel( const sector_t* sec, int live )
 {
-    if( !bool{ cvar::rt_sector_emis_freeze } || !sec || g_sectorLightAnimated.empty() )
+    if( int( cvar::rt_sector_emis_freeze ) <= 0 || !sec || g_sectorLightAnimated.empty() )
     {
         return live;
     }
@@ -851,7 +864,13 @@ int RT_EmisLightLevel( const sector_t* sec, int live )
     // linedef's relative light or hw_ClampLight on top of the sector's own
     // number -- and none of that is the animation's doing. Subtracting only the
     // thinker's offset leaves every other contribution exactly as it was.
-    const int delta = int( g_sectorBaseLight[ i ] ) - int( sec->lightlevel );
+    // Mode 2 holds at the DIM end of the swing, which is the difference between
+    // "the fake light stopped blinking" and "the fake light is gone": a panel
+    // authored at 255 that a script dips to 220 is above a 240 threshold at its
+    // authored value, so holding there leaves a sourceless emitter lit forever.
+    const int held = int( cvar::rt_sector_emis_freeze ) >= 2 ? int( g_sectorMinLight[ i ] )
+                                                             : int( g_sectorBaseLight[ i ] );
+    const int delta = held - int( sec->lightlevel );
     if( delta != 0 )
     {
         g_freezeApplied++;
@@ -902,7 +921,9 @@ static void RT_PrintEmisFreeze( bool listSectors )
     }
 
     Printf( "RT emis freeze: %s -- %d sector(s) animated, %d crossing, %d surface(s) held last frame, threshold %.0f\n",
-            bool{ cvar::rt_sector_emis_freeze } ? "on" : "OFF",
+            int( cvar::rt_sector_emis_freeze ) >= 2   ? "on (dim end)"
+            : int( cvar::rt_sector_emis_freeze ) >= 1 ? "on (authored)"
+                                                      : "OFF",
             animated,
             crossing,
             g_freezeAppliedPrev,
