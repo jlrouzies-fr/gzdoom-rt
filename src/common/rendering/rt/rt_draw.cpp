@@ -160,17 +160,23 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     // the same verts under a different rotation -- so it is recorded here rather
     // than re-derived at the bottom of the function.
     bool isSpriteBillboard = false;
+    const bool unseenEvilBrightmapFallback = !rt_mod_compat && bool{ cvar::rt_world_white };
 
     RgTransform transform;
     if( rtstate.is< RtPrim::FirstPerson >() )
     {
         std::tie( transform, verts ) = MakeFirstPersonQuadInWorldSpace( verts );
 
-        // Anchor for rt_gunglow. Only the plasma frames — this is the weapon whose
-        // art has a lit core; anchoring on any weapon would move the light onto guns
-        // that are not supposed to emit.
-        if( texname && verts.size() == 4 &&
-            ( strncmp( texname, "PLSG", 4 ) == 0 || strncmp( texname, "PLSF", 4 ) == 0 ) )
+        // Anchor for rt_gunglow. Plasma owns a permanent electric core. UE's
+        // Unmaker borrows the geometry-derived placement only during its
+        // A_Light firing edge (rt_weapon.cpp); Retribution already lights UNMA
+        // through its own UNMF material and must not receive a second source.
+        const bool plasmaGunFrame =
+            texname &&
+            ( strncmp( texname, "PLSG", 4 ) == 0 || strncmp( texname, "PLSF", 4 ) == 0 );
+        const bool unseenEvilUnmakerGunFrame =
+            unseenEvilBrightmapFallback && texname && strncmp( texname, "UNMA", 4 ) == 0;
+        if( verts.size() == 4 && ( plasmaGunFrame || unseenEvilUnmakerGunFrame ) )
         {
             FVector3 c{ 0, 0, 0 };
             for( const auto& v : verts )
@@ -395,7 +401,6 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         return ( alphaTest ? RG_MESH_PRIMITIVE_ALPHA_TESTED : 0 ) | add;
     };
 
-    const bool unseenEvilBrightmapFallback = !rt_mod_compat && bool{ cvar::rt_world_white };
     auto l_hasWorldBrightmap = [ & ]() {
         // UE must run with rt_mod_compat=0 so its Terraformer can replace the
         // IWAD textures at WorldLoaded. Bit 1 normally enables this brightmap

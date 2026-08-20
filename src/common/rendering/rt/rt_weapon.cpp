@@ -696,11 +696,11 @@ void RTRenderState::RT_AddMuzzleFlash( AActor*          viewactor,
     RG_CHECK( r );
 }
 
-// Passive glow from the ready weapon's own lit element — the plasma rifle's electric
-// core. See the rt_gunglow cvar block for why this cannot be a lightIntensity on the
-// sprite's texture (it attaches the light to the rasterized quad it is meant to
-// light, and that gun was the only one carrying such a light) nor an emissiveMult
-// (a view weapon's emission is a screen-space overlay and illuminates nothing).
+// Glow on the view weapon itself: the plasma rifle's permanent electric core,
+// plus UE's transient Unmaker discharge. See the rt_gunglow cvar block for why
+// this cannot be a lightIntensity on the sprite's texture (it attaches the light
+// to the rasterized quad it is meant to light) nor an emissiveMult (a view
+// weapon's emission is a screen-space overlay and illuminates nothing).
 //
 // Not uploading the light is how it turns off — same contract as the muzzle flash:
 // RTGL1 tracks a light by uniqueID per frame, so an absent upload is an absent light.
@@ -719,10 +719,20 @@ void RTRenderState::RT_AddWeaponGlow( AActor*          camera,
         return;
     }
 
-    // Substring, not equality: the IWAD class is PlasmaRifle and Retribution
-    // REPLACES it with 64PlasmaRifle. Both must light.
     const char* cls = ready->GetClass()->TypeName.GetChars();
-    if( !cls || !strstr( cls, "PlasmaRifle" ) )
+    if( !cls )
+    {
+        return;
+    }
+
+    // Substring for plasma: the IWAD class and Retribution's 64PlasmaRifle both
+    // own the passive blue core. Exact class + exact UE identity for Unmaker:
+    // Retribution already gets its red gun wash from the authored UNMF material.
+    const bool plasma = strstr( cls, "PlasmaRifle" ) != nullptr;
+    const bool unseenEvilUnmaker =
+        !rt_mod_compat && bool{ cvar::rt_world_white } &&
+        strcmp( cls, "D64UE_Weapon_Unmaker" ) == 0;
+    if( !plasma && ( !unseenEvilUnmaker || camera->player->extralight <= 0 ) )
     {
         return;
     }
@@ -776,6 +786,8 @@ void RTRenderState::RT_AddWeaponGlow( AActor*          camera,
     // resolves a moving light far better than a stuttering one, and white-noise
     // flicker on a 1-spp path tracer just reads as sparkle.
     float intensity = float( cvar::rt_gunglow_intensity );
+    RgColor4DPacked32 color = cvarcolor_to_rtcolor( cvar::rt_gunglow_color );
+    if( plasma )
     {
         const float depth = std::clamp( float( cvar::rt_gunglow_flicker ), 0.f, 1.f );
         if( depth > 0.f )
@@ -791,11 +803,21 @@ void RTRenderState::RT_AddWeaponGlow( AActor*          camera,
             intensity *= std::max( 0.f, float( cvar::rt_gunglow_fire_boost ) );
         }
     }
+    else
+    {
+        // A short red source centimeters in front of UNMA is what makes the gun
+        // itself turn red in Retribution. Keep the existing three-tic A_Light1
+        // duration; the longer UEMF art does not prolong this analytic source.
+        const MuzzleTint tint = MuzzleFlashTintFor( camera );
+        color = tint.color;
+        intensity *= std::max( 0.f, float( cvar::rt_gunglow_fire_boost ) ) *
+                     tint.intensityScale;
+    }
 
     auto sph = RgLightSphericalEXT{
         .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
         .pNext     = nullptr,
-        .color     = cvarcolor_to_rtcolor( cvar::rt_gunglow_color ),
+        .color     = color,
         .intensity = std::max( 0.f, intensity ),
         .position  = { pos.X, pos.Y, pos.Z },
         .radius    = cvar::rt_gunglow_radius,
