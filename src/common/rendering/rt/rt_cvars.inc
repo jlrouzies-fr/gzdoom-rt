@@ -214,10 +214,14 @@
                                                 "door should read red across a dark room. OFF BY DEFAULT, DELIBERATELY: "
                                                 "these are Doom 64's own texture names, so Retribution uses them too, and "
                                                 "enabling it globally would move a look that is already signed off. Unseen "
-                                                "Evil pins it on in tools/launch-unseenevil-rt.cmd." )
+                                                "Evil now uses ordinary PointLight actors and pins this legacy path off." )
     RT_CVAR( rt_keytrim_intensity,      120.f,  "RT intensity per key-trim segment. Below rt_wall_strip_intensity's 180 on "
                                                 "purpose: a door frame is a marker, not a room light, and a saturated hue "
                                                 "reads further than a white one at equal intensity." )
+    RT_CVAR( rt_ue_keytrim_emis,        0.5f,   "surface emissive multiplier for Unseen Evil's STRAKR/B/Y and full-path "
+                                                "keytrim textures. This matches gzdoom-rt's stock brightmap fallback and only "
+                                                "makes the existing mask glow; ordinary PointLight actors cast the surrounding "
+                                                "light. Gated on UE's isolated compatibility pair, so Retribution is unchanged." )
 
     RT_CVAR( rt_switch_lights,          true,   "a thrown switch lights the wall it is set into. Retribution's switches change "
                                                 "art when used -- SWXC's demon face gains red eyes, SWXSG's plate gains a pink "

@@ -602,9 +602,16 @@ struct LaserMark
 
 std::vector< LaserMark > g_lasers;
 
-// Is this an Unmaker laser that has just gone off? Matched by class so the
-// thirty-four LPUF-sprited trail actors it spawns per tic cannot trigger it --
-// they are caught by the same "Trail" rule the rocket's needed.
+// Is this an Unmaker impact marker that has just appeared? Retribution leaves
+// its dead UnmakerLaser actor at the hit point. Unseen Evil is a hitscan weapon
+// instead: it never creates that projectile and places one D64UE_UnmakerPuff at
+// the exact LineTrace hit. Accept that puff only under UE's dedicated
+// compatibility identity, so another mod with a similarly named cosmetic puff
+// cannot acquire persistent red burns and Retribution's path is unchanged.
+//
+// Retribution is still matched by class so the thirty-four LPUF-sprited trail
+// actors it spawns per tic cannot trigger it -- they are caught by the same
+// "Trail" rule the rocket's needed.
 bool IsDeadLaser( AActor* mo )
 {
     if( !mo || !mo->GetClass() )
@@ -612,7 +619,18 @@ bool IsDeadLaser( AActor* mo )
         return false;
     }
     const char* c = mo->GetClass()->TypeName.GetChars();
-    if( !c || ArcClassExcluded( c ) || strstr( c, "UnmakerLaser" ) == nullptr )
+    if( !c )
+    {
+        return false;
+    }
+
+    const bool unseenEvil = !rt_mod_compat && bool{ cvar::rt_world_white };
+    if( unseenEvil && strcmp( c, "D64UE_UnmakerPuff" ) == 0 )
+    {
+        return true;
+    }
+
+    if( ArcClassExcluded( c ) || strstr( c, "UnmakerLaser" ) == nullptr )
     {
         return false;
     }
@@ -844,9 +862,9 @@ void RT_UpdateProjectileImpacts()
         // See the note at the top of rt_barrel.cpp.
         BarrelWalkActor( mo, tic );
 
-        // THE UNMAKER COMES IN THROUGH ITS OWN DOOR. It is dead by the time
-        // anything here sees it -- see the note on LaserMark -- so it is caught
-        // by its death sprite rather than by going missing.
+        // THE UNMAKER COMES IN THROUGH ITS OWN DOOR. Retribution's fast
+        // projectile is dead by the time anything here sees it; UE's hitscan
+        // version leaves a puff at the hit point. See the note on LaserMark.
         if( cvar::rt_laser && IsDeadLaser( mo ) )
         {
             LaserMark* lm = nullptr;

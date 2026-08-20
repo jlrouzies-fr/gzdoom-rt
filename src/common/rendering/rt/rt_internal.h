@@ -211,6 +211,13 @@ constexpr uint64_t MuzzleFlashLightId = 0xFFFFFFF + 2;
 // small offset here would collide with a sector's light. Own decade, like the lattices.
 // Bit 50, far above SoloLatticeId_Base's (1<<40) sector-derived range.
 constexpr uint64_t GunGlowLightId     = 1ull << 50;
+  // Unseen Evil's live rocket is gzdoom-rt's built-in CheelloRocket, not the
+  // D64UE_Rocket replacement that carries UE's orange attached light. Its
+  // Unmaker is likewise one stretched model rather than Retribution's light-
+  // bearing UNML sprite chain. Four pointer-keyed slots per live actor cover
+  // one rocket light or three distributed beam lights; bit 51 is clear above
+  // the first-person gun glow and cannot overlap any fixture/FX range below it.
+  constexpr uint64_t UEProjectileLightId_Base = 1ull << 51;
 // NOTE: lightning has NO id of its own, on purpose. RTGL1 accepts exactly one
 // directional light per frame -- LightManager::Add answers a second one with
 // debug::Error("Only one directional light is allowed"), which is fatal here --
@@ -550,6 +557,7 @@ void RT_DebugNearbyWallTextures();
 void RT_UploadSwitchLights();
 void RT_UploadLavaLights();
 void RT_UploadFlameLights();
+void RT_UploadUnseenEvilProjectileLights();
 
 // rt_light_shafts.cpp -- which fixtures get visible air around them.
 //

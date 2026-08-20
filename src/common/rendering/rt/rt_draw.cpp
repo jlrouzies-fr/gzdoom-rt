@@ -395,12 +395,16 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         return ( alphaTest ? RG_MESH_PRIMITIVE_ALPHA_TESTED : 0 ) | add;
     };
 
-    auto l_isemis = [ & ]() {
-        if( mRenderStyle.BlendOp == STYLEOP_Add && mRenderStyle.DestAlpha == STYLEALPHA_One )
-        {
-            return true;
-        }
-        if( rt_mod_compat & 2 )
+    const bool unseenEvilBrightmapFallback = !rt_mod_compat && bool{ cvar::rt_world_white };
+    auto l_hasWorldBrightmap = [ & ]() {
+        // UE must run with rt_mod_compat=0 so its Terraformer can replace the
+        // IWAD textures at WorldLoaded. Bit 1 normally enables this brightmap
+        // fallback, so that necessary setting also used to erase every one of
+        // UE's authored brightmap emissives. Its launcher uniquely combines
+        // that setting with rt_world_white=1; restore just this visual fallback
+        // for that compatibility path. Retribution still follows the original
+        // rt_mod_compat bit exactly.
+        if( ( rt_mod_compat & 2 ) || unseenEvilBrightmapFallback )
         {
             // Auto: brightmaps/glowmaps on sprites AND world geometry -> RT emissive
             if( rtstate.is< RtPrim::ExportInstance >() ||
@@ -436,6 +440,27 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             }
         }
         return false;
+    };
+    auto l_isemis = [ & ]() {
+        if( mRenderStyle.BlendOp == STYLEOP_Add && mRenderStyle.DestAlpha == STYLEALPHA_One )
+        {
+            return true;
+        }
+        return l_hasWorldBrightmap();
+    };
+    auto l_isUnseenKeyTrim = [ & ]() {
+        if( !unseenEvilBrightmapFallback || !texname )
+        {
+            return false;
+        }
+        // Animation frames can reach RT as STRAKR1..5 even when whatsthat
+        // reports the base STRAKR texture, so these are prefixes by design.
+        return strnicmp( texname, "STRAKR", 6 ) == 0 ||
+               strnicmp( texname, "STRAKB", 6 ) == 0 ||
+               strnicmp( texname, "STRAKY", 6 ) == 0 ||
+               strnicmp( texname,
+                         "textures/pepy/keytrims/d64_keytrim_",
+                         strlen( "textures/pepy/keytrims/d64_keytrim_" ) ) == 0;
     };
 
     // Masked world geometry — fences, grates, the MAP01 cage — is alpha-TESTED,
@@ -497,7 +522,7 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     // silhouette even after world white fix. Keep uObjectColor (ThingColor / weapon
     // ObjectColor / sector sprite tint); drop lightlevel from uVertexColor RGB.
     const bool forceSpriteUnlitAlbedo =
-        rt_mod_compat && !isUI &&
+        ( rt_mod_compat || bool{ cvar::rt_world_white } ) && !isUI &&
         ( rtstate.is< RtPrim::ExportInstance >() ||
           rtstate.is< RtPrim::FirstPerson >() ||
           rtstate.is< RtPrim::FirstPersonViewer >() );
@@ -1079,6 +1104,26 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         {
             const float we = l_worldemissive();
 
+            // UE's brightmap fallback must own the multiplier as well as the
+            // mask. Its global PBR catalogue labels STRAKR and many other
+            // textures for metal/roughness but omits emissiveMult; RTGL's
+            // TextureMeta therefore overwrites `we` with its default zero.
+            // That left the brightmap present but visually black. Claiming the
+            // override only for UE world brightmaps preserves their mask and
+            // fallback multiplier without touching Retribution's authored
+            // emissiveMult values or ordinary additive primitives.
+            if( unseenEvilBrightmapFallback && l_hasWorldBrightmap() )
+            {
+                // The UE key mask covers every coloured inlay, but the shared
+                // 0.15 fallback leaves its surface nearly black beside the map
+                // PointLight actors. Raise only key-trim surfaces; the brightmap
+                // still selects every emitting texel.
+                const float ueEmis = l_isUnseenKeyTrim()
+                                         ? std::max( 0.f, float{ cvar::rt_ue_keytrim_emis } )
+                                         : we;
+                return { RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE, ueEmis };
+            }
+
             // SECTOR SELF-EMISSION HAS TO CLAIM THE SAME FLAG, or a texture that
             // merely OWNS a textures.json entry loses it.
             //
@@ -1118,6 +1163,20 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                  std::max( 0.f, float{ cvar::rt_ceiling_bulb_emis } ) };
     };
     const auto [ lampGlowFlag, lampGlowEmis ] = l_lampglow();
+
+    // Unseen Evil's laser is not Retribution's UNML sprite chain. It is one
+    // stretched OBJ skinned with models/beam_unmaker.png, so the shared UNML
+    // emissive row can never reach it and the beam reads as a thin unlit red
+    // card under RT. Give that unique UE asset the same screen-emission role as
+    // UNML while leaving its scene lighting to RT_UploadUnseenEvilProjectileLights.
+    //
+    // Exact mod identity + exact asset name keeps this unreachable in
+    // Retribution. NO_SHADOW mirrors UNML's authored material: a laser should
+    // illuminate/mark a wall, not cast a rectangular model shadow onto it.
+    const bool unseenEvilUnmakerBeam =
+        unseenEvilBrightmapFallback && texname &&
+        ( strstr( texname, "beam_unmaker" ) || strstr( texname, "BEAM_UNMAKER" ) );
+    constexpr float UE_UNMAKER_BEAM_EMISSIVE = 1.0f;
 
     // Doom64-RT: does this draw get shadow proxies? ONE decision, used twice --
     // here to silence the visible billboard, and at the bottom to emit them.
@@ -1237,6 +1296,9 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         .pNext = isUI ? &ui : nullptr,
         .flags = makePrimFlags( isUI ) | l_waterflag() | l_nocausticsflag() | l_lavaflag() |
                  lampGlowFlag | l_spriteshadowcaster() |
+                 ( unseenEvilUnmakerBeam
+                       ? RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE | RG_MESH_PRIMITIVE_NO_SHADOW
+                       : RgMeshPrimitiveFlags( 0 ) ) |
                  ( ghostNoEmis ? RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE
                                : RgMeshPrimitiveFlags( 0 ) ) |
                  RG_MESH_PRIMITIVE_FORCE_EXACT_NORMALS |
@@ -1251,7 +1313,9 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         .pTextureName         = texname,
         .textureFrame         = 0,
         .color        = primColor,
-        .emissive     = ghostNoEmis ? 0.f : lampGlowEmis,
+        .emissive     = ghostNoEmis ? 0.f
+                                    : ( unseenEvilUnmakerBeam ? UE_UNMAKER_BEAM_EMISSIVE
+                                                              : lampGlowEmis ),
         .classicLight = lightlevel_to_classic( isUI, mLightParms[ 3 ] ),
     };
 

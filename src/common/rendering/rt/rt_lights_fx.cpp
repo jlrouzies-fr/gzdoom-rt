@@ -970,3 +970,159 @@ void RT_UploadFlameLights()
     }
 }
 
+// UE PROJECTILE LIGHTS THAT CANNOT REACH RT THROUGH THE MOD'S OWN DEFINITIONS.
+//
+// UE defines D64UE_Rocket with an attached #C43F21 light and a PUF2 smoke
+// trail, but the renderer package's CheelloRocket replacement is the class that
+// actually reaches the thinker list. The volumetric smoke tracker still sees
+// it by the "Rocket" class substring and drops every parcel correctly; what is
+// missing in UE's deliberately dark IWAD rooms is the moving light that makes
+// those parcels visible. Restore exactly UE's intended radius/colour here.
+//
+// The Unmaker mismatch is the inverse. Retribution draws a FastProjectile plus
+// a dense UNML sprite trail; every UNML card has authored red emission/light.
+// UE does an instant line trace and represents the whole laser with one
+// stretched D64UE_UnmakerBolt OBJ. There is no UNML texture or projectile
+// dynlight for the shared material metadata to find. Sample three stable lights
+// along the model's current segment instead. The separate viewer muzzle flash
+// remains responsible for lighting the gun at the instant of firing; these
+// lights belong to the visible beam and therefore follow it as it retracts.
+//
+// These are deliberately NOT broad projectile rules. Retribution already
+// lights both weapons through authored RT material metadata, and a global alias
+// would double those sources. The same identity UE already uses for its scene
+// namespace (rt_mod_compat=0 + rt_world_white=1) plus exact live classes makes
+// this path unreachable everywhere else. A future engine where D64UE_Rocket
+// wins again naturally stops matching and goes back to its own A_AttachLight.
+void RT_UploadUnseenEvilProjectileLights()
+{
+    if( rt_mod_compat || !cvar::rt_world_white || !cvar::rt_dynlight || !primaryLevel )
+    {
+        return;
+    }
+
+    constexpr float UE_ROCKET_RADIUS = 20.f; // map units, from D64UE_Rocket
+    constexpr float UE_LASER_RADIUS  = 8.f;  // intensity-equivalent map radius per sample
+
+    const float dynScale     = std::max( 0.f, float{ cvar::rt_dynlight_intensity } );
+    const float intensityMax = std::max( 0.f, float{ cvar::rt_dynlight_max } );
+    auto scaledIntensity = [ & ]( float radius ) {
+        float value = radius * dynScale;
+        if( intensityMax > 0.f )
+        {
+            value = std::min( value, intensityMax );
+        }
+        return value;
+    };
+
+    const float rocketIntensity = scaledIntensity( UE_ROCKET_RADIUS );
+    const float laserIntensity  = scaledIntensity( UE_LASER_RADIUS );
+    const float minRadius       = std::max( 0.f, float{ cvar::rt_dynlight_minradius } );
+
+    auto upload = [ & ]( uint64_t id, const FVector3& pos, RgColor4DPacked32 color,
+                         float intensity ) {
+        if( intensity <= 0.01f )
+        {
+            return;
+        }
+        auto sph = RgLightSphericalEXT{
+            .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
+            .pNext     = nullptr,
+            .color     = color,
+            .intensity = intensity,
+            .position  = { pos.X, pos.Y, pos.Z },
+            .radius    = std::max( 0.01f, float{ cvar::rt_dynlight_radius } ),
+        };
+        auto info = RgLightInfo{
+            .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
+            .pNext        = &sph,
+            .uniqueID     = id,
+            .isExportable = false,
+        };
+        RgResult r = rt.rgUploadLight( &info );
+        RG_CHECK( r );
+    };
+
+    auto    it = primaryLevel->GetThinkerIterator< AActor >();
+    AActor* mo = nullptr;
+    while( ( mo = it.Next() ) != nullptr )
+    {
+        if( !mo->GetClass() )
+        {
+            continue;
+        }
+        const char* cls = mo->GetClass()->TypeName.GetChars();
+        if( !cls )
+        {
+            continue;
+        }
+
+        // Four slots per actor: rocket uses 0, the laser segment uses 1..3.
+        // Mask before shifting so the pointer-derived part cannot climb into
+        // another reserved ID range.
+        const uint64_t actorId =
+            UEProjectileLightId_Base +
+            ( ( uint64_t( reinterpret_cast< uintptr_t >( mo ) ) & 0x3FFFFFFFull ) << 2 );
+
+        if( strcmp( cls, "CheelloRocket" ) == 0 )
+        {
+            if( !( mo->flags & MF_MISSILE ) || UE_ROCKET_RADIUS < minRadius )
+            {
+                continue;
+            }
+
+            FVector3 pos{ float( mo->X() ) * ONEGAMEUNIT_IN_METERS,
+                          float( mo->Y() ) * ONEGAMEUNIT_IN_METERS,
+                          float( mo->Z() + mo->Height * 0.5 ) * ONEGAMEUNIT_IN_METERS };
+            FVector3 vel{ float( mo->Vel.X ), float( mo->Vel.Y ), float( mo->Vel.Z ) };
+            if( vel.LengthSquared() > 0.0001f )
+            {
+                // UE's A_AttachLight offset is (-32,0,0): one metre behind the
+                // projectile, precisely where the newest smoke parcel is dropped.
+                pos -= vel.Unit() * ( 32.f * ONEGAMEUNIT_IN_METERS );
+            }
+
+            upload( actorId,
+                    pos,
+                    rt.rgUtilPackColorByte4D( 0xC4, 0x3F, 0x21, 255 ),
+                    rocketIntensity );
+            continue;
+        }
+
+        if( strcmp( cls, "D64UE_UnmakerBolt" ) != 0 || UE_LASER_RADIUS < minRadius )
+        {
+            continue;
+        }
+
+        // ZScript orients the model's local Y axis down the trace by storing
+        // (shot pitch - 90 degrees) in Actor.Pitch. Undo that model correction
+        // to recover the world-space segment direction.
+        constexpr double PI = 3.14159265358979323846;
+        const double yaw     = mo->Angles.Yaw.Radians();
+        const double pitch   = mo->Angles.Pitch.Radians() + PI * 0.5;
+        const double cp      = std::cos( pitch );
+        const FVector3 dir{ float( cp * std::cos( yaw ) ),
+                            float( cp * std::sin( yaw ) ),
+                            float( -std::sin( pitch ) ) };
+
+        // UE sets scale.y = (remaining half-length + 16) * 1.2. Inverting
+        // that expression gives the half-length of the model segment around
+        // its actor origin, in map units.
+        const float halfLength =
+            std::max( 0.f, ( float( mo->Scale.Y ) / 1.2f ) - 16.f ) *
+            ONEGAMEUNIT_IN_METERS;
+        const FVector3 center{ float( mo->X() ) * ONEGAMEUNIT_IN_METERS,
+                               float( mo->Y() ) * ONEGAMEUNIT_IN_METERS,
+                               float( mo->Z() ) * ONEGAMEUNIT_IN_METERS };
+        constexpr float SAMPLE_OFFSETS[] = { -0.65f, 0.f, 0.65f };
+        const auto red = rt.rgUtilPackColorByte4D( 0xFF, 0x14, 0x08, 255 );
+        for( uint64_t i = 0; i < std::size( SAMPLE_OFFSETS ); i++ )
+        {
+            upload( actorId + 1 + i,
+                    center + dir * ( halfLength * SAMPLE_OFFSETS[ i ] ),
+                    red,
+                    laserIntensity );
+        }
+    }
+}
+

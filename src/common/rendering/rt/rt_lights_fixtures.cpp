@@ -717,6 +717,34 @@ static bool RT_IsWallStripLampTexture( const char* name )
            strcmp( name, "SFLATAS" ) == 0;
 }
 
+// Unseen Evil maps the DOOM II computer banks onto the four SMOND monitor frames.
+// The art and its _e masks are shared with Retribution, but only Retribution's map
+// lumps carry the 9802 lights placed in front of those screens.  Match this family
+// only while Unseen Evil has disabled rt_mod_compat for its runtime Terraformer;
+// otherwise its authored Retribution lights would be doubled.
+static bool RT_UnseenEvilMonitorHue( const char* name, FVector3& out )
+{
+    // `rt_mod_compat 0` alone is not an Unseen Evil identity -- other mods need
+    // it for their own runtime texture replacement.  Its launcher also opts into
+    // rt_world_white, so require that dedicated compatibility combination.
+    if( rt_mod_compat || !cvar::rt_world_white || !name ||
+        strncmp( name, "SMOND", 5 ) != 0 )
+    {
+        return false;
+    }
+    const char frame = name[ 5 ];
+    if( frame < 'A' || frame > 'D' || name[ 6 ] != '\0' )
+    {
+        return false;
+    }
+
+    // Measured from SMOND[ABCD]_e: green data rows with blue tick marks. This
+    // is deliberately independent of the Doom II sector palette, which is often
+    // red and would turn the cyan display into a false red room light.
+    out = FVector3{ 0.20f, 0.90f, 1.00f };
+    return true;
+}
+
 // Locked-door trim, coloured by WHICH KEY rather than by the sector it sits in.
 //
 // Doom 64 paints the key colour into the door frame and lights it with nothing, so
@@ -893,7 +921,10 @@ void RT_UploadWallStripLights()
                 // solid geometry the first time.
                 FVector3   keyHue{};
                 const bool isKeyTrim = RT_KeyTrimHue( wtname, keyHue );
-                if( !isFaux && !isKeyTrim && !RT_IsWallStripLampTexture( wtname ) )
+                FVector3   monitorHue{};
+                const bool isUnseenMonitor = RT_UnseenEvilMonitorHue( wtname, monitorHue );
+                if( !isFaux && !isKeyTrim && !isUnseenMonitor &&
+                    !RT_IsWallStripLampTexture( wtname ) )
                 {
                     continue;
                 }
@@ -1030,6 +1061,7 @@ void RT_UploadWallStripLights()
                     // red door would come out grey, which is the bug being fixed.
                     const FVector3 hue =
                         isKeyTrim ? keyHue
+                        : isUnseenMonitor ? monitorHue
                         : isFaux  ? RT_FauxLampHue()
                                   : RT_SectorHue( thisSec->Colormap.LightColor,
                                                   float{ cvar::rt_sector_tint_lights } );

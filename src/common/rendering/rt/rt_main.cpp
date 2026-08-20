@@ -106,6 +106,11 @@ extern void RT_CloseLauncherWindow();
 
 auto RT_MakeUpRightForwardVectors( const DRotator& rotation ) -> std::tuple< RgFloat3D, RgFloat3D, RgFloat3D >;
 
+static bool RT_IsUnseenEvilCompat()
+{
+    return primaryLevel && !rt_mod_compat && bool{ cvar::rt_world_white };
+}
+
 // Called from rt_presets.cpp and from the CCMDs that moved out of here, so it
 // cannot live in the anonymous namespace below.
 const char* RT_GetMapName()
@@ -119,6 +124,32 @@ const char* RT_GetMapName()
     {
         // Official modcompat: RT_MapName is set in p_openmap for PWAD maps
         // so Doom II rt/scenes/map## do not collide with mod MAP01 etc.
+        //
+        // Unseen Evil is the other collision shape: its Terraformer replaces an
+        // IWAD map's textures at runtime, so p_openmap correctly leaves MAP02 as
+        // plain `map02` even though the scene RTGL receives is no longer Doom II's.
+        // RTGL then matches rt/data/scenes.json's stock map02 row and overwrites
+        // the frame's sky multiplier with 400. That red environment lights the
+        // whole UE start room even when +rt_sky 0 was requested, because scene
+        // metadata is applied after the API parameters.
+        //
+        // The UE launcher already has one deliberately unique compatibility
+        // identity: ReplaceTextures requires rt_mod_compat=0 and its RT world
+        // path pins rt_world_white=1. Use that same gated pair as a namespace.
+        // Retribution keeps rt_mod_compat enabled, so its scene names and authored
+        // metadata are byte-for-byte unchanged.
+        if( RT_IsUnseenEvilCompat() )
+        {
+            static FString unseenEvilSceneName;
+            static FString unseenEvilSourceName;
+            if( unseenEvilSourceName.Compare( primaryLevel->RT_MapName.GetChars() ) != 0 )
+            {
+                unseenEvilSourceName = primaryLevel->RT_MapName;
+                unseenEvilSceneName.Format( "d64ue_%s", unseenEvilSourceName.GetChars() );
+            }
+            return unseenEvilSceneName.GetChars();
+        }
+
         return primaryLevel->RT_MapName.GetChars();
     }
 
@@ -2205,6 +2236,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UploadHangingTechLamps();
     RT_UploadHandGlowLights();
     RT_UploadFlameLights();
+    RT_UploadUnseenEvilProjectileLights();
     RT_UploadLavaLights();
     RT_UploadSwitchLights();
     RT_UpdateSectorEmisThreshold();
@@ -2349,8 +2381,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .skyType            = m_wassky ? RG_SKY_TYPE_RASTERIZED_GEOMETRY : RG_SKY_TYPE_COLOR,
         // Dark space tint if raster sky failed (pure black often tonemaps to white voids).
         .skyColorDefault    = { 0.02f, 0.02f, 0.05f },
+        // Visible sky and sky lighting are separate. UE's IWAD maps are not
+        // sealed enough for an indirect ray miss to prove that it reached a
+        // real sky opening, but blanking rt_sky also erased the background.
         .skyColorMultiplier = cvar::rt_sky,
         .skyColorSaturation = cvar::rt_sky_saturation,
+        .skyLightingMultiplier = RT_IsUnseenEvilCompat() ? 0.f : 1.f,
         .skyViewerPosition  = { 0, 0, 0 },
         .sunRequireSky      = bool{ cvar::rt_sun_require_sky } ? 1.f : 0.f,
         .sunLeakDebug       = float( std::clamp( int{ cvar::rt_sun_leak_debug }, 0, 2 ) ),
