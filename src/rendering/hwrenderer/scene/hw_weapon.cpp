@@ -442,6 +442,7 @@ EXTERN_CVAR( Int, rt_mod_compat );
 namespace cvar
 {
 extern FBoolCVarRef rt_wpn_solid_bright;
+extern FBoolCVarRef rt_world_white;
 }
 #endif
 
@@ -517,7 +518,14 @@ bool HUDSprite::GetWeaponRenderStyle(DPSprite *psp, AActor *playermo, sector_t *
 	if (bright) SetBright(lighting.isbelow);
 
 #if HAVE_RT
-	if( rt_mod_compat )
+	// UE must keep rt_mod_compat disabled so its Terraformer texture replacements
+	// run, but its dedicated Flash psprite is still the same additive presentation
+	// layer Retribution uses. The UE launcher uniquely pairs that setting with
+	// rt_world_white. Restore additive composition only for PSP_FLASH under that
+	// identity: weapon-body BRIGHT frames remain solid and no other mod changes.
+	const bool unseenEvilFlashLayer =
+		!rt_mod_compat && bool{ cvar::rt_world_white } && psp->GetID() == PSP_FLASH;
+	if( rt_mod_compat || unseenEvilFlashLayer )
 	{
 		// Making a FULLBRIGHT psprite additive is right for a flash OVERLAY and wrong for
 		// the gun itself. Additive is how a flash sprite is supposed to composite, but on
@@ -533,7 +541,8 @@ bool HUDSprite::GetWeaponRenderStyle(DPSprite *psp, AActor *playermo, sector_t *
 		// it was — the unmaker's UNMF is its ONLY bright frame, its art is dithered, and
 		// forcing that to an opaque cutout turned the whole gun into red speckle
 		// (screen/brokenunmaker.png). The gun body's brightness comes from its emissive
-		// mask instead. rt_wpn_solid_bright 0 restores the old blanket behaviour.
+		// mask instead. rt_wpn_solid_bright 0 restores the old blanket behaviour
+		// for modcompat; the UE arm remains Flash-only by construction.
 		if( bright && ( !cvar::rt_wpn_solid_bright || psp->GetID() != PSP_WEAPON ) )
 		{
 			RenderStyle.DestAlpha = STYLEALPHA_One;
@@ -1000,4 +1009,3 @@ void HWDrawInfo::PrepareTargeterSprites(double ticfrac)
 		}
 	}
 }
-
