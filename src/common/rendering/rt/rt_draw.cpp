@@ -599,6 +599,25 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             return 0.f;
         }
 
+        // MAP03 Main Engineering: SPACEAP1 (sector 54) and SPACECL1 (sector 70) sit in
+        // a uniformly lightlevel-255 room, so rt_sector_emis correctly classifies both
+        // as SELF-EMITS per `whatsthat` -- but the resulting glow reads wrong on these
+        // two in play (reported 2026-08-21), unlike MAP02's red corridor panels, the
+        // case this ramp was written for. Excluded by exact name: other SPACE*
+        // textures are not known to have the same problem, and a prefix match would
+        // silence them unreviewed.
+        static const char* const kSectorEmisExclude[] = { "SPACEAP1", "SPACECL1" };
+        if( texname )
+        {
+            for( const char* n : kSectorEmisExclude )
+            {
+                if( strcmp( texname, n ) == 0 )
+                {
+                    return 0.f;
+                }
+            }
+        }
+
         const float strength = float{ cvar::rt_sector_emis };
         // Map-relative, not absolute — see RT_UpdateSectorEmisThreshold.
         const float minLight = g_sectorEmisThreshold;
