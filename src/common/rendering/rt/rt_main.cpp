@@ -388,6 +388,14 @@ std::atomic< HWND > g_msgbox_parent{};
 
 
 
+namespace
+{
+int    g_rt_precache_count   = 0;
+double g_rt_precache_ms      = 0.0;
+bool   g_rt_precache_pending = false;
+bool   g_rt_precache_capped  = false;
+} // namespace
+
 RG_D3D12CORE_HELPER( "rt/" )
 
 Win32RTVideo::Win32RTVideo()
@@ -1253,6 +1261,125 @@ IHardwareTexture* rtx::RTFrameBuffer::CreateHardwareTexture( int numchannels )
 {
     return new RTHardwareTexture{};
 }
+
+// Doom64-RT: THE RT PATH NEVER PRECACHED ANYTHING, and that was the stutter.
+//
+// p_setup.cpp's PrecacheLevel does all the work already -- it walks every actor
+// class the level spawns, marks every sprite frame and all 16 rotations, folds in
+// animations and switch pairs -- and hands each result to screen->PrecacheMaterial.
+// GL, GLES and Vulkan all override that. RTFrameBuffer overrode only
+// CreateHardwareTexture, so it inherited the empty base (v_video.h:226) and threw
+// the entire computed list away.
+//
+// The consequence was that EVERY texture in the game uploaded on the frame it was
+// first drawn, in the middle of play. Measured on 2026-08-20: an imp turning to
+// face the player cost 20-44 ms, a lost soul 60 ms, one sprite frame at a time,
+// scattered through the session -- because a sprite frame and rotation is its own
+// texture and is not touched until that exact pose is first visible.
+//
+// The same uploads at level load measured 0.2-0.6 ms each. It is not merely moving
+// the cost, it is removing about 100x of it; a mid-frame upload lands on a GPU that
+// is already busy, a load-time one does not.
+//
+// WHAT IS SAFE TO ASSUME HERE. CreateIfWasnt takes two arguments the precacher
+// cannot know, and neither is a problem:
+//   clampmode  -- unused. Both address modes are hardcoded to REPEAT and the
+//                 rtclamp_x/y helpers are commented out at the call (rt_buffers.h).
+//   renderStyle -- read only for STYLEF_RedIsAlpha. It IS baked in, because
+//                 CreateIfWasnt is idempotent. But the lazy path bakes it too, from
+//                 whichever draw happened to be first -- so this does not introduce
+//                 order-dependence, it removes it. STYLE_Normal is the answer for
+//                 every world surface and sprite; a Shaded-only texture would have
+//                 been a coin toss before and is now consistently normal.
+void rtx::RTFrameBuffer::PrecacheMaterial( FMaterial* mat, int translation )
+{
+    if( !cvar::rt_precache || mat == nullptr )
+    {
+        return;
+    }
+
+    // THE 4096 CEILING. RTGL1's texture array is TEXTURE_COUNT_MAX = 4096
+    // entries (Const.h:35) and a single material claims up to FIVE of them --
+    // albedo, ORM, normal, emissive, height. So the budget is not "how many
+    // textures", it is "how many slots", and the engine side cannot see the
+    // difference. Nothing frees them either: the destructor's
+    // rgMarkOriginalTextureAsDeleted is #if 0'd in rt_buffers.h, so the array
+    // only ever grows within a session.
+    //
+    // Precaching every actor class produced 2094 provides, blew past 4096
+    // slots, and RTGL1 dropped 487 textures with "Reached texture limit"
+    // (TextureManager.cpp:738) -- which is a Warning, not an error, so the game
+    // carried on and rendered the HUD and the status bar as white and pink
+    // blocks (screen/precacheIssue.png, 2026-08-21).
+    //
+    // 1600 is empirical, from the only two data points there are: 1526 provides
+    // precached cleanly, 2094 overflowed. It is deliberately nearer the known
+    // good one. This is a guard against corruption, NOT the fix -- the fix is a
+    // larger TEXTURE_COUNT_MAX, which lives in the RTGL1 repo.
+    if( g_rt_precache_count >= int{ cvar::rt_precache_budget } )
+    {
+        if( !g_rt_precache_capped )
+        {
+            g_rt_precache_capped = true;
+            Printf( RT_DiagPrintLevel(),
+                    "RT precache: stopped at the %d-texture budget (rt_precache_budget). "
+                    "Anything past this uploads on first draw, as before.\n",
+                    int{ cvar::rt_precache_budget } );
+        }
+        return;
+    }
+
+    FGameTexture* gametex = mat->Source();
+    if( gametex == nullptr || gametex->GetUseType() == ETextureType::SWCanvas )
+    {
+        return;
+    }
+
+    FTexture* base = gametex->GetTexture();
+    if( base == nullptr )
+    {
+        return;
+    }
+
+    auto* hwtex = static_cast< RTHardwareTexture* >(
+        base->GetHardwareTexture( translation, mat->GetScaleFlags() ) );
+    if( hwtex == nullptr )
+    {
+        return;
+    }
+
+    const uint64_t t0 = I_nsTime();
+
+    hwtex->CreateIfWasnt( *gametex,
+                          CLAMP_NONE,
+                          translation,
+                          mat->GetScaleFlags(),
+                          LegacyRenderStyles[ STYLE_Normal ] );
+
+    g_rt_precache_ms += double( I_nsTime() - t0 ) / 1e6;
+    g_rt_precache_count++;
+    g_rt_precache_pending = true;
+}
+
+// Reported from the first frame after the precache pass, because there is no hook
+// at the end of it. Without a number this change is unfalsifiable: "the stutter
+// went away" and "the precache silently did nothing" look identical in play.
+void rtx::RT_ReportPrecache()
+{
+    if( !g_rt_precache_pending )
+    {
+        return;
+    }
+    g_rt_precache_pending = false;
+
+    Printf( RT_DiagPrintLevel(),
+            "RT precache: %d texture(s) uploaded in %.1f ms at level load\n",
+            g_rt_precache_count,
+            g_rt_precache_ms );
+
+    g_rt_precache_count = 0;
+    g_rt_precache_ms    = 0.0;
+}
 void rtx::RTFrameBuffer::Draw2D()
 {
     ::Draw2D( twod, *m_state );
@@ -1975,6 +2102,7 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
     // rgStartFrame, because rgStartFrame is itself one of the four phases.
     RT_StatsNewFrame();
     RT_ApplyQualityPresetOnce();
+    RT_ReportPrecache();
 
     RTStartFrame.Clock();
     RgResult r = rt.rgStartFrame( &info );

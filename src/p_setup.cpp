@@ -82,6 +82,7 @@
 #include "d_main.h"
 
 #include "rt/rt_state.h"
+#include "rt/rt_cvars.h"
 
 extern AActor *SpawnMapThing (int index, FMapThing *mthing, int position);
 
@@ -243,6 +244,44 @@ static void PrecacheLevel(FLevelLocals *Level)
 	while ((actor = iterator.Next()))
 	{
 		actorhitlist[actor->GetClass()] = true;
+	}
+
+	// Doom64-RT: EVERY ACTOR CLASS, not just the ones standing in the level.
+	//
+	// The loop above walks the thinkers that exist at load, which is the whole
+	// map's population -- and misses everything a script summons later. On
+	// Retribution that is the ambush: a switch spawns seven or eight lost souls
+	// and friends at once, none of them placed on the map, so none of them
+	// precached. Each sprite FRAME and ROTATION is its own texture and uploads
+	// the first time that exact pose is drawn, which measured 12-61 ms apiece
+	// mid-frame against 0.3-1.0 ms at load (2026-08-20). Seven monsters
+	// appearing together is therefore a burst of hitches at the worst possible
+	// moment, and no amount of load-time work on the PLACED actors helps.
+	//
+	// There is no general way to see "a pain elemental spawns a lost soul" --
+	// it lives in code, not in the state table -- so guessing which classes can
+	// appear is not a solvable problem. Take all of them.
+	//
+	// MONSTERS ALONE WERE NOT ENOUGH, and the failure was instructive. A first
+	// version filtered on MF3_ISMONSTER, which killed the ambush hitches but left
+	// BROKA0 -- a one-rotation debris sprite -- costing 33.6 ms on a quiet map
+	// with nothing but corpses on it. Everything spawned by a death, a break or
+	// an impact is a non-monster class: casings, blood, gibs, puffs, debris,
+	// dropped items. Those are precisely the actors that appear DURING play and
+	// never at load, so the filter excluded the exact set that needed this most.
+	//
+	// The cost is bounded and mostly one-off. RTHardwareTexture objects live
+	// across level changes, so only the FIRST load pays: measured 1338 textures
+	// in 639 ms, then 1493 in 132.7 ms on the next map (2026-08-20).
+	if( cvar::rt_precache_actors )
+	{
+		for (PClassActor *cls : PClassActor::AllActorClasses)
+		{
+			if (cls != nullptr && !cls->bAbstract)
+			{
+				actorhitlist[cls] = true;
+			}
+		}
 	}
 
 	for (auto n : gameinfo.PrecachedClasses)

@@ -75,6 +75,13 @@ extern RgInterface rt;
 // Use it for anything the renderer says on its own initiative. Do NOT use it
 // for the reply to a CCMD the user typed (`whatsthat`, `moon`, `rt_dump_*`) --
 // an answer to a question has to be visible where the question was asked.
+// Prints the level-load precache summary on the first frame after it ran. See
+// RTFrameBuffer::PrecacheMaterial for why the RT path needed one at all.
+namespace rtx
+{
+void RT_ReportPrecache();
+}
+
 inline int RT_DiagPrintLevel()
 {
     return bool{ cvar::rt_verbose } ? PRINT_HIGH : ( PRINT_HIGH | PRINT_NONOTIFY );
