@@ -599,25 +599,6 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             return 0.f;
         }
 
-        // MAP03 Main Engineering: SPACEAP1 (sector 54) and SPACECL1 (sector 70) sit in
-        // a uniformly lightlevel-255 room, so rt_sector_emis correctly classifies both
-        // as SELF-EMITS per `whatsthat` -- but the resulting glow reads wrong on these
-        // two in play (reported 2026-08-21), unlike MAP02's red corridor panels, the
-        // case this ramp was written for. Excluded by exact name: other SPACE*
-        // textures are not known to have the same problem, and a prefix match would
-        // silence them unreviewed.
-        static const char* const kSectorEmisExclude[] = { "SPACEAP1", "SPACECL1" };
-        if( texname )
-        {
-            for( const char* n : kSectorEmisExclude )
-            {
-                if( strcmp( texname, n ) == 0 )
-                {
-                    return 0.f;
-                }
-            }
-        }
-
         const float strength = float{ cvar::rt_sector_emis };
         // Map-relative, not absolute — see RT_UpdateSectorEmisThreshold.
         const float minLight = g_sectorEmisThreshold;
@@ -647,6 +628,30 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
 
         const float ll = float( rtstate.m_sectorLightLevel );
         if( ll <= minLight )
+        {
+            return 0.f;
+        }
+
+        // rt_sector_emis was written for MAP02's red corridor panels -- a genuinely
+        // COLOURED room, not merely a bright one -- but everything above this line only
+        // ever looked at lightlevel. A plain white/grey wall in an equally bright room
+        // (MAP03 sector 54 SPACEAP1, sector 70 SPACECL1; MAP04 sector 68 SPACEAF, all
+        // reported via `whatsthat` 2026-08-21) qualified the exact same way and self-lit
+        // with nothing in the world casting it -- it reads as a fake light bolted onto a
+        // wall that is just bright, not as the room's actual light source the way MAP02's
+        // panels do.
+        //
+        // primColor (below) tints this surface with the sector's colormap hue -- see
+        // RT_SectorHue -- so that hue is also the right signal for whether this counts as
+        // "a coloured room" at all: a default/near-white colormap has near-zero
+        // saturation, MAP02's red fade does not. Gating on it keeps the coloured case and
+        // drops the neutral one without a per-texture list, and needs no shader access to
+        // the texture's own painted pixels, which this CPU-side function does not have.
+        const FVector3& sc    = rtstate.m_sectorLightColor;
+        const float     maxc  = std::max( { sc.X, sc.Y, sc.Z } );
+        const float     minc  = std::min( { sc.X, sc.Y, sc.Z } );
+        const float     satur = maxc > 1.e-4f ? ( maxc - minc ) / maxc : 0.f;
+        if( satur < float{ cvar::rt_sector_emis_saturation } )
         {
             return 0.f;
         }

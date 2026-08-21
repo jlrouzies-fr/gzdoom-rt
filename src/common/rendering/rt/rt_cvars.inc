@@ -898,6 +898,21 @@
                                                 "a light feature. This is what stops the flood: 180 means 'glowing panel' in a dark "
                                                 "corridor and 'ordinary lit room' on a bright deck, so an absolute threshold either "
                                                 "misses the panels or turns every wall in the level into a light (2026-08-07)" )
+    RT_CVAR( rt_sector_emis_saturation, 0.12f,  "minimum colour saturation of the sector's colormap tint (rtstate.m_sectorLightColor, "
+                                                "i.e. Colormap.LightColor -- the same hue primColor tints the surface with, see "
+                                                "RT_SectorHue) required for a lightlevel-qualifying surface to actually self-emit "
+                                                "[0..1, (max-min)/max over rgb]. 0 = off, any qualifying surface emits regardless "
+                                                "of colour, which is how this behaved before 2026-08-21.\n"
+                                                "WHY. rt_sector_emis was written for MAP02's red corridor panels -- a genuinely "
+                                                "coloured room, not merely a bright one -- but the threshold only ever looked at "
+                                                "lightlevel, so a plain white/grey wall in an equally bright room (MAP03 sector 54 "
+                                                "SPACEAP1, sector 70 SPACECL1; MAP04 sector 68 SPACEAF) qualified exactly the same "
+                                                "way and self-lit with nothing casting it -- it reads as a fake light on a wall "
+                                                "that is just bright, not as a light source. A near-white colormap has near-zero "
+                                                "saturation by construction, so gating on it keeps the coloured case and drops the "
+                                                "neutral one without a per-texture list. 0.12 clears default-white (~0) and Doom's "
+                                                "typical coloured fades comfortably, short of catching lightly warm/cool colormaps "
+                                                "that were never meant to read as \"a light\"" )
     RT_CVAR( rt_sector_emis_debug,      false,  "print the computed self-emission threshold and the map median it came from" )
     RT_CVAR( rt_sector_emis_override,   true,   "LET SECTOR SELF-EMISSION SURVIVE A TEXTURE THAT HAS A MATERIAL ENTRY. Sets "
                                                 "RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE on the surfaces rt_sector_emis lit, so "
