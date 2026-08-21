@@ -1750,6 +1750,27 @@ namespace classic_toggle
                 float( ll ) > g_sectorEmisThreshold ? "ABOVE: this surface SELF-EMITS"
                                                     : "below: not self-emitting" );
         {
+            // rt_sector_emis_saturation's gate, computed the SAME way l_worldemissive()
+            // computes it (rt_draw.cpp) -- off sector_t::Colormap.LightColor directly,
+            // since that field is what push_sectorlight() feeds in during the real draw
+            // (see hw_flats.cpp/hw_walls.cpp: Colormap = frontsector->Colormap in the
+            // common case). Answers the question the lightlevel line above cannot:
+            // whether the colour gate is what is actually keeping this surface dark or
+            // lit, not just whether it crossed the lightlevel threshold.
+            const PalEntry lc    = d.HitSector->Colormap.LightColor;
+            const float    r     = lc.r / 255.f;
+            const float    g     = lc.g / 255.f;
+            const float    b     = lc.b / 255.f;
+            const float    maxc  = std::max( { r, g, b } );
+            const float    minc  = std::min( { r, g, b } );
+            const float    satur = maxc > 1.e-4f ? ( maxc - minc ) / maxc : 0.f;
+            const float    gate  = float{ cvar::rt_sector_emis_saturation };
+            Printf( "           colormap tint %d,%d,%d  saturation %.3f  (rt_sector_emis_saturation "
+                    "%.2f -> %s)\n",
+                    lc.r, lc.g, lc.b, satur, gate,
+                    satur >= gate ? "PASSES the colour gate" : "GATED OUT by colour" );
+        }
+        {
             // The frame test, printed: what does this element sit inside?
             int hi = -1, hiIdx = -1;
             for( auto ln : d.HitSector->Lines )
