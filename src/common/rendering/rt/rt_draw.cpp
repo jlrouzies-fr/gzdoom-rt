@@ -599,6 +599,22 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             return 0.f;
         }
 
+        // Key doors (SDOOR1..SDOORGB, the whole `door` family in texture-status.md) are
+        // coloured ON PURPOSE -- the tint is which key it needs, not a light -- and that
+        // colour is exactly the kind rt_sector_emis_saturation is tuned to LET THROUGH,
+        // because it is real, deliberate saturation, not a warm/cream near-neutral like
+        // MAP04's SPACEAF. So the colour gate cannot tell a key door from MAP02's red
+        // corridor panels; the two need different treatment for reasons the colormap
+        // alone does not encode. Reported repeatedly by colour: MAP02 SDOOR6 yellow
+        // (docs/open-issues-rt-lighting.md #1.6, 2026-08-04 -- a DIFFERENT bug, the
+        // pre-forceWorldWhiteRgb vertex-colour wash, already fixed there), MAP04 blue,
+        // and a red key door elsewhere (2026-08-21) -- one texture family, not one map
+        // or one colour, so excluded by family rather than chased per report again.
+        if( texname && strncmp( texname, "SDOOR", 5 ) == 0 )
+        {
+            return 0.f;
+        }
+
         const float strength = float{ cvar::rt_sector_emis };
         // Map-relative, not absolute — see RT_UpdateSectorEmisThreshold.
         const float minLight = g_sectorEmisThreshold;
