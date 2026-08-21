@@ -16,6 +16,27 @@
     RT_CVAR( rt_cpu_cullmode,           0,      "[IMPACTS CPU PERFORMANCE HEAVILY] 0: BSP + all neighbor sectors of visible,  1 - original GZDoom's BSP/clip checks,  2: uploading whole map, no culling at all" )
     RT_CVAR( rt_cpu_nocullradius,       10.f,   "[IMPACTS CPU PERFORMANCE] Radius (in meters) in which culling must not be applied. Applicable with rt_cpu_cullmode=0" )
 
+    RT_CVAR_NOARCH( rt_cull_neighbor_subsector, true,
+                                                "1 = cullmode 0's 'neighbor of visible' expansion (hw_bsp.cpp) works per "
+                                                "SUBSECTOR, 0 = the original per-SECTOR behaviour. A Doom sector can own "
+                                                "many subsectors spread across the whole map, and the neighbor test only "
+                                                "needs ONE shared seg to fire -- so under the old behaviour, one tiny "
+                                                "shared edge with a visible sector uploaded that sector's ENTIRE subsector "
+                                                "list, including walls nowhere near the seg that made it 'adjacent'.\n"
+                                                "MAP05 sector 17 (an open-sky canyon) shares an ~8-map-unit edge with "
+                                                "sector 58 (a small lit fixture box). Whenever anything near sector 58 gets "
+                                                "seeded visible, the old behaviour uploaded sector 17's far wall too -- "
+                                                "which then renders as if it plugs the canyon shut, independent of whether "
+                                                "that wall is actually in view. rt_cpu_nocullradius cannot touch this: the "
+                                                "neighbor expansion is unconditional, not gated by the radius. Reported "
+                                                "2026-08-21, screen/map5NotCulledWall.png.\n"
+                                                "The fix scopes the identical one-hop adjacency test to the specific "
+                                                "subsector on each side of a seg (seg_t::PartnerSeg->Subsector) instead of "
+                                                "every subsector the far sector happens to own. A sector spanning one small "
+                                                "room is unaffected either way. Default on; kept as a switch in case some "
+                                                "other map relied on the wider reach to avoid a DIFFERENT pop-in -- not "
+                                                "confirmed to happen anywhere, just not ruled out." )
+
     RT_CVAR( rt_menu_hidehud,           true,   "hide the in-game HUD while a menu is open. The status bar is drawn every "
                                                 "frame regardless of what is on top of it, so a long options page runs its "
                                                 "last few lines straight through the ammo counters and the mugshot -- the "

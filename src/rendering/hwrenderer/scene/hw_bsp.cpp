@@ -1182,7 +1182,89 @@ void HWDrawInfo::RenderBSPNode (void *node)
 		}
 
 
-		// add neighbor sectors
+		// add neighbor sectors -- see rt_cull_neighbor_subsector for why this has
+		// two implementations. The subsector one is the fix; the sector one below
+		// is the original behaviour, kept for A/B.
+		if( cvar::rt_cull_neighbor_subsector )
+		{
+			static auto rt_subsectorvis = std::vector< bool >{};
+			rt_subsectorvis.resize( Level->subsectors.size() );
+			rt_subsectorvis.assign( rt_subsectorvis.size(), false );
+
+			// Seed at the SAME granularity as the base rt_sectorvis pass above
+			// (a directly-drawn seg's own subsector), not the sector it belongs to.
+			for( const seg_t& seg : level.segs )
+			{
+				if( seg.segnum < 0 || seg.segnum >= int( rt_segdrawn.size() ) )
+				{
+					continue;
+				}
+				if( rt_segdrawn[ seg.segnum ] && seg.Subsector )
+				{
+					int ssnum = seg.Subsector->Index();
+					if( ssnum >= 0 && ssnum < int( rt_subsectorvis.size() ) )
+					{
+						rt_subsectorvis[ ssnum ] = true;
+					}
+				}
+			}
+
+			// Also seed whatever the radius shell above folded into rt_sectorvis.
+			// That pass is deliberately sector-granularity -- "everything within N
+			// metres regardless of visibility" has no finer BSP-derived answer to
+			// give -- so every subsector of a radius-included sector seeds here.
+			for( subsector_t& ss : Level->subsectors )
+			{
+				if( ss.sector && ss.sector->sectornum >= 0 &&
+				    ss.sector->sectornum < int( rt_sectorvis.size() ) &&
+				    rt_sectorvis[ ss.sector->sectornum ] )
+				{
+					int ssnum = ss.Index();
+					if( ssnum >= 0 && ssnum < int( rt_subsectorvis.size() ) )
+					{
+						rt_subsectorvis[ ssnum ] = true;
+					}
+				}
+			}
+
+			// One-hop neighbor expansion, scoped to the SPECIFIC subsector on each
+			// side of a seg (its partner's own subsector) instead of every
+			// subsector the far sector happens to own -- this is the fix.
+			static auto rt_subsectorvis_expanded = std::vector< bool >{};
+			rt_subsectorvis_expanded = rt_subsectorvis;
+
+			for( seg_t& seg : Level->segs )
+			{
+				if( !seg.Subsector || !seg.PartnerSeg || !seg.PartnerSeg->Subsector )
+				{
+					continue;
+				}
+				int mine  = seg.Subsector->Index();
+				int other = seg.PartnerSeg->Subsector->Index();
+				if( mine < 0 || mine >= int( rt_subsectorvis.size() ) ||
+				    other < 0 || other >= int( rt_subsectorvis.size() ) )
+				{
+					continue;
+				}
+				if( rt_subsectorvis[ mine ] )
+				{
+					rt_subsectorvis_expanded[ other ] = true;
+				}
+			}
+
+			for( subsector_t& ss : Level->subsectors )
+			{
+				int ssnum = ss.Index();
+				if( ssnum >= 0 && ssnum < int( rt_subsectorvis_expanded.size() ) &&
+				    rt_subsectorvis_expanded[ ssnum ] )
+				{
+					DoSubsector( &ss );
+				}
+			}
+
+			return;
+		}
+
 		sectorvis_expanded.assign( sectorvis_expanded.size(), false );
 		for( seg_t& seg : Level->segs )
 		{
