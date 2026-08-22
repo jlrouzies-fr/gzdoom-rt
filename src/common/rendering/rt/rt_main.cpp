@@ -3146,6 +3146,8 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .nrdPhiLuminance                    = std::max( 0.0f, float( cvar::rt_nrd_philum ) ),
         .nrdMinHitDistWeight                = std::max( 0.0f, float( cvar::rt_nrd_minhitdist ) ),
         .nrdAntiFirefly                     = static_cast< RgBool32 >( bool( cvar::rt_nrd_antifirefly ) ),
+        .svgfFp                             = uint32_t( std::clamp( int( cvar::rt_svgf_fp ), 0, 2 ) ),
+        .svgfFpGrad                         = static_cast< RgBool32 >( bool( cvar::rt_svgf_fp_grad ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
