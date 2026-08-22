@@ -310,7 +310,49 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
         // "Denoiser path: ...", "ReSTIR: initialSamples=..." and friends across
         // the picture on every level load. One line, and it covers every
         // message RTGL1 emits.
-        Printf( RT_DiagPrintLevel(), "%s\n", pMessage );
+        //
+        // De-duplicate identical CONSECUTIVE warnings. RTGL1 has no per-frame
+        // "say this once" concept of its own -- "No camera provided via API,
+        // nor through .gltf" is emitted from inside rgStartFrame/rgDrawFrame
+        // every single frame the engine fails to upload one, and the failure
+        // mode that hits that (I_Error unwinding out of a level -- see
+        // p_saveg.cpp's savegame-checksum check) does not resolve itself for
+        // many frames, so the naive Printf above turned into an unbounded
+        // flood: one line per frame, forever (measured ~10/sec), into both
+        // the console buffer and rt-console.log. This does not fix why the
+        // camera stopped coming in -- it only stops one warning from
+        // drowning the log while that happens.
+        //
+        // A pure "print once, then go silent until the text changes" would
+        // go silent FOREVER on a genuinely stuck repeat -- the text never
+        // changes, so the closing summary line never fires and a log tail
+        // reads as if nothing is happening. Cap the silence instead, but at a
+        // deliberately long interval -- this is "print once", not a
+        // heartbeat; the re-announce only exists so a session left running
+        // for a very long time still leaves a trail, not to remind you every
+        // few seconds that it's still stuck.
+        static std::string s_lastWarning;
+        static int         s_repeatCount     = 0;
+        constexpr int      s_reannounceEvery = 18000; // ~10 min of "No camera" at ~30fps
+        if( pMessage == s_lastWarning )
+        {
+            if( ++s_repeatCount % s_reannounceEvery == 0 )
+            {
+                Printf( RT_DiagPrintLevel(), "(still repeating -- %d time%s so far) %s\n",
+                       s_repeatCount, s_repeatCount == 1 ? "" : "s", pMessage );
+            }
+        }
+        else
+        {
+            if( s_repeatCount > 0 )
+            {
+                Printf( RT_DiagPrintLevel(), "(previous message repeated %d more time%s)\n",
+                       s_repeatCount, s_repeatCount == 1 ? "" : "s" );
+            }
+            s_lastWarning = pMessage;
+            s_repeatCount = 0;
+            Printf( RT_DiagPrintLevel(), "%s\n", pMessage );
+        }
     }
     else if( flags & RG_MESSAGE_SEVERITY_INFO )
     {
