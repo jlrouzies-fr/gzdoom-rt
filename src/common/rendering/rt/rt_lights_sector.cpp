@@ -313,9 +313,18 @@ void RT_UploadGzDoomDynamicLights()
             // showing static has to. Retribution ships no 9804 at all, so this split
             // cannot move an existing fixture; the SMONBA readout panels are the only
             // ones that take this branch. See rt_dynlight_rndflicker_floor.
+            // Pulse (9801) gets the same escape hatch, for the same reason and by
+            // the same rule: negative means "inherit rt_dynlight_blink_floor", so
+            // the default cannot move a fixture that already exists. The SMONF
+            // panels need a wider swing than the 0.8 the flicker wall settled on --
+            // their texture ramps about 1.8x and a 1.25x light beside it reads
+            // static. See rt_dynlight_pulse_floor.
+            const float pulseFloor = float{ cvar::rt_dynlight_pulse_floor };
             const float floor = std::clamp(
                 light->lighttype == RandomFlickerLight
                     ? float{ cvar::rt_dynlight_rndflicker_floor }
+                : ( light->lighttype == PulseLight && pulseFloor >= 0.f )
+                    ? pulseFloor
                     : float{ cvar::rt_dynlight_blink_floor },
                 0.f,
                 1.f );
@@ -334,6 +343,23 @@ void RT_UploadGzDoomDynamicLights()
         if( light->lighttype == FlickerLight || light->lighttype == RandomFlickerLight )
         {
             flickerScale = std::max( 0.f, float{ cvar::rt_dynlight_flicker_scale } );
+        }
+        // ...and Pulse (9801) needs its own, or it cannot animate AT ALL.
+        //
+        // Without a trim a pulse is hi * rt_dynlight_intensity = 20 * 40 = 800 at
+        // the crest and 640 at the trough, and rt_dynlight_max clamps at 500 -- so
+        // the WHOLE swing sits above the ceiling and the light is pinned flat at
+        // 500 every frame. Reported as "they are static" (2026-08-22) on the SMONF
+        // panels, and the three 9801s Retribution already ships are clamped the
+        // same way. Radius cannot buy the headroom back: rt_dynlight_minradius 16
+        // drops any light small enough to fit under the clamp.
+        //
+        // Defaults to 1.0, so this is inert until pinned -- the reason the flicker
+        // trim above deliberately excluded PulseLight was that folding the two
+        // together would have retuned authored content silently.
+        else if( light->lighttype == PulseLight )
+        {
+            flickerScale = std::max( 0.f, float{ cvar::rt_dynlight_pulse_scale } );
         }
 
         float intensity = hi * intensityScale * flickerScale * blink;

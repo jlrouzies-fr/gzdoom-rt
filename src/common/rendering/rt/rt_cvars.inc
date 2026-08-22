@@ -225,6 +225,33 @@
                                                 "readout panels (PANEL_LAMPS in tools/make_seqlight_fix.py), which are the only "
                                                 "9804s in the game (2026-08-12)" )
 
+    RT_CVAR( rt_dynlight_pulse_scale,   1.0f,   "intensity trim for PulseLight (9801) only -- the Pulse twin of "
+                                                "rt_dynlight_flicker_scale.\n"
+                                                "\n"
+                                                "WITHOUT IT A PULSE CANNOT ANIMATE. Intensity is hi * "
+                                                "rt_dynlight_intensity, so a 20/16 fixture at the pinned 40 runs "
+                                                "640..800 across its cycle while rt_dynlight_max clamps at 500: the "
+                                                "ENTIRE swing sits above the ceiling and the light is pinned flat at "
+                                                "500 every frame. Reported as 'they are static' on the SMONF panels "
+                                                "(2026-08-22); the three 9801s Retribution already ships are clamped "
+                                                "the same way and have simply never been looked at. Radius cannot buy "
+                                                "the headroom back -- rt_dynlight_minradius 16 drops any light small "
+                                                "enough to fit underneath.\n"
+                                                "\n"
+                                                "1.0 is inert, so this changes nothing until pinned. That is the point: "
+                                                "rt_dynlight_flicker_scale deliberately excluded PulseLight because "
+                                                "folding the two together would have retuned authored content nobody "
+                                                "had complained about." )
+    RT_CVAR( rt_dynlight_pulse_floor,  -1.0f,   "blink floor for PulseLight (9801) only. NEGATIVE = inherit "
+                                                "rt_dynlight_blink_floor, which is the default and is why this cannot "
+                                                "move an existing fixture on its own.\n"
+                                                "\n"
+                                                "Same escape hatch as rt_dynlight_rndflicker_floor, for the same "
+                                                "reason: rt_dynlight_blink_floor is GLOBAL, and the 0.8 that settled "
+                                                "the 199-panel SMON flicker wall leaves a pulse swinging only 1.25x. "
+                                                "Beside a texture whose own lit texels ramp about 1.8x, that reads as "
+                                                "a static light next to a blinking panel. Lower = wider swing." )
+
     RT_CVAR( rt_dynlight_flicker,       true,   "upload Flicker/RandomFlicker FDynamicLights (9802).\n"
                                                 "\n"
                                                 "Was false, and that suppressed EVERY SMON WALL MONITOR LIGHT IN THE GAME. The "
