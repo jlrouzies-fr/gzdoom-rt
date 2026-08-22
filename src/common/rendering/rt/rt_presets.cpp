@@ -183,6 +183,10 @@ constexpr MoonPreset RT_MOON_PRESETS[] = {
       "colonnade's want -y -- and 135 was the geometric compromise between them. "
       "90 reads better than the compromise did: it rakes hard through the north "
       "colonnade and still catches the west windows obliquely." },
+    { "map02", 120.f, 40.f, -1.f, true, -1.f,
+      "`moon 120 40` -- aimed in play and settled there (2026-08-22). Aim only: "
+      "intensity and sky stay whatever the launcher pinned, so this row says the "
+      "one thing it is for and cannot go stale against a later tuning pass." },
 };
 
 // The launcher's aim, captured once before any preset overwrites it, so a map
@@ -428,6 +432,20 @@ void RT_ApplyMoonPreset( const char* mapname )
     cvar::rt_sun_intensity = ( p && p->intensity >= 0.f ) ? p->intensity : g_moon_base_i;
     cvar::rt_moon_geo      = p ? p->disc : g_moon_base_disc;
     cvar::rt_sky           = ( p && p->sky >= 0.f ) ? p->sky : g_moon_base_sky;
+
+    // Say what was applied. The cloud and fog tables announce themselves and this
+    // one did not, which makes a row impossible to confirm from a log: `moon` on
+    // the command line runs BEFORE the level loads, so it prints the launcher's
+    // pinned aim no matter what the table then does. Adding a row and checking it
+    // took effect had no evidence behind it until this line existed.
+    Printf( RT_DiagPrintLevel(),
+            "RT moon: %s -> azimuth %.0f altitude %.0f intensity %.0f disc %s%s\n",
+            mapname ? mapname : "(baseline capture)",
+            float{ cvar::rt_sun_b },
+            float{ cvar::rt_sun_a },
+            float{ cvar::rt_sun_intensity },
+            bool{ cvar::rt_moon_geo } ? "on" : "off",
+            p ? " [RT_MOON_PRESETS row]" : " [no row -- launcher's values]" );
 }
 
 //-----------------------------------------------------------------------------
