@@ -2096,6 +2096,12 @@
                                                 "if it does not, the ray is not being blocked and the cause is in the "
                                                 "geometry upload or the shadow cull mask." )
 
+    RT_CVAR_NOARCH( rt_debug_show,               0,    "Debug: RTGL DEBUG_SHOW_FLAG bits, the dev window's layer views as a "
+                                                "cvar. 2 = antilag gradients, 4 = UNFILTERED direct diffuse (raw, before "
+                                                "any denoiser: if an artefact is here it is upstream of A-SVGF), 8 = "
+                                                "unfiltered specular, 16 = unfiltered indirect, 32 = ONLY denoised direct "
+                                                "diffuse, 64 = only specular, 128 = only indirect diffuse, 1024 = normals. "
+                                                "Bisect a banding artefact by layer with these before touching a denoiser." )
     RT_CVAR_NOARCH( rt_debug_restir_m,       false,    "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
                                                 "radiance, as a green ramp (M/32; black = M=1, the worst case). ReSTIR at "
                                                 "1 spp only converges because temporal reuse grows M. Stand still and "
@@ -2194,6 +2200,21 @@
                                                 "flash dying) is not measured there. On: first-person pixels, current "
                                                 "or previous, are never chosen as the stratum's sample. (A light that "
                                                 "vanished already reads as a full change -- checked, not a bug.)" )
+    RT_CVAR_NOARCH( rt_svgf_indir_maxhist,     16.f,   "A-SVGF INDIRECT history cap, in frames. 0 = stock (256). THE GHOST: "
+                                                "the bounce light of a rocket flash was accumulated over 256 frames, so "
+                                                "the walls stayed lit for seconds after the light itself had died -- "
+                                                "read in play as 'the light lingers' -- and the weapon's silhouette "
+                                                "restarting that history punched a dark hole in the ghost: the trail "
+                                                "(screen/smearingIssueOverLingeringLight.png). Bisected with "
+                                                "rt_debug_show: raw direct clean, denoised direct clean, the linger and "
+                                                "the band both live in indirect. 16 = fully faded in ~0.5-1 s at 60 fps; "
+                                                "the cost is noisier indirect, since fewer frames average. "
+                                                "A/B: tools/arms/lingtrail-*.cfg" )
+    RT_CVAR_NOARCH( rt_svgf_indir_antilag,     true,   "A-SVGF indirect antilag WITHOUT its brightness suppression. Stock "
+                                                "multiplies the indirect history drop by 1-smoothstep(0,0.5,indirect "
+                                                "brightness) -- 'if it's bright enough, don't drop history' -- which "
+                                                "protects exactly the brightest ghosts. On: a direct-light drop flushes "
+                                                "indirect history regardless of how bright the stale bounce is." )
     RT_CVAR_NOARCH( rt_rr_demod_filter,        1,      "DLSS-RR demodulation: how the modulation factor is re-applied at "
                                                 "output res. 0 = bilinear (softest), 1 = Catmull-Rom (sharp edges, no "
                                                 "blockiness -- default), 2 = nearest (full chunky pixel-art reapply; "

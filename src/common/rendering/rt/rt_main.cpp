@@ -3103,6 +3103,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .shadowSamples                      = uint32_t( std::clamp( int( cvar::rt_shadow_samples ), 1, 8 ) ),
         .debugRestirM                       = static_cast< RgBool32 >( bool( cvar::rt_debug_restir_m ) ),
         .debugVisibility                    = uint32_t( std::clamp( int( cvar::rt_debug_visibility ), 0, 2 ) ),
+        .debugShowFlags                     = uint32_t( std::max( 0, int( cvar::rt_debug_show ) ) ),
         .restirTemporalJitter               = std::clamp( float( cvar::rt_restir_tjitter ), 0.0f, 8.0f ),
         .rrSpecularHitDistance              = static_cast< RgBool32 >( bool( cvar::rt_rr_spechitdist ) ),
         .directSamples                      = uint32_t( std::clamp( int( cvar::rt_spp_direct ), 1, 8 ) ),
@@ -3148,6 +3149,8 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .nrdAntiFirefly                     = static_cast< RgBool32 >( bool( cvar::rt_nrd_antifirefly ) ),
         .svgfFp                             = uint32_t( std::clamp( int( cvar::rt_svgf_fp ), 0, 2 ) ),
         .svgfFpGrad                         = static_cast< RgBool32 >( bool( cvar::rt_svgf_fp_grad ) ),
+        .svgfIndirMaxHist                   = std::clamp( float( cvar::rt_svgf_indir_maxhist ), 0.f, 256.f ),
+        .svgfIndirAntilag                   = static_cast< RgBool32 >( bool( cvar::rt_svgf_indir_antilag ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
