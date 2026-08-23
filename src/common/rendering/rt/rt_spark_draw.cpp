@@ -361,7 +361,19 @@ void UploadSparkGlowLights()
 
     const float gi = std::max( 0.f, float{ cvar::rt_spark_glow_intensity } );
     const int   gmax = std::max( 0, int{ cvar::rt_spark_glow_max } );
-    if( gi <= 0.f || gmax == 0 || g_sparkCount == 0 )
+    // THE FIRE SKY'S EMBERS HAVE THEIR OWN BUDGET. A tinted Spark (baseRgb
+    // set -- the discriminator the draw and the sim use) is a sky ember, and
+    // there are ~80 of those in the air at once, so they would otherwise fill
+    // the global cap and the shower off a weapon impact stays dark -- or the
+    // cap is raised for them and every other effect's cost moves with it.
+    // Two lists, two caps, two intensities; the weapon sparks see no change.
+    const float ei   = std::max( 0.f, float{ cvar::rt_firesky_ember_glow_intensity } );
+    const int   emax = std::max( 0, int{ cvar::rt_firesky_ember_glow_max } );
+    if( ( gi <= 0.f || gmax == 0 ) && ( ei <= 0.f || emax == 0 ) )
+    {
+        return;
+    }
+    if( g_sparkCount == 0 )
     {
         return;
     }
@@ -377,8 +389,11 @@ void UploadSparkGlowLights()
         uint32_t idx;
     };
     static std::vector< GCand > cand;
+    static std::vector< GCand > ecand;
     cand.clear();
+    ecand.clear();
     cand.reserve( g_sparkCount );
+    ecand.reserve( g_sparkCount );
 
     for( uint32_t i = 0; i < g_sparkCount; i++ )
     {
@@ -388,26 +403,44 @@ void UploadSparkGlowLights()
             continue;
         }
         const float t = std::clamp( sp.age / std::max( 1e-4f, sp.life ), 0.f, 1.f );
+        const float d2 = ( sp.pos - eye ).LengthSquared();
+        if( sp.baseRgb != 0u )
+        {
+            // Sky embers: by distance alone. The ones that matter are the ones
+            // lying on the floor beside the player, which are the OLD ones.
+            ecand.push_back( GCand{ d2, i } );
+            continue;
+        }
         // Rank by distance, biased by age: a young spark is both brighter and
         // more interesting than an old one at the same range, and without the
         // bias the cap fills with settled embers while the shower you just made
         // stays dark.
-        const float d2 = ( sp.pos - eye ).LengthSquared();
         cand.push_back( GCand{ d2 * ( 1.f + 4.f * t * t ), i } );
     }
 
-    if( cand.size() > size_t( gmax ) )
-    {
-        std::partial_sort( cand.begin(),
-                           cand.begin() + gmax,
-                           cand.end(),
-                           []( const GCand& a, const GCand& b ) { return a.key < b.key; } );
-        cand.resize( size_t( gmax ) );
-    }
+    auto l_cap = []( std::vector< GCand >& v, int cap ) {
+        if( v.size() > size_t( cap ) )
+        {
+            std::partial_sort( v.begin(),
+                               v.begin() + cap,
+                               v.end(),
+                               []( const GCand& a, const GCand& b ) { return a.key < b.key; } );
+            v.resize( size_t( cap ) );
+        }
+    };
+    l_cap( cand, ( gi > 0.f ) ? gmax : 0 );
+    l_cap( ecand, ( ei > 0.f ) ? emax : 0 );
 
-    for( const GCand& c : cand )
+    // The ember list rides after the spark list; each carries its own
+    // intensity through the loop.
+    const size_t nSpark = cand.size();
+    cand.insert( cand.end(), ecand.begin(), ecand.end() );
+
+    for( size_t n = 0; n < cand.size(); n++ )
     {
-        const Spark& sp = s_sparks[ c.idx ];
+        const GCand& c     = cand[ n ];
+        const float  inten = ( n < nSpark ) ? gi : ei;
+        const Spark& sp    = s_sparks[ c.idx ];
 
         const float t = std::clamp( sp.age / std::max( 1e-4f, sp.life ), 0.f, 1.f );
         const float k = ( 1.f - t ) * ( 1.f - t );
@@ -424,14 +457,24 @@ void UploadSparkGlowLights()
                                        int( t * float( RT_SPARK_RAMP_N ) ) );
         const uint32_t rgb = RT_SPARK_RAMP[ ci ];
 
+        float lr = ( ( rgb >> 16 ) & 0xFF ) / 255.f;
+        float lg = ( ( rgb >> 8 ) & 0xFF ) / 255.f;
+        float lb = ( rgb & 0xFF ) / 255.f;
+        // A tinted spark (the fire sky's embers, rt_firesky_ember_color)
+        // throws its tint: the same multiply the draw applies, so a green
+        // ember lights the floor green and not the palette's yellow.
+        if( sp.baseRgb != 0u )
+        {
+            lr *= ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f;
+            lg *= ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f;
+            lb *= ( sp.baseRgb & 0xFF ) / 255.f;
+        }
+
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
-            .color     = rt.rgUtilPackColorFloat4D( ( ( rgb >> 16 ) & 0xFF ) / 255.f,
-                                                    ( ( rgb >> 8 ) & 0xFF ) / 255.f,
-                                                    ( rgb & 0xFF ) / 255.f,
-                                                    1.0f ),
-            .intensity = gi * k,
+            .color     = rt.rgUtilPackColorFloat4D( lr, lg, lb, 1.0f ),
+            .intensity = inten * k,
             .position  = { sp.pos.X, sp.pos.Y, sp.pos.Z },
             .radius    = 0.03f,
         };
@@ -736,6 +779,17 @@ void RT_DrawSparks()
             r = std::min( 1.f, tr * k * curve );
             g = std::min( 1.f, tg * k * curve );
             b = std::min( 1.f, tb * k * curve );
+        }
+        else if( sp.kind == SparkKind::Spark && sp.baseRgb != 0u )
+        {
+            // A TINTED SPARK: the fire sky's embers (rt_firesky_ember_color).
+            // The ramp stays the age curve -- hot, cooling, out -- and the
+            // tint is multiplied over it, so a green fire sky drops green
+            // embers that still dim the way the palette's do. Ordinary sparks
+            // carry baseRgb 0 and never enter here.
+            r = std::min( 1.f, r * ( ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f ) );
+            g = std::min( 1.f, g * ( ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f ) );
+            b = std::min( 1.f, b * ( ( sp.baseRgb & 0xFF ) / 255.f ) );
         }
         else if( isDbr && sp.baseRgb != 0u )
         {

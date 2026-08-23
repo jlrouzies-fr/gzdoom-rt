@@ -98,6 +98,23 @@ float RT_LightningRand( float lo, float hi )
 // or tint a map with no clouds in it.
 float g_cloudSunTransmittance[ 3 ] = { 1.f, 1.f, 1.f };
 
+// Is the directional slot carrying a lightning strike this frame rather than
+// the moon? Written by RT_DrawFrame, read by RT_VCloudsParams.
+bool g_rtSunIsLightning = false;
+
+// How much deck there is per compass bearing, 0..1. Written by RT_DrawCloudDeck
+// each frame (and zeroed by it when there is no deck), read by
+// RT_OnLightningFlash so a strike lands in cloud rather than in a gap.
+float g_cloudCoverAz[ RT_CLOUD_AZ_BINS ] = {};
+
+// hw_skyportal.cpp writes this array and cannot include rt_internal.h, so it
+// declares the bin count by hand. Two copies of a number that must agree is
+// exactly the kind of thing that goes wrong silently -- a mismatched extern is
+// a link-time success and a runtime buffer overrun -- so it is asserted here,
+// where both are visible.
+static_assert( RT_CLOUD_AZ_BINS == 36,
+               "hw_skyportal.cpp hardcodes 36; change both or neither" );
+
 
 // Drop a strike that is still in flight. Called on level load: a flash carrying
 // into the next map would keep lighting a level that has no storm at all unless
@@ -156,8 +173,11 @@ float RT_LightningFlashLevel()
     }
     // Four time constants past the last stroke is down to ~2% -- below anything
     // the tonemapper can show, and the point where holding a light on stops
-    // being worth an upload.
-    if( t > g_lightning.strokes[ g_lightning.nstrokes - 1 ].at + 4.f * tau )
+    // being worth an upload. The afterglow (RT_LightningLightLevel) can hold
+    // the strike alive longer than the flash; the window covers both.
+    const float glow = std::max( 0.f, float{ cvar::rt_lightning_afterglow } );
+    const float tail = std::max( 4.f * tau, 4.f * glow );
+    if( t > g_lightning.strokes[ g_lightning.nstrokes - 1 ].at + tail )
     {
         g_lightning.active = false;
         return 0.f;
@@ -173,6 +193,39 @@ float RT_LightningFlashLevel()
         }
     }
     return std::clamp( e, 0.f, 1.f );
+}
+
+// THE LIGHT'S ENVELOPE: the flash plus an AFTERGLOW. The lingering-light work
+// (svgfIndirMaxHist, the RR disocclusion mask, g_rt_lightcut) made the
+// denoiser stop smearing a strike for seconds after it -- correct, and it
+// also took away the only thing that made a strike read as big. This puts a
+// slow tail back ON PURPOSE, in the light itself rather than in the
+// denoiser's history: rt_lightning_afterglow_level of the peak, decaying over
+// rt_lightning_afterglow seconds from the last stroke.
+//
+// Only the DIRECTIONAL LIGHT reads this. The bolt, the deck's flash and the
+// sector flash keep RT_LightningFlashLevel: a bolt that lingers at 30% for a
+// second is the ghost that was taken out deliberately (rt_lightning_bolt_min).
+float RT_LightningLightLevel()
+{
+    const float flash = RT_LightningFlashLevel();
+    if( !g_lightning.active )
+    {
+        return flash;
+    }
+    const float glow = std::max( 0.f, float{ cvar::rt_lightning_afterglow } );
+    const float lvl  = std::clamp( float{ cvar::rt_lightning_afterglow_level }, 0.f, 1.f );
+    if( glow <= 0.f || lvl <= 0.f )
+    {
+        return flash;
+    }
+    const float t  = float( RT_GetCurrentTime() - g_lightning.t0 );
+    const float dt = t - g_lightning.strokes[ g_lightning.nstrokes - 1 ].at;
+    if( dt < 0.f )
+    {
+        return flash;
+    }
+    return std::max( flash, lvl * std::exp( -dt / glow ) );
 }
 
 // Where the current strike is, for whoever wants to draw or light along it.
@@ -205,9 +258,49 @@ void RT_OnLightningFlash()
 
     g_lightning.active   = true;
     g_lightning.t0       = RT_GetCurrentTime();
-    g_lightning.azimuth  = RT_LightningRand( 0.f, 360.f );
     g_lightning.variant  = int( RT_LightningRand( 0.f, 3.999f ) );
 
+    // WHERE THE STRIKE IS. Uniform over the compass by default, which is what a
+    // storm does and what MAP11 has always had -- but it also means the bolt is
+    // behind the player most of the time, and the bolt is only drawn for the
+    // few tenths of a second the envelope is above 0.12. The result reported
+    // from play is "the level flashes and there is no lightning anywhere":
+    // bolts rarely appear, and the flash appears to come from nothing.
+    //
+    // rt_lightning_aim_view aims a fraction of strikes into the current view
+    // instead. The BEARING is the only thing this changes -- the bolt quad and
+    // the analytic directional both read g_lightning.azimuth, so they agree
+    // afterwards exactly as they agreed before.
+    //
+    // The azimuth convention is the view yaw's: RT_DrawSkyQuad builds its
+    // direction as (sin t cos azi, cos t, sin t sin azi) in (doom_x, height,
+    // doom_y), i.e. (cos azi, sin azi) in the map plane, which is what Doom
+    // yaw already measures. No conversion, and none should be added.
+    const float aimP = std::clamp( float{ cvar::rt_lightning_aim_view }, 0.f, 1.f );
+    const bool  aimed = aimP > 0.f && RT_LightningRand( 0.f, 1.f ) < aimP;
+    const float cone  = std::clamp( float{ cvar::rt_lightning_aim_cone }, 1.f, 180.f );
+    const float yaw   = float( r_viewpoint.Angles.Yaw.Degrees() );
+
+    auto roll = [ & ] {
+        return aimed ? yaw + RT_LightningRand( -cone, cone )
+                     : RT_LightningRand( 0.f, 360.f );
+    };
+
+    g_lightning.azimuth = roll();
+
+    // AND PUT IT IN CLOUD. The deck only covers the whole sky at
+    // rt_clouds_shells 6 or more -- which is what MAP12 wants and why the
+    // default is 6 -- but turn the shells down and it has real gaps, and a bolt
+    // drawn in one is a bolt hanging in clear air with nothing around it to
+    // flash. Reported 2026-08-23.
+    //
+    // g_cloudCoverAz is the deck's own coverage per bearing, built by
+    // RT_DrawCloudDeck from the same shell walk that answers the moon's
+    // transmittance, so it cannot disagree with what was drawn. Roll a few
+    // candidates and keep the best; give up rather than loop, because a sky
+    // with NO deck at all (every bin 0) is a legitimate state -- MAP11 before
+    // its deck existed, or rt_clouds 0 -- and a strike there should still
+    // happen, just wherever it likes.
     // Guard the order rather than trusting the pair: these are two independent
     // archived cvars and nothing stops a console session from setting min above
     // max. rt_lightlevel_min/max spent a session inverted (200/1) and silently
@@ -216,7 +309,50 @@ void RT_OnLightningFlash()
                                 float{ cvar::rt_lightning_alt_max } );
     const float ahi = std::max( float{ cvar::rt_lightning_alt_min },
                                 float{ cvar::rt_lightning_alt_max } );
-    g_lightning.altitude = std::clamp( RT_LightningRand( alo, ahi ), -89.f, 89.f );
+    auto rollAlt = [ & ] { return std::clamp( RT_LightningRand( alo, ahi ), -89.f, 89.f ); };
+    g_lightning.altitude = rollAlt();
+
+    const float need = std::clamp( float{ cvar::rt_lightning_need_cloud }, 0.f, 1.f );
+    if( need > 0.f )
+    {
+        // The volumetric field can be asked about the EXACT direction; the
+        // deck's table is per bearing, probed once at mid-band, so a bolt at
+        // the edge of the altitude band could miss the cloud the probe saw.
+        // Reported 2026-08-23 as bolts "in between clouds". Bearing and
+        // altitude are therefore rolled TOGETHER here.
+        const bool exact   = RT_VCloudsActive();
+        auto       coverAt = [ & ]( float azDeg, float altDeg ) {
+            if( exact )
+            {
+                return RT_VCloudsCoverAt( azDeg, altDeg );
+            }
+            float a = std::fmod( azDeg, 360.f );
+            if( a < 0.f ) a += 360.f;
+            const int bin = std::clamp( int( a * ( RT_CLOUD_AZ_BINS / 360.f ) ),
+                                        0, RT_CLOUD_AZ_BINS - 1 );
+            return g_cloudCoverAz[ bin ];
+        };
+
+        float best = coverAt( g_lightning.azimuth, g_lightning.altitude );
+        for( int i = 0; i < 16 && best < need; i++ )
+        {
+            const float cand  = roll();
+            const float calt  = rollAlt();
+            const float c     = coverAt( cand, calt );
+            if( c > best )
+            {
+                best                 = c;
+                g_lightning.azimuth  = cand;
+                g_lightning.altitude = calt;
+            }
+        }
+        if( int{ cvar::rt_lightning_debug } )
+        {
+            Printf( "rt_lightning: bearing %.0f alt %.0f, %s coverage %.2f (want %.2f)\n",
+                    g_lightning.azimuth, g_lightning.altitude,
+                    exact ? "field" : "deck", best, need );
+        }
+    }
 
     const int maxstrokes = std::clamp( int{ cvar::rt_lightning_strokes }, 1, 6 );
     const int n          = 1 + int( RT_LightningRand( 0.f, float( maxstrokes ) - 0.001f ) );

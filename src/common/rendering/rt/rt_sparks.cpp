@@ -853,10 +853,17 @@ void RT_UpdateSparks()
             // splinter floats down, and that difference is most of what tells
             // them apart in motion.
             const bool           isDbr = IsChunk( sp.kind );
+            // A SKY EMBER (rt_firesky.cpp: a tinted Spark -- baseRgb is the
+            // discriminator the draw uses too). It does not bounce: a flake
+            // of burning ash lands and lies there, and the spring-back the
+            // impact sparks have read as wrong on it (2026-08-23).
+            const bool           isEmber = sp.kind == SparkKind::Spark && sp.baseRgb != 0u;
             const DebrisProfile& pr    = ProfileFor( sp.surf );
             const float          kGrav = isDbr ? gravityD * pr.gravity : gravity;
             const float          kBnce =
-                isDbr ? std::clamp( bounceD * pr.bounce, 0.f, 1.f ) : bounce;
+                isEmber ? 0.f
+                : isDbr ? std::clamp( bounceD * pr.bounce, 0.f, 1.f )
+                        : bounce;
             const float kFric =
                 isDbr ? std::clamp( fric * pr.friction, 0.f, 1.f ) : fric;
             const float kDrag = drag;
@@ -913,11 +920,31 @@ void RT_UpdateSparks()
                         if( sp.pos.Z < zf )
                         {
                             sp.pos.Z = zf;
-                            if( sp.vel.Z < 0.f )
+                            if( isEmber )
+                            {
+                                // Lands dead: no bounce, no skid. Settles on
+                                // this step rather than waiting for TIER 3's
+                                // rest speed, so it never jitters on the floor.
+                                sp.vel = FVector3{ 0, 0, 0 };
+                            }
+                            else if( sp.vel.Z < 0.f )
                             {
                                 sp.vel.Z = -sp.vel.Z * kBnce;
                                 sp.vel.X *= ( 1.f - kFric );
                                 sp.vel.Y *= ( 1.f - kFric );
+                            }
+                        }
+                        // A sky ember above an F_SKY1 ceiling is simply high
+                        // up: there is no plane there to clamp to, and it
+                        // fell from the sky in the first place. One that
+                        // drifts over a ROOFED sector while still above its
+                        // ceiling is gone -- it would otherwise be snapped
+                        // down through the roof into the room.
+                        else if( sp.pos.Z > zc && isEmber )
+                        {
+                            if( sec->GetTexture( sector_t::ceiling ) != skyflatnum )
+                            {
+                                sp.age = sp.life;
                             }
                         }
                         else if( sp.pos.Z > zc )

@@ -291,7 +291,13 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         }
         if( rtstate.is< RtPrim::Sky >() )
         {
-            return RG_MESH_PRIMITIVE_SKY | RG_MESH_PRIMITIVE_TRANSLUCENT;
+            // The volumetric cloud composite mode rides on the primitive flags
+            // (hw_skyportal.cpp pushes them per draw); RTGL1 ignores both
+            // unless the clouds are on.
+            return RG_MESH_PRIMITIVE_SKY | RG_MESH_PRIMITIVE_TRANSLUCENT |
+                   ( rtstate.is< RtPrim::SkyClouds >() ? RG_MESH_PRIMITIVE_SKY_CLOUDS : 0 ) |
+                   ( rtstate.is< RtPrim::SkyBehindClouds >() ? RG_MESH_PRIMITIVE_SKY_BEHIND_CLOUDS
+                                                              : 0 );
         }
         if( rtstate.is< RtPrim::Particle >() )
         {
@@ -1049,10 +1055,17 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                 return RgMeshPrimitiveFlags( 0 );
             }
 
-            // One line per distinct frame name per session. Printf is
-            // gzdoom's own, so it is NOT subject to RTGL's message gates.
+            // One line per distinct frame name per session, and BEHIND
+            // rt_water_debug. Printf is gzdoom's own, so it is not subject to
+            // RTGL's message gates -- which meant RT_DiagPrintLevel kept it off
+            // the notify overlay and still wrote every line to rt-console.log:
+            // 112 of them on a Retribution map, most of the session log before
+            // the player had moved. A per-texture classification record is a
+            // DIAGNOSTIC, so it belongs behind the water diagnostic's own cvar
+            // rather than in the always-on stream. `rt_water_debug 1` brings it
+            // back, alongside the magenta surface paint it already drives.
             static std::unordered_set< std::string > s_seen;
-            if( s_seen.insert( texname ).second )
+            if( int{ cvar::rt_water_debug } != 0 && s_seen.insert( texname ).second )
             {
                 Printf( RT_DiagPrintLevel(),
                         "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER, "
@@ -1115,6 +1128,30 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     // The flag is what makes the number survive: TextureMeta overwrites the primitive's
     // emissive with the material's a moment later unless it is told not to.
     auto l_lampglow = [ & ]() -> std::pair< RgMeshPrimitiveFlags, float > {
+        // A bulb panel on a chase pillar owns its emission outright, and takes
+        // precedence over everything below: the whole point is that the painted
+        // bulbs go out when the crest is elsewhere, which no sector ramp or
+        // material constant can express. Same flag requirement as the lamp panes --
+        // without EMISSIVE_OVERRIDE, TextureMeta.cpp replaces this a moment later.
+        if( !isUI && rtstate.is< RtPrim::ChasedPanel >() )
+        {
+            // BOTH flags, and neither is optional.
+            //
+            // EMISSIVE_OVERRIDE stops TextureMeta.cpp replacing the value with
+            // SFLATAQ's own emissiveMult 20 a moment from now.
+            //
+            // EMISSIVE_SCREEN_SCALED is what makes it VISIBLE. With an _e map,
+            // RTGL1's primary and reflection paths use the RAW _e sample and apply
+            // emissiveMult on the indirect path ONLY (HitInfo.inl), so without this
+            // the bulbs keep their painted brightness on screen through the entire
+            // cycle and all the chase moves is their contribution to bounce light.
+            // That is exactly how this shipped twice.
+            return { RgMeshPrimitiveFlags( RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE |
+                                           ( cvar::rt_pillar_chase_bulb_screen
+                                                 ? RG_MESH_PRIMITIVE_EMISSIVE_SCREEN_SCALED
+                                                 : 0 ) ),
+                     RT_ChasePanelEmisCurrent() };
+        }
         if( isUI || !cvar::rt_ceiling_bulb_noemis || !rtstate.is< RtPrim::LatticeLitFlat >() )
         {
             const float we = l_worldemissive();
@@ -1293,6 +1330,12 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         .color        = primColor,
         .emissive     = ghostNoEmis ? 0.f : lampGlowEmis,
         .classicLight = lightlevel_to_classic( isUI, mLightParms[ 3 ] ),
+        // Read by RTGL1 only under EMISSIVE_SCREEN_SCALED, which only a chased
+        // panel sets: its GI on the true crest, while .emissive above is its
+        // bulbs on the lagged one.
+        .emissiveGi   = ( !isUI && rtstate.is< RtPrim::ChasedPanel >() )
+                            ? RT_ChasePanelGiCurrent()
+                            : 0.f,
     };
 
 #ifndef NDEBUG

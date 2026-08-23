@@ -1592,6 +1592,11 @@ CCMD( rt_sky_here )
 void RT_OnLevelLoad( const char* mapname )
 {
     RT_OnLevelLoadPresets( mapname );
+    // AFTER the preset tables, never before. RT_CloudApplyPresets writes
+    // rt_clouds unconditionally when rt_clouds_presets is on, so a fire sky
+    // that set up its deck first would have it overwritten and would look like
+    // the cvar does nothing.
+    RT_FireSkyOnLevelLoad( mapname );
 
     g_resetposteffects = true;
     g_resetfluid       = true;
@@ -2245,13 +2250,18 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
 
         float ltngI   = 0.f;
         float ltngAzi = 0.f, ltngAlt = 0.f;
-        if( const float flash = RT_LightningFlashLevel(); flash > 0.002f )
+        // The LIGHT's envelope, which carries the afterglow tail the visible
+        // flash does not (rt_lightning_afterglow).
+        if( const float flash = RT_LightningLightLevel(); flash > 0.002f )
         {
             RT_LightningAim( &ltngAzi, &ltngAlt, nullptr );
             ltngI = std::max( 0.f, float{ cvar::rt_lightning_intensity } ) * flash;
         }
 
         const bool useLightning = ltngI > sunI;
+        // Read by RT_VCloudsParams (built further down this function): the
+        // clouds must not occlude a strike, which is inside the deck.
+        g_rtSunIsLightning = useLightning;
 
         if( useLightning || sunI > 0.f )
         {
@@ -2348,7 +2358,42 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         }
     }
 
-    // Unattended capture -- see rt_autoshot.
+    // Unattended capture -- see rt_autoshot. rt_autoshot_pitch holds the view
+    // up for sky captures; gzdoom's pitch is positive DOWN.
+    if( primaryLevel && float{ cvar::rt_autoshot_pitch } != 0.f )
+    {
+        if( auto* mo = players[ consoleplayer ].mo )
+        {
+            const float deg = std::clamp( float{ cvar::rt_autoshot_pitch }, -89.f, 89.f );
+            mo->Angles.Pitch = DAngle::fromDeg( -deg );
+        }
+    }
+    // The height hold is a CAPTURE tool and nothing else: it runs only while an
+    // rt_autoshot is pending (the shot tic has not passed), and it puts the
+    // flags it set back afterwards. The first cut held whenever the cvar was
+    // non-zero and never cleared MF_NOGRAVITY|MF_NOCLIP, which is "I fall from
+    // the ceiling on map map23" (reported 2026-08-23).
+    {
+        static bool s_held = false;
+        const bool  want   = primaryLevel && float{ cvar::rt_autoshot_height } > 0.f &&
+                           int{ cvar::rt_autoshot } > 0 &&
+                           primaryLevel->maptime <= int{ cvar::rt_autoshot } + 2;
+        if( auto* mo = primaryLevel ? players[ consoleplayer ].mo : nullptr )
+        {
+            if( want )
+            {
+                mo->flags |= MF_NOGRAVITY | MF_NOCLIP;
+                mo->Vel.Z = 0;
+                mo->SetZ( mo->floorz + double( float{ cvar::rt_autoshot_height } ) );
+                s_held = true;
+            }
+            else if( s_held )
+            {
+                mo->flags &= ~( MF_NOGRAVITY | MF_NOCLIP );
+                s_held = false;
+            }
+        }
+    }
     if( primaryLevel && ( int{ cvar::rt_autoshot } > 0 || int{ cvar::rt_autoquit } > 0 ) )
     {
         const int t = primaryLevel->maptime;
@@ -2426,6 +2471,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // Dust motes. After the sparks so both batches are built in one place, and
     // stateless -- there is nothing to step, so there is no Update half.
     RT_DrawDust();
+    // The fire sky's meteor pool and its two schedulers. Stepped HERE and not
+    // in the sky draw: a sealed room submits no sky portal, and scheduling
+    // strikes there would stop the storm exactly while the player is indoors,
+    // which is where a flash through a doorway is worth most. The meteor QUADS
+    // are drawn from hw_skyportal.cpp, which owns the sky vertex buffer.
+    RT_FireSkyTick();
     RT_UploadSparkLights();
     RT_SparkDebugTick();
     RT_DebugNearbyWallTextures();
@@ -2517,6 +2568,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .lavaPulseSpeed         = cvar::rt_lava_pulse_speed,
         .lavaGiBoost            = std::max( 0.f, float{ cvar::rt_lava_gi } ),
         .lavaDebug              = cvar::rt_lava_debug ? 1.f : 0.f,
+
         .lavaTint               = l_col255( cvar::rt_lava_tint_r,
                                             cvar::rt_lava_tint_g,
                                             cvar::rt_lava_tint_b ),
@@ -2629,8 +2681,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // ab-smoke.cmd fogsafe asserts it did not.
     constexpr float RT_VOLUME_REF_FAR = 30.f;
 
-    const float volume_dens = float{ cvar::rt_volume_scatter } *
-                              ( std::max( 0.001f, smoke_far ) / RT_VOLUME_REF_FAR );
+    // NO GLOBAL HAZE UNDER A FIRE SKY. On the five fire maps (and wherever
+    // rt_fireskies_new is on) the medium is cut to zero: a grey scattering
+    // haze lit by the overhead light reads as fog over the sky, which is the
+    // opposite of a burning one (MAP23, 2026-08-23). The cvar itself is not
+    // written -- it is CVAR_ARCHIVE and every other map wants it -- this is
+    // the effective value only. Fog presets and smoke are untouched.
+    const bool  fire_sky    = RT_FireSkyMap() || RT_FireSkyActive();
+    const float volume_dens = fire_sky ? 0.f
+                                       : float{ cvar::rt_volume_scatter } *
+                                             ( std::max( 0.001f, smoke_far ) / RT_VOLUME_REF_FAR );
 
     if( smoke_live )
     {
@@ -2877,9 +2937,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // a struct that does not change size cannot break it.
     const std::vector< uint64_t >& shaft_ids = RT_ShaftLightsSelect();
 
+    // Doom64-RT: VOLUMETRIC CLOUDS (rt_vclouds.cpp). Always linked; enabled=0
+    // when the mode is off, which leaves RTGL1's sky passes exactly as they
+    // were.
+    RgDrawFrameVolumetricCloudParams vcloud_params{};
+    RT_VCloudsParams( &vcloud_params );
+    vcloud_params.pNext = &smoke_params;
+
     auto shaft_params = RgDrawFrameLightShaftParams{
         .sType           = RG_STRUCTURE_TYPE_DRAW_FRAME_LIGHT_SHAFT_PARAMS,
-        .pNext           = &smoke_params,
+        .pNext           = &vcloud_params,
         .count           = uint32_t( shaft_ids.size() ),
         .pLightUniqueIds = shaft_ids.empty() ? nullptr : shaft_ids.data(),
         .multiplier      = std::max( 0.f, float{ cvar::rt_volume_shaft_mult } ),
@@ -2969,8 +3036,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .useIlluminationVolume   = cvar::rt_illum_volume && cvar::rt_volume_type != 0,
         .fallbackSourceColor     = { 0, 0, 0 },
         .fallbackSourceDirection = { 0, -1, 0 },
+        // On a CLOUD map (rt_clouds is off globally and the per-map presets
+        // turn it on), the moon's shafts take rt_clouds_volume_lintensity
+        // instead of the global: under a deck the haze scattered off the moon
+        // otherwise competes with the deck for the sky (asked for 2026-08-23).
+        // Not on a fire map, whose medium is already zero above.
         .lightMultiplier         = fog.on ? std::max( 0.f, float{ cvar::rt_fog_lightmult } )
-                                          : float{ cvar::rt_volume_lintensity },
+                                   : ( bool{ cvar::rt_clouds } && !fire_sky &&
+                                       float{ cvar::rt_clouds_volume_lintensity } >= 0.f )
+                                       ? float{ cvar::rt_clouds_volume_lintensity }
+                                       : float{ cvar::rt_volume_lintensity },
         .allowTintUnderwater     = false,
         .underwaterColor         = {},
         // The two RTGL1 additions this feature is built on. Both are no-ops off

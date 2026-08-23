@@ -14,6 +14,17 @@ bool RT_IsSectorExportable2( int sectornum, bool ceiling );
 // something real replaced it. Defined in rt_lights_fixtures.cpp.
 bool RT_IsLatticeLitPlane( unsigned secIndex, bool ceiling );
 bool RT_IsWallExportable( const seg_t* seg );
+// The chase crest, evaluated for one wall. Returns false when this sidedef is not a
+// bulb panel on a chase pillar; otherwise stores the emissive strength its painted
+// bulbs should have THIS FRAME and returns true, so RtPrim::ChasedPanel can be
+// pushed. Read the value back with RT_ChasePanelEmisCurrent(). Split in two because
+// the flag is a bitfield and the strength is a float; both are set immediately
+// before the draw and read inside it, on the one render thread.
+// Defined in rt_lights_fixtures.cpp.
+struct side_t;
+bool  RT_ChasePanelBegin( const side_t* side );
+float RT_ChasePanelEmisCurrent();   // the screen value: the bulbs, on the LAGGED crest
+float RT_ChasePanelGiCurrent();     // the GI value: the light, on the true crest
 // True when RT must upload map geometry every frame (no baked rt/scenes for this map).
 bool RT_ModMapNeedsLiveGeometryUpload();
 

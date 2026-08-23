@@ -789,6 +789,244 @@ static bool RT_KeyTrimHue( const char* name, FVector3& out )
     return false;
 }
 
+// ---- The turning light on MAP01's pre-exit pillar ---------------------------
+//
+// The hall before MAP01's exit had a light travelling around its central pillar.
+// It was ACS, not a sector special, which is why scan_light_specials.py reports
+// MAP01 as "sequence=0 chains=0": script 12, type OPEN, 64 Light_Fade calls over
+// tags 20..27, each tag cycling 200 -> 220 -> 240 -> 255 in 4-tic steps. The
+// hall is 16 wedge sectors ringed around the pillar and those 8 tags are laid
+// around it TWICE, so the wave was two crests 180 degrees apart.
+//
+// tools/make_seqlight_fix.py strips that script, and has to: all 27 hall sectors
+// STORE lightlevel 255, so removing the animation alone pins them at the top of
+// the ramp and the hall gets BRIGHTER. The strip therefore ships paired with a
+// Shaft that repaints the hall 255 -> 160.
+//
+// What lights the pillar afterwards is the wall-strip walk below. The pillar is
+// a 48x48 block with twelve faces, and exactly four of them -- at 0, 90, 180 and
+// 270 degrees -- carry SFLATAQ, the 4x4 bulb array. Each gets one sphere. Four
+// static lights standing in for a light that used to turn.
+//
+// This puts the turning back, on those same four lights. A crest angle sweeps
+// the pillar once per rt_pillar_chase_period and each face light is scaled by
+// how far it sits from the crest. The lights do not move: they stay glued to the
+// bulb panels, which is the only place on the pillar where the art paints bulbs
+// at all. What turns is brightness.
+//
+// ONE crest, not the two script 12 had. Two opposed crests read as rotation on a
+// ring of sixteen wedges; on FOUR faces they degenerate to 0/180, then 90/270,
+// then 0/180 -- an alternation with no direction in it. One crest over the same
+// 64-tic lap is what reads as turning.
+//
+// Matched by TAG rather than by sector index. d64r-map01-rtfix.wad ships its own
+// TEXTMAP for this map, and an index is only stable until someone inserts a
+// sector; tag 29 is on sector 131 and on nothing else, in both wads. The map
+// name is checked too, and that check is the only thing standing between this
+// and some other game's MAP01 -- a non-Retribution MAP01 whose tag-29 sector
+// also happens to wear a bulb-array texture would pulse. The cost of that is a
+// lamp that breathes, so it is not worth a filesystem probe to prevent.
+struct ChasePillar
+{
+    const char* map;
+    int         tag;
+};
+static const ChasePillar kChasePillars[] = {
+    { "MAP01", 29 },
+    // The lab, tools/build_pillar_lab.py: MAP01's ring rebuilt on its own in an
+    // empty room, same tag. It is listed here rather than given a wildcard
+    // because a wildcard is how a table like this stops being auditable.
+    { "MAP94", 29 },
+    { "MAP95", 29 },
+};
+
+// Is this sidedef's own sector a chase pillar? Called per sidedef part, so it
+// leads with the cvar and the map name before it ever asks the tag manager.
+static bool RT_IsChasePillarSector( const sector_t* sec )
+{
+    if( !cvar::rt_pillar_chase || !sec || !primaryLevel )
+    {
+        return false;
+    }
+    for( const ChasePillar& p : kChasePillars )
+    {
+        if( primaryLevel->MapName.CompareNoCase( p.map ) == 0 &&
+            primaryLevel->SectorHasTag( sec->Index(), p.tag ) )
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Where the crest is this frame, in degrees, measured the same way atan2 does.
+//
+// maptime plus the viewpoint's tic fraction, not a wall clock: a paused game or
+// an open console must freeze the light where it is, the way every other
+// maptime-driven effect in this renderer does.
+//
+// lagSec: where the crest WAS that many SECONDS ago. The painted bulbs use it
+// (rt_pillar_chase_bulb_lagsec); the lights do not. Seconds rather than degrees
+// because the thing being matched is a propagation delay, which does not change
+// when the lap does.
+static float RT_PillarCrestAngle( float lagSec = 0.f )
+{
+    const float period = std::max( 0.05f, float{ cvar::rt_pillar_chase_period } );
+    const float t = ( float( primaryLevel->maptime ) + float( r_viewpoint.TicFrac ) ) /
+                    float( TICRATE );
+    const float lagDeg = lagSec / period * 360.f;
+    float turns = t / period;
+    turns -= std::floor( turns );
+    // Increasing atan2 angle is counter-clockwise, so clockwise means counting down,
+    // and "earlier" is therefore a LARGER angle when clockwise.
+    return cvar::rt_pillar_chase_cw ? -turns * 360.f + lagDeg : turns * 360.f - lagDeg;
+}
+
+// The crest's multiplier for a light sitting at (x,y) around a pillar centred on
+// (cx,cy). Smoothstepped rather than linear so a face lifts and falls the way
+// Light_Fade's ramp did, instead of arriving as a corner.
+static float RT_PillarChaseScale( double x,
+                                  double y,
+                                  double cx,
+                                  double cy,
+                                  float  crestDeg,
+                                  float  lo )
+{
+    const float ang = float( std::atan2( y - cy, x - cx ) * ( 180.0 / M_PI ) );
+
+    float d = std::fmod( std::fabs( ang - crestDeg ), 360.f );
+    if( d > 180.f )
+    {
+        d = 360.f - d;
+    }
+
+    const float width = std::max( 1.f, float{ cvar::rt_pillar_chase_width } );
+
+    float k = std::clamp( 1.f - d / width, 0.f, 1.f );
+    k       = k * k * ( 3.f - 2.f * k );
+
+    return lo + ( 1.f - lo ) * k;
+}
+
+
+// ---- The painted half of the chase -----------------------------------------
+//
+// The analytic lights above are only half the fixture. The other half is what the
+// player is actually looking AT: SFLATAQ's painted bulbs, which carry an authored
+// _e mask and glow at a constant strength no matter what the lights are doing. With
+// only the lights sweeping, the pillar reads as four lamps that are permanently on
+// with something moving behind them -- which is precisely the note this came back
+// with.
+//
+// So the crest drives the surface emission too, and the bulbs light up and go out
+// as it passes. Same crest, same width, same direction: one number, two consumers.
+//
+// EMISSIVE_OVERRIDE IS NOT OPTIONAL HERE. RTGL1's TextureMeta.cpp does
+//     prim.emissive = std::max( 0.0f, meta->emissiveMult );
+// a moment after rt_draw sets it, so without the flag the material's own constant
+// wins and every frame of this is discarded silently -- see the long comment on
+// l_lampglow in rt_draw.cpp, which is the same trap in the same place.
+//
+// The value scales the _e MASK rather than replacing the albedo: the painted bulbs
+// brighten and dim, the dark metal around them stays dark. That is what makes this
+// read as bulbs switching rather than as a panel being spotlit.
+static float g_chasePanelEmis = 0.f;
+static float g_chasePanelGi   = 0.f;
+
+float RT_ChasePanelEmisCurrent()
+{
+    return g_chasePanelEmis;
+}
+
+float RT_ChasePanelGiCurrent()
+{
+    return g_chasePanelGi;
+}
+
+bool RT_ChasePanelBegin( const side_t* side )
+{
+    if( !cvar::rt_pillar_chase || !cvar::rt_pillar_chase_bulbs || !side || !side->sector ||
+        !side->linedef || !primaryLevel )
+    {
+        return false;
+    }
+    if( !RT_IsChasePillarSector( side->sector ) )
+    {
+        return false;
+    }
+
+    // Only the faces that actually carry a bulb array. The pillar's other faces are
+    // SPACEAA and SPACEAG -- no bulbs are painted on them, so there is nothing there
+    // to switch and overriding their emission would only flatten the bevels.
+    bool isPanel = false;
+    for( int part = 0; part < 3 && !isPanel; part++ )
+    {
+        auto* gtex = TexMan.GetGameTexture( side->GetTexture( part ), true );
+        if( gtex )
+        {
+            isPanel = RT_IsWallStripLampTexture( gtex->GetName().GetChars() );
+        }
+    }
+    if( !isPanel )
+    {
+        return false;
+    }
+
+    const line_t* ln = side->linedef;
+    if( !ln->v1 || !ln->v2 )
+    {
+        return false;
+    }
+    const double mx = ( ln->v1->fX() + ln->v2->fX() ) * 0.5;
+    const double my = ( ln->v1->fY() + ln->v2->fY() ) * 0.5;
+
+    // The SAME crest the lights use, sampled from the same maptime, so the painted
+    // bulb and the pool of light it casts can never drift apart.
+    const double cx = double( side->sector->centerspot.X );
+    const double cy = double( side->sector->centerspot.Y );
+    const float  bulbFloor =
+        std::clamp( float{ cvar::rt_pillar_chase_bulb_floor }, 0.f, 1.f );
+
+    // TWO crests. The bulbs (screen) sit on the lagged one, so they switch when
+    // the light they cast has actually arrived. The GI -- which IS the light
+    // that turns; the four spheres are a minor part of it -- sits on the true
+    // crest, the same one the spheres use, and is never delayed. Delaying it
+    // was the mistake that made the gap unclosable; freezing it was the mistake
+    // that made the light stop turning.
+    const float bulbCrest = RT_PillarCrestAngle( float{ cvar::rt_pillar_chase_bulb_lagsec } );
+    const float k   = RT_PillarChaseScale( mx, my, cx, cy, bulbCrest, bulbFloor );
+    const float kGi = RT_PillarChaseScale( mx, my, cx, cy, RT_PillarCrestAngle(), bulbFloor );
+    g_chasePanelGi  = std::max( 0.f, float{ cvar::rt_pillar_chase_bulb_gi } ) * kGi;
+
+    // The SCREEN value. The GI value went out above, on the other crest.
+    g_chasePanelEmis = std::max( 0.f, float{ cvar::rt_pillar_chase_bulb_emis } ) * k;
+
+    // The painted half needs its own evidence. "the lights sweep" and "the bulbs
+    // sweep" are separate claims and this feature has already been shipped once
+    // with only the first of them true.
+    if( cvar::rt_pillar_chase_debug )
+    {
+        static int s_panelTick;
+        if( ( ++s_panelTick % 240 ) == 0 )
+        {
+            Printf( "rt_pillar_chase: BULB face at (%.0f,%.0f) -> screen %.2f (x%.2f) "
+                    "gi %.1f (x%.2f) | maptime %d bulb crest %.0f (lights' crest %.0f, "
+                    "bulb lag %.2fs)\n",
+                    mx,
+                    my,
+                    g_chasePanelEmis,
+                    k,
+                    g_chasePanelGi,
+                    kGi,
+                    primaryLevel->maptime,
+                    bulbCrest,
+                    RT_PillarCrestAngle(),
+                    float{ cvar::rt_pillar_chase_bulb_lagsec } );
+        }
+    }
+    return true;
+}
+
 // Doom 64 wall light strips carry their light in the texture only. Under RTGL1 an
 // emissive surface is not a light source (see rt_wall_strips), so the strip glows but
 // lights nothing — the corridor reads flat and shadowless. Place real area lights along
@@ -838,6 +1076,15 @@ void RT_UploadWallStripLights()
     const int fauxMax      = std::max( 0, int{ cvar::rt_faux_lamp_max } );
     int       fauxWalls    = 0;
     int       fauxUploaded = 0;
+
+    // One crest for the whole frame: every chased light on the map reads the same
+    // angle, so a pillar cannot end up with its faces sampled at different times.
+    const float chaseCrest = RT_PillarCrestAngle();
+    int         chased     = 0;
+    // How many one-sided lights the winding rule rescued from the centrespot
+    // test. Counted rather than assumed: "the pillar is fixed" and "the pillar
+    // was never broken" are the two answers this number tells apart.
+    int         flippedByWinding = 0;
     // The walk stops only when BOTH budgets are spent -- gating the loops on the real
     // count alone would let a run of real strips end the walk before any faux panel was
     // even looked at.
@@ -874,6 +1121,9 @@ void RT_UploadWallStripLights()
             }
 
             const sector_t* thisSec  = side->sector;
+            // Asked once per sidedef rather than once per segment: the answer is a
+            // property of the sector, and the tag lookup is the expensive half.
+            const bool      onChasePillar = RT_IsChasePillarSector( thisSec );
             const side_t*   otherSide = line.sidedef[ 1 - s ];
             const sector_t* otherSec = otherSide ? otherSide->sector : nullptr;
 
@@ -1012,8 +1262,44 @@ void RT_UploadWallStripLights()
 
                     const double towardX = double( thisSec->centerspot.X ) - mx;
                     const double towardY = double( thisSec->centerspot.Y ) - my;
-                    const double ofs =
+                    const double centreOfs =
                         ( nx * towardX + ny * towardY ) >= 0.0 ? 2.0 : -2.0;
+
+                    // ONE-SIDED LINES DO NOT GET THE CENTRESPOT TEST, because
+                    // centerspot is a BOUNDING-BOX MIDPOINT and a sector is not
+                    // required to contain it. MAP01's pre-exit pillar is the case
+                    // that proves it: sector 131 is a RING -- an outer octagon of
+                    // two-sided edges onto the hall, and an inner octagon of eight
+                    // ONE-SIDED blocking walls (four SFLATAQ bulb panels, four
+                    // SPACEAA) around a VOID core. Its bbox midpoint (376,1072) is
+                    // in the hole. So "toward the centre" pointed every one of that
+                    // pillar's six strip lights 2 units INTO SOLID GEOMETRY, where
+                    // they were fully occluded and emitted nothing -- which looks
+                    // exactly like the feature never having run, and did, for as
+                    // long as nobody asked the pillar to do anything but sit there.
+                    //
+                    // For a one-sided line there is no ambiguity to resolve: Doom
+                    // defines the front sidedef as the RIGHT of v1->v2, and a
+                    // one-sided line has only a front, so the sector's open air is
+                    // on the right. nx,ny above is the LEFT normal, hence the
+                    // negation. (The convention warning above still stands for
+                    // TWO-SIDED lines, where both sides are real sectors and
+                    // guessing the winding put lights inside walls.)
+                    // Chase panels may stand their emitter further off the wall; see
+                    // rt_pillar_chase_lightofs. Everything else keeps the walk's 2.
+                    const double ofsMag =
+                        onChasePillar
+                            ? std::clamp( double{ cvar::rt_pillar_chase_lightofs }, 0.5, 64.0 )
+                            : 2.0;
+                    const bool oneSided =
+                        ( otherSide == nullptr ) && bool{ cvar::rt_wall_strip_winding };
+                    const double ofs =
+                        oneSided ? ( s == 0 ? -ofsMag : ofsMag )
+                                 : ( centreOfs >= 0.0 ? ofsMag : -ofsMag );
+                    if( oneSided && ( ofs >= 0.0 ) != ( centreOfs >= 0.0 ) )
+                    {
+                        flippedByWinding++;
+                    }
 
                     // Per-class budget, checked here rather than in the loop guard: the
                     // guard only knows whether SOME budget remains, not whether this
@@ -1047,23 +1333,98 @@ void RT_UploadWallStripLights()
                     // length below it keeps the pools blended rather than scalloped.
                     ( void )zHalf;
 
+                    float lightI = isKeyTrim
+                                       ? std::max( 0.f, float{ cvar::rt_keytrim_intensity } )
+                                   : isFaux
+                                       ? std::max( 0.f, float{ cvar::rt_faux_lamp_intensity } )
+                                       : peak;
+
+                    // The turning light. Scaled about the sector's OWN centre, which
+                    // for a free-standing pillar is the axis the crest turns around;
+                    // the light positions are untouched, so the emitters stay on the
+                    // bulb panels the art paints.
+                    if( onChasePillar )
+                    {
+                        const float k = RT_PillarChaseScale(
+                            mx,
+                            my,
+                            double( thisSec->centerspot.X ),
+                            double( thisSec->centerspot.Y ),
+                            chaseCrest,
+                            std::clamp( float{ cvar::rt_pillar_chase_floor }, 0.f, 1.f ) );
+                        lightI *= k;
+                        chased++;
+
+                        if( cvar::rt_pillar_chase_debug )
+                        {
+                            static int s_chaseTick;
+                            if( ( ++s_chaseTick % 120 ) == 0 )
+                            {
+                                Printf( "rt_pillar_chase: maptime %d crest %.0f deg | light at "
+                                        "(%.0f,%.0f) angle %.0f deg -> x%.2f (I=%.0f)\n",
+                                        primaryLevel->maptime,
+                                        chaseCrest,
+                                        mx,
+                                        my,
+                                        std::atan2( my - double( thisSec->centerspot.Y ),
+                                                    mx - double( thisSec->centerspot.X ) ) *
+                                            ( 180.0 / M_PI ),
+                                        k,
+                                        lightI );
+                            }
+                        }
+                    }
+
                     auto sph = RgLightSphericalEXT{
                         .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                         .pNext     = nullptr,
                         .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
-                        .intensity = isKeyTrim
-                                         ? std::max( 0.f, float{ cvar::rt_keytrim_intensity } )
-                                     : isFaux
-                                         ? std::max( 0.f,
-                                                     float{ cvar::rt_faux_lamp_intensity } )
-                                         : peak,
+                        .intensity = lightI,
                         .position  = toM( mx, my, zMid ),
                         .radius = std::max( 0.01f, float{ cvar::rt_wall_strip_radius } ),
                     };
 
+                    // A CHASE PANEL IS LIT BY ITS _e MASK, NOT BY ITS OWN LIGHT.
+                    //
+                    // The sphere above is 0.35 m across -- 11.2 map units -- and sits
+                    // TWO units off a 32-unit panel, so the panel is inside it. The
+                    // irradiance it puts on its own face is roughly 33x what a surface
+                    // two metres away gets, which clips the panel to white at every
+                    // point in the cycle. The emissive underneath is then swinging
+                    // 1.00 -> 18.92 with nothing to show for it, which is exactly the
+                    // report this came back with: "the chase works, but the bulbs are
+                    // still always on".
+                    //
+                    // Aiming a spot off the wall removes the term entirely: nothing
+                    // lands back on the panel, so what the bulbs look like is what
+                    // their _e mask says, and that is the thing rt_pillar_chase_bulbs
+                    // drives. The room receives the same flux either way.
+                    const bool useSpot = onChasePillar && bool{ cvar::rt_pillar_chase_spot };
+                    const double outward = ofs >= 0.0 ? 1.0 : -1.0;
+                    auto spot = RgLightSpotEXT{
+                        .sType     = RG_STRUCTURE_TYPE_LIGHT_SPOT_EXT,
+                        .pNext     = nullptr,
+                        .color     = rt.rgUtilPackColorFloat4D( hue.X, hue.Y, hue.Z, 1.0f ),
+                        .intensity = lightI,
+                        .position  = toM( mx, my, zMid ),
+                        .direction = { float( nx * outward ), float( ny * outward ), 0.f },
+                        .radius    = std::max( 0.01f, float{ cvar::rt_wall_strip_radius } ),
+                        .angleOuter =
+                            float( std::clamp( double{ cvar::rt_pillar_chase_spot_outer },
+                                               1.0,
+                                               89.0 ) *
+                                   ( M_PI / 180.0 ) ),
+                        .angleInner =
+                            float( std::clamp( double{ cvar::rt_pillar_chase_spot_inner },
+                                               0.0,
+                                               89.0 ) *
+                                   ( M_PI / 180.0 ) ),
+                    };
+
                     auto info = RgLightInfo{
                         .sType    = RG_STRUCTURE_TYPE_LIGHT_INFO,
-                        .pNext    = &sph,
+                        .pNext    = useSpot ? static_cast< void* >( &spot )
+                                            : static_cast< void* >( &sph ),
                         .uniqueID = WallStripId_Base +
                                     ( uint64_t( i ) * WallStripSegsPerLine * 8 ) +
                                     ( uint64_t( s ) * WallStripSegsPerLine * 4 ) +
@@ -1129,7 +1490,8 @@ void RT_UploadWallStripLights()
         {
             Printf( "rt_wall_strip: uploaded=%d (cap %d) | matchedTex=%d rejected: "
                     "lightlevel=%d band=%d shortline=%d | I=%.0f radius=%.2f | "
-                    "faux %d sidedef(s), uploaded=%d (cap %d) I=%.0f\n",
+                    "faux %d sidedef(s), uploaded=%d (cap %d) I=%.0f | chased=%d "
+                    "| winding-flipped=%d\n",
                     uploaded,
                     maxLights,
                     matchedTex,
@@ -1141,7 +1503,9 @@ void RT_UploadWallStripLights()
                     fauxWalls,
                     fauxUploaded,
                     fauxMax,
-                    float{ cvar::rt_faux_lamp_intensity } );
+                    float{ cvar::rt_faux_lamp_intensity },
+                    chased,
+                    flippedByWinding );
             Printf( "  viewer z=%.0f — strip lights nearest the camera:\n", vpos.Z );
 
             std::sort( placed.begin(), placed.end(), []( const Placed& a, const Placed& b ) {
