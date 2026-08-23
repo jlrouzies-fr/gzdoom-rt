@@ -85,6 +85,9 @@
 #include "hw_vertexbuilder.h"
 #include "version.h"
 #include "fs_decompress.h"
+#if HAVE_RT
+	#include "rt/rt_helpers.h"
+#endif
 
 enum
 {
@@ -3234,6 +3237,13 @@ void MapLoader::LoadLevel(MapData *map, const char *lumpname, int position)
 	{
 		delete[] oldvertextable;
 	}
+
+#if HAVE_RT
+	// BEFORE SpawnSpecials, which is where every light thinker comes from: this
+	// has to see the lightlevels the map author STORED, not the ones an animation
+	// is already driving. See RT_EmisLightLevel in rt_lights_sector.cpp.
+	RT_SnapshotSectorLight(Level);
+#endif
 
 	// set up world state
 	SpawnSpecials();

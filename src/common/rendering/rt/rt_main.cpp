@@ -310,7 +310,49 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
         // "Denoiser path: ...", "ReSTIR: initialSamples=..." and friends across
         // the picture on every level load. One line, and it covers every
         // message RTGL1 emits.
-        Printf( RT_DiagPrintLevel(), "%s\n", pMessage );
+        //
+        // De-duplicate identical CONSECUTIVE warnings. RTGL1 has no per-frame
+        // "say this once" concept of its own -- "No camera provided via API,
+        // nor through .gltf" is emitted from inside rgStartFrame/rgDrawFrame
+        // every single frame the engine fails to upload one, and the failure
+        // mode that hits that (I_Error unwinding out of a level -- see
+        // p_saveg.cpp's savegame-checksum check) does not resolve itself for
+        // many frames, so the naive Printf above turned into an unbounded
+        // flood: one line per frame, forever (measured ~10/sec), into both
+        // the console buffer and rt-console.log. This does not fix why the
+        // camera stopped coming in -- it only stops one warning from
+        // drowning the log while that happens.
+        //
+        // A pure "print once, then go silent until the text changes" would
+        // go silent FOREVER on a genuinely stuck repeat -- the text never
+        // changes, so the closing summary line never fires and a log tail
+        // reads as if nothing is happening. Cap the silence instead, but at a
+        // deliberately long interval -- this is "print once", not a
+        // heartbeat; the re-announce only exists so a session left running
+        // for a very long time still leaves a trail, not to remind you every
+        // few seconds that it's still stuck.
+        static std::string s_lastWarning;
+        static int         s_repeatCount     = 0;
+        constexpr int      s_reannounceEvery = 18000; // ~10 min of "No camera" at ~30fps
+        if( pMessage == s_lastWarning )
+        {
+            if( ++s_repeatCount % s_reannounceEvery == 0 )
+            {
+                Printf( RT_DiagPrintLevel(), "(still repeating -- %d time%s so far) %s\n",
+                       s_repeatCount, s_repeatCount == 1 ? "" : "s", pMessage );
+            }
+        }
+        else
+        {
+            if( s_repeatCount > 0 )
+            {
+                Printf( RT_DiagPrintLevel(), "(previous message repeated %d more time%s)\n",
+                       s_repeatCount, s_repeatCount == 1 ? "" : "s" );
+            }
+            s_lastWarning = pMessage;
+            s_repeatCount = 0;
+            Printf( RT_DiagPrintLevel(), "%s\n", pMessage );
+        }
     }
     else if( flags & RG_MESSAGE_SEVERITY_INFO )
     {
@@ -387,6 +429,14 @@ std::atomic< HWND > g_msgbox_parent{};
 //
 
 
+
+namespace
+{
+int    g_rt_precache_count   = 0;
+double g_rt_precache_ms      = 0.0;
+bool   g_rt_precache_pending = false;
+bool   g_rt_precache_capped  = false;
+} // namespace
 
 RG_D3D12CORE_HELPER( "rt/" )
 
@@ -1253,6 +1303,125 @@ IHardwareTexture* rtx::RTFrameBuffer::CreateHardwareTexture( int numchannels )
 {
     return new RTHardwareTexture{};
 }
+
+// Doom64-RT: THE RT PATH NEVER PRECACHED ANYTHING, and that was the stutter.
+//
+// p_setup.cpp's PrecacheLevel does all the work already -- it walks every actor
+// class the level spawns, marks every sprite frame and all 16 rotations, folds in
+// animations and switch pairs -- and hands each result to screen->PrecacheMaterial.
+// GL, GLES and Vulkan all override that. RTFrameBuffer overrode only
+// CreateHardwareTexture, so it inherited the empty base (v_video.h:226) and threw
+// the entire computed list away.
+//
+// The consequence was that EVERY texture in the game uploaded on the frame it was
+// first drawn, in the middle of play. Measured on 2026-08-20: an imp turning to
+// face the player cost 20-44 ms, a lost soul 60 ms, one sprite frame at a time,
+// scattered through the session -- because a sprite frame and rotation is its own
+// texture and is not touched until that exact pose is first visible.
+//
+// The same uploads at level load measured 0.2-0.6 ms each. It is not merely moving
+// the cost, it is removing about 100x of it; a mid-frame upload lands on a GPU that
+// is already busy, a load-time one does not.
+//
+// WHAT IS SAFE TO ASSUME HERE. CreateIfWasnt takes two arguments the precacher
+// cannot know, and neither is a problem:
+//   clampmode  -- unused. Both address modes are hardcoded to REPEAT and the
+//                 rtclamp_x/y helpers are commented out at the call (rt_buffers.h).
+//   renderStyle -- read only for STYLEF_RedIsAlpha. It IS baked in, because
+//                 CreateIfWasnt is idempotent. But the lazy path bakes it too, from
+//                 whichever draw happened to be first -- so this does not introduce
+//                 order-dependence, it removes it. STYLE_Normal is the answer for
+//                 every world surface and sprite; a Shaded-only texture would have
+//                 been a coin toss before and is now consistently normal.
+void rtx::RTFrameBuffer::PrecacheMaterial( FMaterial* mat, int translation )
+{
+    if( !cvar::rt_precache || mat == nullptr )
+    {
+        return;
+    }
+
+    // THE 4096 CEILING. RTGL1's texture array is TEXTURE_COUNT_MAX = 4096
+    // entries (Const.h:35) and a single material claims up to FIVE of them --
+    // albedo, ORM, normal, emissive, height. So the budget is not "how many
+    // textures", it is "how many slots", and the engine side cannot see the
+    // difference. Nothing frees them either: the destructor's
+    // rgMarkOriginalTextureAsDeleted is #if 0'd in rt_buffers.h, so the array
+    // only ever grows within a session.
+    //
+    // Precaching every actor class produced 2094 provides, blew past 4096
+    // slots, and RTGL1 dropped 487 textures with "Reached texture limit"
+    // (TextureManager.cpp:738) -- which is a Warning, not an error, so the game
+    // carried on and rendered the HUD and the status bar as white and pink
+    // blocks (screen/precacheIssue.png, 2026-08-21).
+    //
+    // 1600 is empirical, from the only two data points there are: 1526 provides
+    // precached cleanly, 2094 overflowed. It is deliberately nearer the known
+    // good one. This is a guard against corruption, NOT the fix -- the fix is a
+    // larger TEXTURE_COUNT_MAX, which lives in the RTGL1 repo.
+    if( g_rt_precache_count >= int{ cvar::rt_precache_budget } )
+    {
+        if( !g_rt_precache_capped )
+        {
+            g_rt_precache_capped = true;
+            Printf( RT_DiagPrintLevel(),
+                    "RT precache: stopped at the %d-texture budget (rt_precache_budget). "
+                    "Anything past this uploads on first draw, as before.\n",
+                    int{ cvar::rt_precache_budget } );
+        }
+        return;
+    }
+
+    FGameTexture* gametex = mat->Source();
+    if( gametex == nullptr || gametex->GetUseType() == ETextureType::SWCanvas )
+    {
+        return;
+    }
+
+    FTexture* base = gametex->GetTexture();
+    if( base == nullptr )
+    {
+        return;
+    }
+
+    auto* hwtex = static_cast< RTHardwareTexture* >(
+        base->GetHardwareTexture( translation, mat->GetScaleFlags() ) );
+    if( hwtex == nullptr )
+    {
+        return;
+    }
+
+    const uint64_t t0 = I_nsTime();
+
+    hwtex->CreateIfWasnt( *gametex,
+                          CLAMP_NONE,
+                          translation,
+                          mat->GetScaleFlags(),
+                          LegacyRenderStyles[ STYLE_Normal ] );
+
+    g_rt_precache_ms += double( I_nsTime() - t0 ) / 1e6;
+    g_rt_precache_count++;
+    g_rt_precache_pending = true;
+}
+
+// Reported from the first frame after the precache pass, because there is no hook
+// at the end of it. Without a number this change is unfalsifiable: "the stutter
+// went away" and "the precache silently did nothing" look identical in play.
+void rtx::RT_ReportPrecache()
+{
+    if( !g_rt_precache_pending )
+    {
+        return;
+    }
+    g_rt_precache_pending = false;
+
+    Printf( RT_DiagPrintLevel(),
+            "RT precache: %d texture(s) uploaded in %.1f ms at level load\n",
+            g_rt_precache_count,
+            g_rt_precache_ms );
+
+    g_rt_precache_count = 0;
+    g_rt_precache_ms    = 0.0;
+}
 void rtx::RTFrameBuffer::Draw2D()
 {
     ::Draw2D( twod, *m_state );
@@ -1423,6 +1592,11 @@ CCMD( rt_sky_here )
 void RT_OnLevelLoad( const char* mapname )
 {
     RT_OnLevelLoadPresets( mapname );
+    // AFTER the preset tables, never before. RT_CloudApplyPresets writes
+    // rt_clouds unconditionally when rt_clouds_presets is on, so a fire sky
+    // that set up its deck first would have it overwritten and would look like
+    // the cvar does nothing.
+    RT_FireSkyOnLevelLoad( mapname );
 
     g_resetposteffects = true;
     g_resetfluid       = true;
@@ -1622,6 +1796,27 @@ namespace classic_toggle
                 g_sectorEmisThreshold,
                 float( ll ) > g_sectorEmisThreshold ? "ABOVE: this surface SELF-EMITS"
                                                     : "below: not self-emitting" );
+        {
+            // rt_sector_emis_saturation's gate, computed the SAME way l_worldemissive()
+            // computes it (rt_draw.cpp) -- off sector_t::Colormap.LightColor directly,
+            // since that field is what push_sectorlight() feeds in during the real draw
+            // (see hw_flats.cpp/hw_walls.cpp: Colormap = frontsector->Colormap in the
+            // common case). Answers the question the lightlevel line above cannot:
+            // whether the colour gate is what is actually keeping this surface dark or
+            // lit, not just whether it crossed the lightlevel threshold.
+            const PalEntry lc    = d.HitSector->Colormap.LightColor;
+            const float    r     = lc.r / 255.f;
+            const float    g     = lc.g / 255.f;
+            const float    b     = lc.b / 255.f;
+            const float    maxc  = std::max( { r, g, b } );
+            const float    minc  = std::min( { r, g, b } );
+            const float    satur = maxc > 1.e-4f ? ( maxc - minc ) / maxc : 0.f;
+            const float    gate  = float{ cvar::rt_sector_emis_saturation };
+            Printf( "           colormap tint %d,%d,%d  saturation %.3f  (rt_sector_emis_saturation "
+                    "%.2f -> %s)\n",
+                    lc.r, lc.g, lc.b, satur, gate,
+                    satur >= gate ? "PASSES the colour gate" : "GATED OUT by colour" );
+        }
         {
             // The frame test, printed: what does this element sit inside?
             int hi = -1, hiIdx = -1;
@@ -1878,6 +2073,11 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
 
     classic_toggle::Animate();
 
+    // Which sectors a light thinker owns right now -- read by RT_EmisLightLevel
+    // during the world walk that follows, so it is refreshed before it, not in
+    // RT_DrawFrame with the rest of the light work.
+    RT_UpdateAnimatedSectorLights();
+
 
     auto resolution_params = RgStartFrameRenderResolutionParams{
         .sType             = RG_STRUCTURE_TYPE_START_FRAME_RENDER_RESOLUTION_PARAMS,
@@ -1970,6 +2170,7 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
     // rgStartFrame, because rgStartFrame is itself one of the four phases.
     RT_StatsNewFrame();
     RT_ApplyQualityPresetOnce();
+    RT_ReportPrecache();
 
     RTStartFrame.Clock();
     RgResult r = rt.rgStartFrame( &info );
@@ -2049,13 +2250,18 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
 
         float ltngI   = 0.f;
         float ltngAzi = 0.f, ltngAlt = 0.f;
-        if( const float flash = RT_LightningFlashLevel(); flash > 0.002f )
+        // The LIGHT's envelope, which carries the afterglow tail the visible
+        // flash does not (rt_lightning_afterglow).
+        if( const float flash = RT_LightningLightLevel(); flash > 0.002f )
         {
             RT_LightningAim( &ltngAzi, &ltngAlt, nullptr );
             ltngI = std::max( 0.f, float{ cvar::rt_lightning_intensity } ) * flash;
         }
 
         const bool useLightning = ltngI > sunI;
+        // Read by RT_VCloudsParams (built further down this function): the
+        // clouds must not occlude a strike, which is inside the deck.
+        g_rtSunIsLightning = useLightning;
 
         if( useLightning || sunI > 0.f )
         {
@@ -2152,7 +2358,42 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         }
     }
 
-    // Unattended capture -- see rt_autoshot.
+    // Unattended capture -- see rt_autoshot. rt_autoshot_pitch holds the view
+    // up for sky captures; gzdoom's pitch is positive DOWN.
+    if( primaryLevel && float{ cvar::rt_autoshot_pitch } != 0.f )
+    {
+        if( auto* mo = players[ consoleplayer ].mo )
+        {
+            const float deg = std::clamp( float{ cvar::rt_autoshot_pitch }, -89.f, 89.f );
+            mo->Angles.Pitch = DAngle::fromDeg( -deg );
+        }
+    }
+    // The height hold is a CAPTURE tool and nothing else: it runs only while an
+    // rt_autoshot is pending (the shot tic has not passed), and it puts the
+    // flags it set back afterwards. The first cut held whenever the cvar was
+    // non-zero and never cleared MF_NOGRAVITY|MF_NOCLIP, which is "I fall from
+    // the ceiling on map map23" (reported 2026-08-23).
+    {
+        static bool s_held = false;
+        const bool  want   = primaryLevel && float{ cvar::rt_autoshot_height } > 0.f &&
+                           int{ cvar::rt_autoshot } > 0 &&
+                           primaryLevel->maptime <= int{ cvar::rt_autoshot } + 2;
+        if( auto* mo = primaryLevel ? players[ consoleplayer ].mo : nullptr )
+        {
+            if( want )
+            {
+                mo->flags |= MF_NOGRAVITY | MF_NOCLIP;
+                mo->Vel.Z = 0;
+                mo->SetZ( mo->floorz + double( float{ cvar::rt_autoshot_height } ) );
+                s_held = true;
+            }
+            else if( s_held )
+            {
+                mo->flags &= ~( MF_NOGRAVITY | MF_NOCLIP );
+                s_held = false;
+            }
+        }
+    }
     if( primaryLevel && ( int{ cvar::rt_autoshot } > 0 || int{ cvar::rt_autoquit } > 0 ) )
     {
         const int t = primaryLevel->maptime;
@@ -2230,6 +2471,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // Dust motes. After the sparks so both batches are built in one place, and
     // stateless -- there is nothing to step, so there is no Update half.
     RT_DrawDust();
+    // The fire sky's meteor pool and its two schedulers. Stepped HERE and not
+    // in the sky draw: a sealed room submits no sky portal, and scheduling
+    // strikes there would stop the storm exactly while the player is indoors,
+    // which is where a flash through a doorway is worth most. The meteor QUADS
+    // are drawn from hw_skyportal.cpp, which owns the sky vertex buffer.
+    RT_FireSkyTick();
     RT_UploadSparkLights();
     RT_SparkDebugTick();
     RT_DebugNearbyWallTextures();
@@ -2321,6 +2568,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .lavaPulseSpeed         = cvar::rt_lava_pulse_speed,
         .lavaGiBoost            = std::max( 0.f, float{ cvar::rt_lava_gi } ),
         .lavaDebug              = cvar::rt_lava_debug ? 1.f : 0.f,
+
         .lavaTint               = l_col255( cvar::rt_lava_tint_r,
                                             cvar::rt_lava_tint_g,
                                             cvar::rt_lava_tint_b ),
@@ -2433,8 +2681,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // ab-smoke.cmd fogsafe asserts it did not.
     constexpr float RT_VOLUME_REF_FAR = 30.f;
 
-    const float volume_dens = float{ cvar::rt_volume_scatter } *
-                              ( std::max( 0.001f, smoke_far ) / RT_VOLUME_REF_FAR );
+    // NO GLOBAL HAZE UNDER A FIRE SKY. On the five fire maps (and wherever
+    // rt_fireskies_new is on) the medium is cut to zero: a grey scattering
+    // haze lit by the overhead light reads as fog over the sky, which is the
+    // opposite of a burning one (MAP23, 2026-08-23). The cvar itself is not
+    // written -- it is CVAR_ARCHIVE and every other map wants it -- this is
+    // the effective value only. Fog presets and smoke are untouched.
+    const bool  fire_sky    = RT_FireSkyMap() || RT_FireSkyActive();
+    const float volume_dens = fire_sky ? 0.f
+                                       : float{ cvar::rt_volume_scatter } *
+                                             ( std::max( 0.001f, smoke_far ) / RT_VOLUME_REF_FAR );
 
     if( smoke_live )
     {
@@ -2681,9 +2937,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // a struct that does not change size cannot break it.
     const std::vector< uint64_t >& shaft_ids = RT_ShaftLightsSelect();
 
+    // Doom64-RT: VOLUMETRIC CLOUDS (rt_vclouds.cpp). Always linked; enabled=0
+    // when the mode is off, which leaves RTGL1's sky passes exactly as they
+    // were.
+    RgDrawFrameVolumetricCloudParams vcloud_params{};
+    RT_VCloudsParams( &vcloud_params );
+    vcloud_params.pNext = &smoke_params;
+
     auto shaft_params = RgDrawFrameLightShaftParams{
         .sType           = RG_STRUCTURE_TYPE_DRAW_FRAME_LIGHT_SHAFT_PARAMS,
-        .pNext           = &smoke_params,
+        .pNext           = &vcloud_params,
         .count           = uint32_t( shaft_ids.size() ),
         .pLightUniqueIds = shaft_ids.empty() ? nullptr : shaft_ids.data(),
         .multiplier      = std::max( 0.f, float{ cvar::rt_volume_shaft_mult } ),
@@ -2773,8 +3036,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .useIlluminationVolume   = cvar::rt_illum_volume && cvar::rt_volume_type != 0,
         .fallbackSourceColor     = { 0, 0, 0 },
         .fallbackSourceDirection = { 0, -1, 0 },
+        // On a CLOUD map (rt_clouds is off globally and the per-map presets
+        // turn it on), the moon's shafts take rt_clouds_volume_lintensity
+        // instead of the global: under a deck the haze scattered off the moon
+        // otherwise competes with the deck for the sky (asked for 2026-08-23).
+        // Not on a fire map, whose medium is already zero above.
         .lightMultiplier         = fog.on ? std::max( 0.f, float{ cvar::rt_fog_lightmult } )
-                                          : float{ cvar::rt_volume_lintensity },
+                                   : ( bool{ cvar::rt_clouds } && !fire_sky &&
+                                       float{ cvar::rt_clouds_volume_lintensity } >= 0.f )
+                                       ? float{ cvar::rt_clouds_volume_lintensity }
+                                       : float{ cvar::rt_volume_lintensity },
         .allowTintUnderwater     = false,
         .underwaterColor         = {},
         // The two RTGL1 additions this feature is built on. Both are no-ops off
@@ -2907,6 +3178,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .shadowSamples                      = uint32_t( std::clamp( int( cvar::rt_shadow_samples ), 1, 8 ) ),
         .debugRestirM                       = static_cast< RgBool32 >( bool( cvar::rt_debug_restir_m ) ),
         .debugVisibility                    = uint32_t( std::clamp( int( cvar::rt_debug_visibility ), 0, 2 ) ),
+        .debugShowFlags                     = uint32_t( std::max( 0, int( cvar::rt_debug_show ) ) ),
         .restirTemporalJitter               = std::clamp( float( cvar::rt_restir_tjitter ), 0.0f, 8.0f ),
         .rrSpecularHitDistance              = static_cast< RgBool32 >( bool( cvar::rt_rr_spechitdist ) ),
         .directSamples                      = uint32_t( std::clamp( int( cvar::rt_spp_direct ), 1, 8 ) ),
@@ -2950,6 +3222,10 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .nrdPhiLuminance                    = std::max( 0.0f, float( cvar::rt_nrd_philum ) ),
         .nrdMinHitDistWeight                = std::max( 0.0f, float( cvar::rt_nrd_minhitdist ) ),
         .nrdAntiFirefly                     = static_cast< RgBool32 >( bool( cvar::rt_nrd_antifirefly ) ),
+        .svgfFp                             = uint32_t( std::clamp( int( cvar::rt_svgf_fp ), 0, 2 ) ),
+        .svgfFpGrad                         = static_cast< RgBool32 >( bool( cvar::rt_svgf_fp_grad ) ),
+        .svgfIndirMaxHist                   = std::clamp( float( cvar::rt_svgf_indir_maxhist ), 0.f, 256.f ),
+        .svgfIndirAntilag                   = static_cast< RgBool32 >( bool( cvar::rt_svgf_indir_antilag ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{

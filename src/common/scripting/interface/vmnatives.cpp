@@ -1720,7 +1720,21 @@ static auto RT_GetErrorsFor( std::string_view rtkey ) -> std::vector< const char
              rtkey == "RTMNU_FRAMEGEN" )
     {
         auto errors = std::vector< const char* >{};
-        if( cvar::rt_failreason_dlss2 || cvar::rt_failreason_dlss3fg )
+
+        // Doom64-RT: report the upscaler that is actually in use, not every one
+        // that was probed. DLSS and FSR2 share a single upscaler slot, so at most
+        // one of them is the player's -- and the probe fails for the other on
+        // every machine ever built. Listing both meant an AMD player, correctly
+        // running FSR 2, read "NVIDIA DLSS 2 failed: ..." under the Mode item and
+        // concluded the game needs an NVIDIA card (reported 2026-08-19, RX 9070
+        // XT). When nothing is selected, both are reported: then the question is
+        // "why can I not have an upscaler at all", and the reasons are the answer.
+        const bool dlssChosen = cvar::rt_upscale_dlss > 0;
+        const bool fsrChosen  = cvar::rt_upscale_fsr2 > 0;
+        const bool noneChosen = !dlssChosen && !fsrChosen;
+
+        if( ( dlssChosen || noneChosen ) &&
+            ( cvar::rt_failreason_dlss2 || cvar::rt_failreason_dlss3fg ) )
         {
             errors.push_back( cvar::rt_failreason_dlss2 && cvar::rt_failreason_dlss3fg
                                   ? "NVIDIA DLSS 2 and NVIDIA DLSS 3 failed:"
@@ -1730,7 +1744,8 @@ static auto RT_GetErrorsFor( std::string_view rtkey ) -> std::vector< const char
             errors.push_back( cvar::rt_failreason_dlss2 ? cvar::rt_failreason_dlss2
                                                         : cvar::rt_failreason_dlss3fg );
         }
-        if( cvar::rt_failreason_fsr2 || cvar::rt_failreason_fsr3fg )
+        if( ( fsrChosen || noneChosen ) &&
+            ( cvar::rt_failreason_fsr2 || cvar::rt_failreason_fsr3fg ) )
         {
             errors.push_back(
                 cvar::rt_failreason_fsr2 && cvar::rt_failreason_fsr3fg    ? "AMD FSR 2/3 failed:"

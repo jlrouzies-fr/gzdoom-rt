@@ -343,7 +343,11 @@ void HWFlat::DrawFlat(HWDrawInfo *di, FRenderState &state, bool translucent)
 
 	state.SetNormal(plane.plane.Normal().X, plane.plane.Normal().Z, plane.plane.Normal().Y);
 
-	auto rtsectorlight = rtstate.push_sectorlight(Colormap.LightColor, lightlevel);
+	// Self-emission reads the authored lightlevel while a light thinker animates
+	// this sector -- rt_sector_emis_freeze. Nothing else on this line changes: the
+	// SetColor/SetFog calls below still get the live value.
+	auto rtsectorlight =
+		rtstate.push_sectorlight(Colormap.LightColor, RT_EmisLightLevel(sector, lightlevel));
 	SetColor(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), Colormap, alpha);
 	SetFog(state, di->Level, di->lightmode, lightlevel, rel, di->isFullbrightScene(), &Colormap, false);
 	state.SetObjectColor(FlatColor | 0xff000000);

@@ -953,7 +953,18 @@ void FLevelLocals::Serialize(FSerializer &arc, bool hubload)
 			arc.GetSize("polyobjs") != Polyobjects.Size() ||
 			memcmp(chk, md5, 16))
 		{
-			I_Error("Savegame is from a different level");
+			// Doom64-RT: a map lump gets rebuilt (a WAD rewrite fixing a
+			// texture/light/tint, adding a fixture) far more often here than
+			// stock GZDoom ever expected, and every rebuild changes this
+			// checksum -- so this fires on ordinary dev iteration, not just a
+			// mismatched save. The stock one-liner reads like a corrupt-save
+			// crash; tell the player what actually happened and what to do.
+			I_Error("This save was made against an older version of %s.\n"
+				"Doom64-RT was updated since you last saved here, so this "
+				"save can no longer be loaded.\n\n"
+				"Load a save from an earlier level, or start this one fresh "
+				"from the console:  map %s",
+				MapName.GetChars(), MapName.GetChars());
 		}
 	}
 	arc("saveversion", SaveVersion);

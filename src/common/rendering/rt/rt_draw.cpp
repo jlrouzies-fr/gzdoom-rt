@@ -291,7 +291,13 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         }
         if( rtstate.is< RtPrim::Sky >() )
         {
-            return RG_MESH_PRIMITIVE_SKY | RG_MESH_PRIMITIVE_TRANSLUCENT;
+            // The volumetric cloud composite mode rides on the primitive flags
+            // (hw_skyportal.cpp pushes them per draw); RTGL1 ignores both
+            // unless the clouds are on.
+            return RG_MESH_PRIMITIVE_SKY | RG_MESH_PRIMITIVE_TRANSLUCENT |
+                   ( rtstate.is< RtPrim::SkyClouds >() ? RG_MESH_PRIMITIVE_SKY_CLOUDS : 0 ) |
+                   ( rtstate.is< RtPrim::SkyBehindClouds >() ? RG_MESH_PRIMITIVE_SKY_BEHIND_CLOUDS
+                                                              : 0 );
         }
         if( rtstate.is< RtPrim::Particle >() )
         {
@@ -599,6 +605,22 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
             return 0.f;
         }
 
+        // Key doors (SDOOR1..SDOORGB, the whole `door` family in texture-status.md) are
+        // coloured ON PURPOSE -- the tint is which key it needs, not a light -- and that
+        // colour is exactly the kind rt_sector_emis_saturation is tuned to LET THROUGH,
+        // because it is real, deliberate saturation, not a warm/cream near-neutral like
+        // MAP04's SPACEAF. So the colour gate cannot tell a key door from MAP02's red
+        // corridor panels; the two need different treatment for reasons the colormap
+        // alone does not encode. Reported repeatedly by colour: MAP02 SDOOR6 yellow
+        // (docs/open-issues-rt-lighting.md #1.6, 2026-08-04 -- a DIFFERENT bug, the
+        // pre-forceWorldWhiteRgb vertex-colour wash, already fixed there), MAP04 blue,
+        // and a red key door elsewhere (2026-08-21) -- one texture family, not one map
+        // or one colour, so excluded by family rather than chased per report again.
+        if( texname && strncmp( texname, "SDOOR", 5 ) == 0 )
+        {
+            return 0.f;
+        }
+
         const float strength = float{ cvar::rt_sector_emis };
         // Map-relative, not absolute — see RT_UpdateSectorEmisThreshold.
         const float minLight = g_sectorEmisThreshold;
@@ -628,6 +650,30 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
 
         const float ll = float( rtstate.m_sectorLightLevel );
         if( ll <= minLight )
+        {
+            return 0.f;
+        }
+
+        // rt_sector_emis was written for MAP02's red corridor panels -- a genuinely
+        // COLOURED room, not merely a bright one -- but everything above this line only
+        // ever looked at lightlevel. A plain white/grey wall in an equally bright room
+        // (MAP03 sector 54 SPACEAP1, sector 70 SPACECL1; MAP04 sector 68 SPACEAF, all
+        // reported via `whatsthat` 2026-08-21) qualified the exact same way and self-lit
+        // with nothing in the world casting it -- it reads as a fake light bolted onto a
+        // wall that is just bright, not as the room's actual light source the way MAP02's
+        // panels do.
+        //
+        // primColor (below) tints this surface with the sector's colormap hue -- see
+        // RT_SectorHue -- so that hue is also the right signal for whether this counts as
+        // "a coloured room" at all: a default/near-white colormap has near-zero
+        // saturation, MAP02's red fade does not. Gating on it keeps the coloured case and
+        // drops the neutral one without a per-texture list, and needs no shader access to
+        // the texture's own painted pixels, which this CPU-side function does not have.
+        const FVector3& sc    = rtstate.m_sectorLightColor;
+        const float     maxc  = std::max( { sc.X, sc.Y, sc.Z } );
+        const float     minc  = std::min( { sc.X, sc.Y, sc.Z } );
+        const float     satur = maxc > 1.e-4f ? ( maxc - minc ) / maxc : 0.f;
+        if( satur < float{ cvar::rt_sector_emis_saturation } )
         {
             return 0.f;
         }
@@ -1009,10 +1055,17 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                 return RgMeshPrimitiveFlags( 0 );
             }
 
-            // One line per distinct frame name per session. Printf is
-            // gzdoom's own, so it is NOT subject to RTGL's message gates.
+            // One line per distinct frame name per session, and BEHIND
+            // rt_water_debug. Printf is gzdoom's own, so it is not subject to
+            // RTGL's message gates -- which meant RT_DiagPrintLevel kept it off
+            // the notify overlay and still wrote every line to rt-console.log:
+            // 112 of them on a Retribution map, most of the session log before
+            // the player had moved. A per-texture classification record is a
+            // DIAGNOSTIC, so it belongs behind the water diagnostic's own cvar
+            // rather than in the always-on stream. `rt_water_debug 1` brings it
+            // back, alongside the magenta surface paint it already drives.
             static std::unordered_set< std::string > s_seen;
-            if( s_seen.insert( texname ).second )
+            if( int{ cvar::rt_water_debug } != 0 && s_seen.insert( texname ).second )
             {
                 Printf( RT_DiagPrintLevel(),
                         "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER, "
@@ -1075,6 +1128,30 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
     // The flag is what makes the number survive: TextureMeta overwrites the primitive's
     // emissive with the material's a moment later unless it is told not to.
     auto l_lampglow = [ & ]() -> std::pair< RgMeshPrimitiveFlags, float > {
+        // A bulb panel on a chase pillar owns its emission outright, and takes
+        // precedence over everything below: the whole point is that the painted
+        // bulbs go out when the crest is elsewhere, which no sector ramp or
+        // material constant can express. Same flag requirement as the lamp panes --
+        // without EMISSIVE_OVERRIDE, TextureMeta.cpp replaces this a moment later.
+        if( !isUI && rtstate.is< RtPrim::ChasedPanel >() )
+        {
+            // BOTH flags, and neither is optional.
+            //
+            // EMISSIVE_OVERRIDE stops TextureMeta.cpp replacing the value with
+            // SFLATAQ's own emissiveMult 20 a moment from now.
+            //
+            // EMISSIVE_SCREEN_SCALED is what makes it VISIBLE. With an _e map,
+            // RTGL1's primary and reflection paths use the RAW _e sample and apply
+            // emissiveMult on the indirect path ONLY (HitInfo.inl), so without this
+            // the bulbs keep their painted brightness on screen through the entire
+            // cycle and all the chase moves is their contribution to bounce light.
+            // That is exactly how this shipped twice.
+            return { RgMeshPrimitiveFlags( RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE |
+                                           ( cvar::rt_pillar_chase_bulb_screen
+                                                 ? RG_MESH_PRIMITIVE_EMISSIVE_SCREEN_SCALED
+                                                 : 0 ) ),
+                     RT_ChasePanelEmisCurrent() };
+        }
         if( isUI || !cvar::rt_ceiling_bulb_noemis || !rtstate.is< RtPrim::LatticeLitFlat >() )
         {
             const float we = l_worldemissive();
@@ -1253,6 +1330,12 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         .color        = primColor,
         .emissive     = ghostNoEmis ? 0.f : lampGlowEmis,
         .classicLight = lightlevel_to_classic( isUI, mLightParms[ 3 ] ),
+        // Read by RTGL1 only under EMISSIVE_SCREEN_SCALED, which only a chased
+        // panel sets: its GI on the true crest, while .emissive above is its
+        // bulbs on the lagged one.
+        .emissiveGi   = ( !isUI && rtstate.is< RtPrim::ChasedPanel >() )
+                            ? RT_ChasePanelGiCurrent()
+                            : 0.f,
     };
 
 #ifndef NDEBUG

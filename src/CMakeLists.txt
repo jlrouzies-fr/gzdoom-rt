@@ -804,6 +804,8 @@ if (HAVE_RT)
 		common/rendering/rt/rt_barrel.cpp
 		common/rendering/rt/rt_presets.cpp
 		common/rendering/rt/rt_weather.cpp
+		common/rendering/rt/rt_firesky.cpp
+		common/rendering/rt/rt_vclouds.cpp
 		common/rendering/rt/rt_export.cpp
 		common/rendering/rt/rt_titles.cpp
 		common/rendering/rt/rt_cutscene.cpp
