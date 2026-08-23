@@ -109,6 +109,12 @@ struct MoonPreset
     bool        disc;      // draw the MOONDISC quad at all
     float       sky;       // rt_sky, the dome's own radiance. < 0: keep
     const char* note;
+    // rt_sun_color. 0 = keep the launcher's, and it is LAST on purpose: a
+    // trailing member can be omitted in aggregate init, so adding it did not
+    // force a value into every existing row. That is the same rule the negative
+    // sentinels above encode -- a row says the things it is for and nothing
+    // else -- and here it is enforced by the language rather than by habit.
+    uint32_t    sun_color;
 };
 
 constexpr MoonPreset RT_MOON_PRESETS[] = {
@@ -230,10 +236,20 @@ constexpr MoonPreset RT_MOON_PRESETS[] = {
       "`moon 20 60`, as MAP15 -- same CLOUDPNK deck, same aim." },
     { "map20", 20.f, 60.f, -1.f, true, -1.f,
       "`moon 20 60`, as MAP15 -- same CLOUDPNK deck, same aim." },
-    { "map27", 20.f, 60.f, -1.f, true, -1.f,
-      "`moon 20 60`, as MAP15 -- CLOUDBRN deck, own tint (RT_CLOUD_PRESETS)." },
+    { "map27", 20.f, 60.f, 1.f, true, -1.f,
+      "`moon 20 60`, as MAP15, but intensity pinned to 1 -- CLOUDBRN deck, own "
+      "tint (RT_CLOUD_PRESETS)." },
     { "map17", 20.f, 60.f, -1.f, true, -1.f,
-      "`moon 20 60`, as MAP15 -- CLOUDBRN deck, own tint (RT_CLOUD_PRESETS)." },
+      "`moon 20 60`, as MAP15 -- CLOUDBRN deck, own tint (RT_CLOUD_PRESETS). "
+      "The first row to set rt_sun_color: FF9966, a warm peach, so the "
+      "moonlight agrees with the orange deck it arrives through instead of "
+      "fighting it with the global cold B4C8FF.",
+      0xFF9966 },
+    { "map10", 90.f, 60.f, -1.f, true, -1.f,
+      "`moon 90 60`. Sun colour FFB380, the SAME hex as this map's cloud tint "
+      "(RT_CLOUD_PRESETS) rather than merely a warm one -- light and deck matched "
+      "exactly, which is the arrangement MAP17 approaches from the other side.",
+      0xFFB380 },
 };
 
 // The launcher's aim, captured once before any preset overwrites it, so a map
@@ -246,6 +262,7 @@ float g_moon_base_b    = 0.f;
 float g_moon_base_i    = 0.f;
 bool  g_moon_base_disc = false;
 float g_moon_base_sky  = 0.f;
+uint32_t g_moon_base_color = 0;
 
 const MoonPreset* RT_FindMoonPreset( const char* mapname )
 {
@@ -325,12 +342,12 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
       "MAXED, as MAP12 -- same CLOUDPRP room, same tint, same full shape (shells "
       "8, thick 1.0, transmit 0.45). Used to be its own thinner purple (8C7AB4, "
       "alpha 0.85, shells/thick default); superseded on request to match MAP12." },
-    { "map10", true, 0xC28153, 0.85f, 0.010f, -1, -1.f, -1.f,
-      "Burnt orange. MAP10's skybox room is a CLOUDBRN overcast over a MOUNTB "
-      "ridge, and the tint is that flat's own hue lifted to the luminance the "
-      "other presets sit at -- the slice art is achromatic, so the tint is the "
-      "cloud colour outright. Wind 0.010 because ACS script 670 scrolls the "
-      "authored ceiling at 3, the same rate MAP14 does; MAP11's storm is 4." },
+    { "map10", true, 0xFFB380, 0.85f, 0.010f, -1, -1.f, -1.f,
+      "Pale warm orange, and the map's moon row (RT_MOON_PRESETS) carries this "
+      "same FFB380 as rt_sun_color so the light matches the deck exactly. Was "
+      "C28153, the CLOUDBRN flat's own hue lifted to the other presets' "
+      "luminance. Wind 0.010 because ACS script 670 scrolls the authored ceiling "
+      "at 3, the same rate MAP14 does; MAP11's storm is 4." },
     { "map16", true, 0xC28153, 0.85f, 0.010f, -1, -1.f, -1.f,
       "The other CLOUDBRN map, same room and same scroll rate as MAP10, so the "
       "same orange. Kept as its own row rather than shared, because the table is "
@@ -383,10 +400,11 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
       "CLOUDPNK deck, as MAP15 -- same tint, shells and transmit, same moon aim." },
     { "map20", true, 0x990000, 0.85f, 0.010f, 3, -1.f, 1.0f,
       "CLOUDPNK deck, as MAP15 -- same tint, shells and transmit, same moon aim." },
-    { "map17", true, 0xFFA366, 0.85f, 0.010f, 3, -1.f, 1.0f,
-      "CLOUDBRN deck, peach-orange tint and full transmit, shells 3 -- paired "
-      "with the map17 moon row (RT_MOON_PRESETS, `moon 20 60`). Supersedes the "
-      "duller A67454 this row used to carry; same shape as MAP15/19/20/27." },
+    { "map17", true, 0xFF661A, 0.85f, 0.010f, 3, -1.f, 1.0f,
+      "CLOUDBRN deck, orange tint and full transmit, shells 3 -- paired with the "
+      "map17 moon row (RT_MOON_PRESETS, `moon 20 60`), which also carries the "
+      "matching rt_sun_color FF9966 so the light through this deck is as warm as "
+      "the deck. Supersedes A67454 and then FFA366; same shape as MAP15/19/20/27." },
     { "map27", true, 0xFF6600, 0.85f, 0.010f, 3, -1.f, 1.0f,
       "CLOUDBRN deck, orange tint and full transmit, shells 3 -- paired with the "
       "map27 moon row (RT_MOON_PRESETS, `moon 20 60`). Same shape as MAP15/19/20, "
@@ -469,6 +487,7 @@ void RT_ApplyMoonPreset( const char* mapname )
         g_moon_base_i    = float{ cvar::rt_sun_intensity };
         g_moon_base_disc = bool{ cvar::rt_moon_geo };
         g_moon_base_sky  = float{ cvar::rt_sky };
+        g_moon_base_color = *( cvar::rt_sun_color );
     }
 
     if( !bool{ cvar::rt_moon_presets } )
@@ -497,6 +516,11 @@ void RT_ApplyMoonPreset( const char* mapname )
     }
     cvar::rt_moon_geo      = p ? p->disc : g_moon_base_disc;
     cvar::rt_sky           = ( p && p->sky >= 0.f ) ? p->sky : g_moon_base_sky;
+    // 0 = keep the launcher's, as everywhere else here. Black is the sentinel
+    // for the same reason it is in RT_ResolveFog: a black sun emits nothing, so
+    // it is not a value any row can legitimately want.
+    RT_SetColorCVar( cvar::rt_sun_color,
+                     ( p && p->sun_color != 0 ) ? p->sun_color : g_moon_base_color );
 
     // Say what was applied. The cloud and fog tables announce themselves and this
     // one did not, which makes a row impossible to confirm from a log: `moon` on
@@ -504,11 +528,13 @@ void RT_ApplyMoonPreset( const char* mapname )
     // pinned aim no matter what the table then does. Adding a row and checking it
     // took effect had no evidence behind it until this line existed.
     Printf( RT_DiagPrintLevel(),
-            "RT moon: %s -> azimuth %.0f altitude %.0f intensity %.0f disc %s%s\n",
+            "RT moon: %s -> azimuth %.0f altitude %.0f intensity %.0f colour %06X "
+            "disc %s%s\n",
             mapname ? mapname : "(baseline capture)",
             float{ cvar::rt_sun_b },
             float{ cvar::rt_sun_a },
             float{ cvar::rt_sun_intensity },
+            *( cvar::rt_sun_color ) & 0xFFFFFF,
             bool{ cvar::rt_moon_geo } ? "on" : "off",
             p ? " [RT_MOON_PRESETS row]" : " [no row -- launcher's values]" );
 }
