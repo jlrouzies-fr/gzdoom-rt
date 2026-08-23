@@ -46,6 +46,11 @@
 
 #ifdef ARCH_IA32
 #include <immintrin.h>
+#if HAVE_RT && defined(_WIN32)
+#include <chrono>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h> // SleepEx, for the alertable worker wait below
+#endif
 #endif // ARCH_IA32
 
 CVAR(Bool, gl_multithread, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
@@ -1392,7 +1397,22 @@ void HWDrawInfo::RenderBSP(void *node, bool drawpsprites)
 		jobQueue.AddJob(RenderJob::TerminateJob, nullptr, nullptr);
 		Bsp.Unclock();
 		MTWait.Clock();
+#if HAVE_RT && defined(_WIN32)
+		// Doom64-RT: a fault on the worker thread is handled by CatchAllExceptions
+		// (i_main.cpp), which parks the worker in SleepForever and queues an APC on
+		// the main thread to show the crash dialog. A plain future.wait() is not
+		// alertable, so the APC never ran: the worker never consumed TerminateJob,
+		// this wait never returned, the window stopped pumping, and the game read as
+		// frozen with the audio still playing (the 3D-floor freeze, 2026-08). Wait in
+		// slices and service APCs between them so a worker fault becomes a crash
+		// report instead of a hang. SleepEx(0, TRUE) costs nothing when none is queued.
+		while( future.wait_for( std::chrono::milliseconds( 250 ) ) != std::future_status::ready )
+		{
+			SleepEx( 0, TRUE );
+		}
+#else
 		future.wait();
+#endif
 		MTWait.Unclock();
 	}
 	else

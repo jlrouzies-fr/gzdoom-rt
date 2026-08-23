@@ -205,6 +205,9 @@ void RT_SkyPrimsEndFrame()
     g_skyprims.clear();
 }
 
+// Defined below (global namespace); RT_Print in the anonymous namespace needs it.
+extern std::atomic< HWND > g_msgbox_parent;
+
 namespace
 {
 
@@ -264,7 +267,11 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
 
     if( flags & RG_MESSAGE_SEVERITY_ERROR )
     {
-        DPrintf( DMSG_ERROR, "%s\n", pMessage );
+        // Doom64-RT: Printf, not DPrintf. DPrintf(DMSG_ERROR) is silent unless
+        // `developer` >= 1, so a renderer error used to leave rt-console.log clean
+        // while the (owner-less) box below sat behind the game window -- which
+        // reads as a freeze. A renderer error must be visible in the log.
+        Printf( PRINT_HIGH, TEXTCOLOR_RED "RTGL1 error: %s\n", pMessage );
 
 #ifdef WIN32
         static bool g_breakOnError = true;
@@ -278,7 +285,9 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
                                     msg,
                                     msg.ends_with( '.' ) ? "" : "." );
 
-            int ok = MessageBoxA( nullptr,
+            // Owned by the game window like every other box in this file, so it
+            // comes up in front of the game instead of behind it.
+            int ok = MessageBoxA( g_msgbox_parent.load(),
                                   str.c_str(), // null-terminated
                                   "Renderer Error",
                                   MB_ABORTRETRYIGNORE | MB_DEFBUTTON2 | MB_ICONERROR );

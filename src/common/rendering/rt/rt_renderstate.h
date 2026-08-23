@@ -312,6 +312,20 @@ public:
             // E3M2 fails
             return;
         }
+        if( index < 0 )
+        {
+            // Doom64-RT: an F3DFloor is born with vindex = -1 (p_3dfloors.cpp) and
+            // only the level-load vertex builder fills it in. A rover drawn with it
+            // unset would turn -1 into 0xFFFFFFFF below and send the vertex
+            // formatter on a multi-billion-element walk. Skip the draw, say so once.
+            static bool warned = false;
+            if( !warned )
+            {
+                warned = true;
+                Printf( PRINT_HIGH, "RT: DrawIndexed with negative index %d, skipped\n", index );
+            }
+            return;
+        }
 
         auto vb = static_cast< RTVertexBuffer* >( mVertexBuffer );
         if( !vb )
