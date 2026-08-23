@@ -937,12 +937,6 @@
     RT_CVAR_NOARCH( rt_autoshot,        0,      "take a screenshot this many TICS after the map starts (35 = 1s). "
                                                 "0 = off. Pairs with rt_lava_autogoto for a hands-free A/B." )
     RT_CVAR_NOARCH( rt_autoquit,        0,      "quit this many tics after the map starts. 0 = off." )
-    RT_CVAR_NOARCH( rt_autoshot_height, 0.f,    "with rt_autoshot pending: hold the player this many MAP UNITS above the floor, no gravity, "
-                                                "while set (700 = over the towers, for horizon captures). 0 = off." )
-    RT_CVAR_NOARCH( rt_autoshot_pitch,  0.f,    "hold the player's view pitch at this many degrees UP while set "
-                                                "(45 = sky captures). 0 = off. +lookup from an exec'd cfg does "
-                                                "nothing -- key-state commands need a key -- so this sets the "
-                                                "pitch directly, every tic." )
     RT_CVAR_NOARCH( rt_autoshot_every,  0,      "after the first rt_autoshot, keep taking one every this many "
                                                 "tics. 0 = a single shot. A moving effect cannot be judged from "
                                                 "one frame, and relaunching for each moment is slower than "
@@ -5042,7 +5036,7 @@
 
     RT_CVAR( hack_initialframesskip,    true,   "skip initial a couple of frames on game launch; if not skipped, there might be a distracting flashing of the main window" )
 
-    RT_CVAR( rt_verbose,                false,  "print RT/RTGL1 diagnostics to the ON-SCREEN notify area as well as the "
+    RT_CVAR_NOARCH( rt_verbose,         false,  "print RT/RTGL1 diagnostics to the ON-SCREEN notify area as well as the "
                                                 "console. Off (release default) still writes every line to the console "
                                                 "buffer and the logfile -- it only stops boot banners, the denoiser path, "
                                                 "ReSTIR settings and per-level chatter from painting over the game. "

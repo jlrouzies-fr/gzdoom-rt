@@ -2358,42 +2358,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         }
     }
 
-    // Unattended capture -- see rt_autoshot. rt_autoshot_pitch holds the view
-    // up for sky captures; gzdoom's pitch is positive DOWN.
-    if( primaryLevel && float{ cvar::rt_autoshot_pitch } != 0.f )
-    {
-        if( auto* mo = players[ consoleplayer ].mo )
-        {
-            const float deg = std::clamp( float{ cvar::rt_autoshot_pitch }, -89.f, 89.f );
-            mo->Angles.Pitch = DAngle::fromDeg( -deg );
-        }
-    }
-    // The height hold is a CAPTURE tool and nothing else: it runs only while an
-    // rt_autoshot is pending (the shot tic has not passed), and it puts the
-    // flags it set back afterwards. The first cut held whenever the cvar was
-    // non-zero and never cleared MF_NOGRAVITY|MF_NOCLIP, which is "I fall from
-    // the ceiling on map map23" (reported 2026-08-23).
-    {
-        static bool s_held = false;
-        const bool  want   = primaryLevel && float{ cvar::rt_autoshot_height } > 0.f &&
-                           int{ cvar::rt_autoshot } > 0 &&
-                           primaryLevel->maptime <= int{ cvar::rt_autoshot } + 2;
-        if( auto* mo = primaryLevel ? players[ consoleplayer ].mo : nullptr )
-        {
-            if( want )
-            {
-                mo->flags |= MF_NOGRAVITY | MF_NOCLIP;
-                mo->Vel.Z = 0;
-                mo->SetZ( mo->floorz + double( float{ cvar::rt_autoshot_height } ) );
-                s_held = true;
-            }
-            else if( s_held )
-            {
-                mo->flags &= ~( MF_NOGRAVITY | MF_NOCLIP );
-                s_held = false;
-            }
-        }
-    }
+    // The renderer never writes the player (pitch, position, flags) -- AGENTS.md.
     if( primaryLevel && ( int{ cvar::rt_autoshot } > 0 || int{ cvar::rt_autoquit } > 0 ) )
     {
         const int t = primaryLevel->maptime;
