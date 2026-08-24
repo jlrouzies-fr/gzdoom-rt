@@ -1559,6 +1559,95 @@ CCMD( rt_lava_goto )
     }
 }
 
+// Walk to the blood, without walking to the blood.
+//
+// The same instrument as rt_lava_goto, for the same reason and after the same
+// mistake: a blood pool is a puddle in a corner of a map, and every judgement
+// of "is the relief showing / is the pulse moving" is worthless from wherever
+// the player happened to spawn. MAP08's nine pools sit at z -256 in pits, where
+// "it does not work" and "it works and you cannot see it" are the same picture
+// -- which is exactly what cost the poison bubbles a round.
+//
+// Prints every pool it found either way, so "there is no blood here" stays
+// distinguishable from "the blood is not doing anything".
+CCMD( rt_blood_goto )
+{
+    if( !primaryLevel )
+    {
+        Printf( "rt_blood_goto: no level\n" );
+        return;
+    }
+
+    AActor* pmo = players[ consoleplayer ].mo;
+    if( !pmo )
+    {
+        Printf( "rt_blood_goto: no player\n" );
+        return;
+    }
+
+    int  found = 0;
+    // The FIRST POOL WE CAN ACTUALLY STAND IN, not "the first pool, if we can".
+    // rt_lava_goto keys its move off `found == 1`, so a concave first sector --
+    // whose bounding-box centre falls outside itself -- makes it print its
+    // findings and move nobody. On MAP17 the first blood sector is exactly that,
+    // so the lava version's shape would have left the player at the spawn point
+    // and reported success.
+    bool moved = false;
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
+    {
+        const sector_t& sec  = primaryLevel->sectors[ i ];
+        auto*           gtex = TexMan.GetGameTexture( sec.GetTexture( sector_t::floor ), true );
+        if( !gtex )
+        {
+            continue;
+        }
+        // PREFIX, not an exact name: D64B2_01 is frame 1 of a 64-frame ANIMDEFS
+        // sequence and GetTexture() returns whichever frame is showing this tic,
+        // so an exact match succeeds on one tic in 64. Same trap as the poison
+        // bubbles' sector scan.
+        const char* fl = gtex->GetName().GetChars();
+        if( strncmp( fl, "D64B1_", 6 ) != 0 && strncmp( fl, "D64B2_", 6 ) != 0 )
+        {
+            continue;
+        }
+        found++;
+
+        const DVector2 c{ double( sec.centerspot.X ), double( sec.centerspot.Y ) };
+        // centerspot is the bounding-box centre and a concave sector's can lie
+        // outside it, so only move if it really is in this sector.
+        const bool   inside = ( primaryLevel->PointInSector( c.X, c.Y ) == &sec );
+        const double z      = sec.floorplane.ZatPoint( c );
+
+        Printf( "rt_blood_goto: sector %u floor \"%s\" at (%.0f %.0f %.0f)%s\n",
+                i,
+                fl,
+                c.X,
+                c.Y,
+                z,
+                inside ? "" : "  [centre is outside the sector, not moving there]" );
+
+        if( !moved && inside )
+        {
+            moved = true;
+            pmo->SetOrigin( DVector3{ c.X, c.Y, z + 8.0 }, false );
+            Printf( "rt_blood_goto: moved you there. rt_blood_relief 0/1 flips the "
+                    "relief, rt_blood_flow_debug 1 paints the flow phase.\n" );
+        }
+    }
+
+    if( found == 0 )
+    {
+        Printf( "rt_blood_goto: no blood floor in this map. "
+                "MAP17 (39 pools), MAP32 (12) and MAP08 (9, in pits) have one.\n" );
+    }
+    else if( !moved )
+    {
+        Printf( "rt_blood_goto: found %d pool(s) but every centre lies outside its "
+                "own sector, so you were not moved.\n",
+                found );
+    }
+}
+
 CCMD( rt_sky_here )
 {
     if( !bool{ cvar::rt_sky_log } )
@@ -2416,6 +2505,20 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UploadHandGlowLights();
     RT_UploadFlameLights();
     RT_UploadLavaLights();
+    // Doom64-RT: put the player on a blood pool on the first frame of a map that
+    // has one. It has to be here rather than a "+rt_blood_goto" on the command
+    // line: those run before the level exists, so the CCMD would report "no
+    // level" and the launcher would look like it had worked. Same reason
+    // rt_lava_autogoto lives inside RT_UploadLavaLights.
+    if( cvar::rt_blood_autogoto && primaryLevel )
+    {
+        static const void* s_bloodGoto = nullptr;
+        if( s_bloodGoto != primaryLevel )
+        {
+            s_bloodGoto = primaryLevel;
+            AddCommandString( "rt_blood_goto" );
+        }
+    }
     RT_UploadSwitchLights();
     RT_UpdateSectorEmisThreshold();
     RT_WatchLightlevels();
@@ -2533,6 +2636,18 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
                                     l_col255( cvar::rt_blood_crest_r,
                                               cvar::rt_blood_crest_g,
                                               cvar::rt_blood_crest_b ) },
+        // Same 0..3 order. Only blood has authored relief and a baked flow
+        // map (d64r-liquid-art.wad + tools/gen_liquid_art.py); the other
+        // three keep the water wave and are unchanged.
+        .stylizedLiquidRelief   = { 0.f, 0.f, 0.f, cvar::rt_blood_relief },
+        .stylizedLiquidFlow     = { 0.f, 0.f, 0.f, cvar::rt_blood_flow },
+        // Water and sludge project caustics as before; nukage and blood are
+        // opaque and project none. Scales rt_water_caustics, does not replace it.
+        .stylizedLiquidCaustics = { 1.f, cvar::rt_nukage_caustics, 1.f, cvar::rt_blood_caustics },
+        .liquidFlowSpeed        = cvar::rt_blood_flow_speed,
+        .liquidFlowScale        = cvar::rt_blood_flow_scale,
+        .liquidFlowDist         = cvar::rt_blood_flow_dist,
+        .liquidFlowDebug        = cvar::rt_blood_flow_debug ? 1.f : 0.f,
         .lavaEmisBoost          = std::max( 0.f, float{ cvar::rt_lava_emis } ),
         .lavaFlowStrength       = std::clamp( float{ cvar::rt_lava_flow }, 0.f, 1.f ),
         .lavaFlowSpeed          = cvar::rt_lava_flow_speed,
@@ -3130,11 +3245,31 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .lensDirtIntensity = cvar::rt_bloom_dirt ? dirtscale : 0.f,
     };
 
+    // GI path depth, and the shadow-ray depth it needs. A bounce vertex at
+    // index >= maxBounceShadows samples NO analytic lights (RaygenCommon.h
+    // isDirectIlluminationValid), so past rt_shadowrays a deeper bounce costs
+    // a ray and a full RIS pass to return emissives only. Indices are 0
+    // (primary) and 1..N (indirect vertices): lighting depth N needs N+1.
+    //
+    // This is a per-frame PARAM value. The cvar itself is never written --
+    // rt_shadowrays is archived and deliberately unpinned, and a startup
+    // re-apply of it once cost a day (rt_quality.cpp, tools/d64rt-pins.cfg).
+    // 0 is NOT a low value -- it means "light every vertex, cast no shadow
+    // rays" -- so it is preserved, never floored. And the floor is a no-op at
+    // depth 2, so the shipped configuration is untouched.
+    const uint32_t giDepth  = uint32_t( std::clamp( int( cvar::rt_gi_bounces ), 1, 4 ) );
+    uint32_t       shadowsN = safe_uint( *cvar::rt_shadowrays );
+    if( cvar::rt_gi_bounce_shadows && giDepth > 2u && shadowsN != 0u )
+    {
+        shadowsN = std::max( shadowsN, giDepth + 1u );
+    }
+
     auto illum_params = RgDrawFrameIlluminationParams{
         .sType                              = RG_STRUCTURE_TYPE_DRAW_FRAME_ILLUMINATION_PARAMS,
         .pNext                              = &bloom_params,
-        .maxBounceShadows                   = safe_uint( *cvar::rt_shadowrays ),
-        .enableSecondBounceForIndirect      = true,
+        .maxBounceShadows                   = shadowsN,
+        .indirectBounces                    = giDepth,
+        .indirectLegacyBounceWeight         = static_cast< RgBool32 >( bool( cvar::rt_gi_bounce_legacy ) ),
         .cellWorldSize                      = 2.0f,
         .directDiffuseSensitivityToChange   = std::clamp( float( cvar::rt_illum_sens_direct ), 0.f, 1.f ),
         .indirectDiffuseSensitivityToChange = std::clamp( float( cvar::rt_illum_sens_indirect ), 0.f, 1.f ),
@@ -3150,7 +3285,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .rrFireflyMinLum                    = std::max( float( cvar::rt_rr_firefly_minlum ), 0.0f ),
         .restirBlueNoise                    = static_cast< RgBool32 >( bool( cvar::rt_restir_bluenoise ) ),
         .shadowSamples                      = uint32_t( std::clamp( int( cvar::rt_shadow_samples ), 1, 8 ) ),
-        .debugRestirM                       = static_cast< RgBool32 >( bool( cvar::rt_debug_restir_m ) ),
+        .debugRestirM                       = uint32_t( std::clamp( int( cvar::rt_debug_restir_m ), 0, 2 ) ),
         .debugVisibility                    = uint32_t( std::clamp( int( cvar::rt_debug_visibility ), 0, 2 ) ),
         .debugShowFlags                     = uint32_t( std::max( 0, int( cvar::rt_debug_show ) ) ),
         .restirTemporalJitter               = std::clamp( float( cvar::rt_restir_tjitter ), 0.0f, 8.0f ),

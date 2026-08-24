@@ -1328,18 +1328,25 @@ namespace firststart
                          TAG_DONE );
         };
 
+        // "DLSS 2" / "DLSS 3" is what upstream printed, and the number was never a
+        // version: it named the marketing TIER -- 2 = Super Resolution alone,
+        // 3 = SR plus Frame Generation. With FG off, every player read "DLSS 2"
+        // while running the DLSS 4 runtime in rt/bin (nvngx_dlss.dll is 310.7).
+        // Name the FG state instead; it stays true whatever DLL is installed.
+        // The Options-menu twin of this is listmenuitems_rt.zs RT_MakeStrFromValue,
+        // shipped from rt-wad-overlay -- change both or they disagree on screen.
         auto l_getmode = []() -> const char* {
             if( cvar::rt_upscale_dlss > 0 && cvar::rt_available_dlss2 )
             {
                 return cvar::rt_framegen && cvar::rt_available_dlss3fg //
-                           ? "DLSS 3"
-                           : "DLSS 2";
+                           ? "DLSS + FG"
+                           : "DLSS";
             }
             if( cvar::rt_upscale_fsr2 > 0 && cvar::rt_available_fsr2 )
             {
                 return cvar::rt_framegen && cvar::rt_available_fsr3fg //
-                           ? "FSR 3"
-                           : "FSR 2";
+                           ? "FSR + FG"
+                           : "FSR";
             }
             return "Custom";
         };
@@ -1375,7 +1382,7 @@ namespace firststart
         auto l_getvsync = []() -> const char* {
             if( vsync_forced() )
             {
-                return "FORCED BY DLSS 3";
+                return "FORCED BY FRAME GEN";
             }
             return cvar::rt_vsync ? "ON" : "OFF";
         };

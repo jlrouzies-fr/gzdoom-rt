@@ -2564,12 +2564,15 @@
                                                 "unfiltered specular, 16 = unfiltered indirect, 32 = ONLY denoised direct "
                                                 "diffuse, 64 = only specular, 128 = only indirect diffuse, 1024 = normals. "
                                                 "Bisect a banding artefact by layer with these before touching a denoiser." )
-    RT_CVAR_NOARCH( rt_debug_restir_m,       false,    "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
+    RT_CVAR_NOARCH( rt_debug_restir_m,       0,        "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
                                                 "radiance, as a green ramp (M/32; black = M=1, the worst case). ReSTIR at "
                                                 "1 spp only converges because temporal reuse grows M. Stand still and "
                                                 "watch it brighten, then move: if it goes dark, history is being rejected "
                                                 "and the RAW signal really is noisier in motion ??? upstream of every "
-                                                "denoiser, so no denoiser tuning can fix it." )
+                                                "denoiser, so no denoiser tuning can fix it. 1 = the DIRECT reservoir. "
+                                                "2 = the INDIRECT reservoir, painted into the unfiltered-indirect buffer "
+                                                "(view with rt_debug_show 16): the GI-depth contract check -- M must not "
+                                                "move with rt_gi_bounces, because depth touches radiance only." )
 
     RT_CVAR_NOARCH( rt_restir_tjitter,        2.0f,   "ReSTIR temporal reuse tap jitter radius, in pixels (stock 2). The jitter "
                                                 "decorrelates the tap, but on grazing surfaces a 2px offset moves depth "
@@ -2743,6 +2746,42 @@
     RT_CVAR( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
                                                 "into the initial reservoir. Costs ~4 extra rays per extra sample ??? the "
                                                 "expensive one. 1 = stock (bit-identical)." )
+
+    // --- GI path depth (Doom64-RT, 2026-08-24) ---------------------------------
+    // ORTHOGONAL to rt_spp_indirect: that is paths per pixel, this is vertices
+    // per path. RTGL1 shipped depth 2 hardcoded and unrolled, with the API flag
+    // that was meant to gate the second bounce sitting commented out in
+    // RtRaygenIndirect.inl ("diffuse very red") -- so the second bounce always
+    // ran, and nothing could ask for a third. docs/rt-gi-bounces.md.
+    //
+    // rt_gi_bounces and rt_gi_bounce_legacy are ARCHIVED and in the Quality
+    // menu (rt-wad-overlay/menudef.txt), like rt_shadowrays beside them: a
+    // depth is a choice, not a per-session probe, and a menu slider on a
+    // NOARCH cvar silently resets every launch. They are deliberately NOT in
+    // the rt_quality.cpp preset table yet -- with the legacy weight on, each
+    // extra bounce is ~6x too bright, so no preset may raise the depth until
+    // the energy fix has been judged. rt_gi_bounce_shadows stays NOARCH: it is
+    // the "deep but unlit" control for the ladder, not a setting.
+    RT_CVAR( rt_gi_bounces,                 2,  "GI path depth: bounce vertices after the primary hit [1..4]. 2 = stock. "
+                                                "A vertex past rt_shadowrays samples NO analytic lights (it costs a ray "
+                                                "and a full RIS pass to return emissives only), so lighting depth N needs "
+                                                "rt_shadowrays >= N+1 -- rt_gi_bounce_shadows applies that floor per frame. "
+                                                "Each extra bounce costs ~1 bounce ray + 1 shadow ray + rt_restir_initial "
+                                                "RIS evaluations per indirect sample per pixel. With rt_gi_bounce_legacy 1 "
+                                                "every extra bounce is also ~6x too bright, so judge depth 3 only after "
+                                                "the legacy weight is off." )
+    RT_CVAR( rt_gi_bounce_legacy,           1,  "1 = stock weighting on bounces >= 2: radiance * 1/pdf and nothing else, "
+                                                "which for a cosine-sampled Lambertian is pi/cos too much -- mean ~2pi, "
+                                                "with a 1/cos tail. That is why the second bounce was bright, saturated "
+                                                "and firefly-prone, and why its samples won and held the ReSTIR "
+                                                "reservoir. 0 = the correct throughput of exactly 1: expect GI-lit areas "
+                                                "to get DIMMER and less saturated. Ships 1 so the image does not move "
+                                                "until the fix has been judged with exposure pinned." )
+    RT_CVAR_NOARCH( rt_gi_bounce_shadows,   1,  "1 = when rt_gi_bounces > 2, raise the shadow-ray depth handed to RTGL1 "
+                                                "to rt_gi_bounces+1 for the frame so the deeper vertices are actually "
+                                                "lit. Never writes rt_shadowrays (it is archived and unpinned on purpose, "
+                                                "tools/d64rt-pins.cfg) and is a no-op at depth 2. 0 = the 'deep but "
+                                                "unlit' control: pays for the bounce and collects emissives only." )
 
     // --- ReSTIR quality (previously hardcoded) -------------------------------
     RT_CVAR( rt_restir_initial,           32,   "ReSTIR RIS candidate lights per pixel [1..64] (was hardcoded 8). Traces "
@@ -4940,6 +4979,46 @@
     RT_CVAR( rt_blood_crest_r,        255,      "stylized blood: caustic vein colour Red [0,255]" )
     RT_CVAR( rt_blood_crest_g,        115,      "stylized blood: caustic vein colour Green [0,255]" )
     RT_CVAR( rt_blood_crest_b,        102,      "stylized blood: caustic vein colour Blue [0,255]" )
+    // Coagulated blood pools. The art is d64r-liquid-art.wad: one image for all
+    // 128 D64B1_/D64B2_ frames, plus _n/_h/_orm on every one of them. Built by
+    // tools/gen_liquid_art.py; the whole feature is docs/rt-blood-pools.md.
+    //
+    // WITHOUT THE WAD LOADED THESE DO NOTHING, and the failure is silent: the
+    // relief needs an _n to give back, and the flow needs the vein direction
+    // baked into the height map's spare channels. Check the wad before tuning.
+    RT_CVAR( rt_blood_relief,           1.0f,   "how much of the AUTHORED relief survives on blood, 0..1. 0 = the "
+                                                "animated water wave, which is what blood used to get and is still "
+                                                "what water/nukage/sludge get. 1 = the _n map alone: a still surface "
+                                                "with real ridges. Rides on rt_normalmap_stren, and its depth comes "
+                                                "from the _h parallax, which rt_heightmap_stren scales." )
+    RT_CVAR( rt_blood_flow,             0.7f,   "depth of the FLOW MAP on blood: a detail texture advected along the "
+                                                "vein direction baked into the height map, so blobs of liquid slide "
+                                                "down each channel. Texture moving, not brightness pulsing -- the "
+                                                "first version pulsed and read as flicker. 0 = still." )
+    RT_CVAR( rt_blood_flow_speed,       0.15f,  "cycles per second of the advection. Slow on purpose -- this is a "
+                                                "thick fluid, and fast reads as a scrolling texture." )
+    RT_CVAR( rt_blood_flow_scale,       6.0f,   "detail tiles per 64-unit blood tile. Higher = smaller blobs in the "
+                                                "veins. Around 6 the blobs are a vein-width across." )
+    RT_CVAR( rt_blood_flow_dist,        0.25f,  "how far the detail travels per cycle, in blood-tile UV (1 = 64 map "
+                                                "units). With the speed above, 0.25 is about 2.4 units/s." )
+    RT_CVAR( rt_blood_caustics,         0.0f,   "how much of rt_water_caustics a BLOOD pool projects onto the walls "
+                                                "and floor around it. 0 by default because a caustic is light "
+                                                "refracted THROUGH a fluid and focused on what is beyond it, and "
+                                                "blood is opaque -- it was casting the same rippling pool-light as "
+                                                "water, which is the loudest single thing saying 'this is water with "
+                                                "red paint on it'. 1 restores the old behaviour." )
+    RT_CVAR( rt_nukage_caustics,        0.0f,   "same for NUKAGE (D64N*): how much of rt_water_caustics a poison "
+                                                "pool projects. 0 by default -- it is opaque too. 1 restores the "
+                                                "old behaviour." )
+    RT_CVAR_NOARCH( rt_blood_autogoto,  false,  "on the first frame of a map that has a blood pool, move the player "
+                                                "onto it. A pool is a puddle in a corner and every verdict judged "
+                                                "from the spawn point is worthless -- MAP08's sit at z -256 in pits, "
+                                                "where 'broken' and 'working, 256 units below you' look identical. "
+                                                "The CCMD is rt_blood_goto; this is the hands-free form." )
+    RT_CVAR_NOARCH( rt_blood_flow_debug, false, "paint the ADVECTED flow detail instead of the surface: green blobs "
+                                                "sliding along each vein means the bake and the plumbing both work. "
+                                                "Flat blue means the detail never crossed the G-buffer, which by eye "
+                                                "is identical to 'the motion is too subtle'." )
     RT_CVAR( rt_water_caustic,          1.5f,   "stylized water: how hard the wave crests brighten the "
                                                 "texture's caustic veins. 0 = static veins." )
     // Reflection strength is deliberately NOT physical. Real water has F0=0.02,
