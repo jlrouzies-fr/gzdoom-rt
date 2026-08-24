@@ -4961,21 +4961,27 @@
     RT_CVAR( rt_water_crest_r,        140,      "stylized water: caustic vein colour Red [0,255]" )
     RT_CVAR( rt_water_crest_g,        204,      "stylized water: caustic vein colour Green [0,255]" )
     RT_CVAR( rt_water_crest_b,        255,      "stylized water: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_nukage_tint_r,          2,      "stylized nukage (D64N*): body colour Red [0,255]" )
-    RT_CVAR( rt_nukage_tint_g,         15,      "stylized nukage: body colour Green [0,255]" )
-    RT_CVAR( rt_nukage_tint_b,          4,      "stylized nukage: body colour Blue [0,255]" )
-    RT_CVAR( rt_nukage_crest_r,       153,      "stylized nukage: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_nukage_crest_g,       255,      "stylized nukage: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_nukage_crest_b,       115,      "stylized nukage: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_sludge_tint_r,         15,      "stylized sludge (D64S*): body colour Red [0,255]" )
-    RT_CVAR( rt_sludge_tint_g,          9,      "stylized sludge: body colour Green [0,255]" )
-    RT_CVAR( rt_sludge_tint_b,          2,      "stylized sludge: body colour Blue [0,255]" )
-    RT_CVAR( rt_sludge_crest_r,       255,      "stylized sludge: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_sludge_crest_g,       204,      "stylized sludge: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_sludge_crest_b,       115,      "stylized sludge: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_blood_tint_r,          15,      "stylized blood (D64B*): body colour Red [0,255]" )
-    RT_CVAR( rt_blood_tint_g,           2,      "stylized blood: body colour Green [0,255]" )
-    RT_CVAR( rt_blood_tint_b,           2,      "stylized blood: body colour Blue [0,255]" )
+    RT_CVAR( rt_nukage_tint_r,          1,      "stylized nukage (D64N*): body colour Red [0,255]" )
+    RT_CVAR( rt_nukage_tint_g,         5,      "stylized nukage: body colour Green [0,255]" )
+    RT_CVAR( rt_nukage_tint_b,          1,      "stylized nukage: body colour Blue [0,255]" )
+    RT_CVAR( rt_nukage_crest_r,       50,      "stylized nukage: caustic vein colour Red [0,255]" )
+    RT_CVAR( rt_nukage_crest_g,       150,      "stylized nukage: caustic vein colour Green [0,255]" )
+    RT_CVAR( rt_nukage_crest_b,       50,      "stylized nukage: caustic vein colour Blue [0,255]" )
+    RT_CVAR( rt_sludge_tint_r,          9,      "stylized sludge (D64S*): body colour Red [0,255]" )
+    RT_CVAR( rt_sludge_tint_g,          3,      "stylized sludge: body colour Green [0,255]" )
+    RT_CVAR( rt_sludge_tint_b,          1,      "stylized sludge: body colour Blue [0,255]" )
+    // Retuned DOWN from 255,204,115 when the reference art landed. That value
+    // was calibrated against the old, dimmer flat; the exposed art drives the
+    // vein mask to a ~0.44 mean, so the surface sits nearly half-way to this
+    // colour EVERYWHERE and a pale tan crest made the whole bed read as light
+    // sand rather than mud. Same correction rt_nukage_crest needed, for the
+    // same reason.
+    RT_CVAR( rt_sludge_crest_r,       120,      "stylized sludge: caustic vein colour Red [0,255]" )
+    RT_CVAR( rt_sludge_crest_g,        78,      "stylized sludge: caustic vein colour Green [0,255]" )
+    RT_CVAR( rt_sludge_crest_b,        38,      "stylized sludge: caustic vein colour Blue [0,255]" )
+    RT_CVAR( rt_blood_tint_r,          20,     "stylized blood (D64B*): body colour Red [0,255]" )
+    RT_CVAR( rt_blood_tint_g,           1,      "stylized blood: body colour Green [0,255]" )
+    RT_CVAR( rt_blood_tint_b,           1,      "stylized blood: body colour Blue [0,255]" )
     RT_CVAR( rt_blood_crest_r,        255,      "stylized blood: caustic vein colour Red [0,255]" )
     RT_CVAR( rt_blood_crest_g,        115,      "stylized blood: caustic vein colour Green [0,255]" )
     RT_CVAR( rt_blood_crest_b,        102,      "stylized blood: caustic vein colour Blue [0,255]" )
@@ -4991,16 +4997,18 @@
                                                 "what water/nukage/sludge get. 1 = the _n map alone: a still surface "
                                                 "with real ridges. Rides on rt_normalmap_stren, and its depth comes "
                                                 "from the _h parallax, which rt_heightmap_stren scales." )
-    RT_CVAR( rt_blood_flow,             0.7f,   "depth of the FLOW MAP on blood: a detail texture advected along the "
+    RT_CVAR( rt_blood_flow,             1.0f,   "depth of the FLOW MAP on blood: a detail texture advected along the "
                                                 "vein direction baked into the height map, so blobs of liquid slide "
                                                 "down each channel. Texture moving, not brightness pulsing -- the "
                                                 "first version pulsed and read as flicker. 0 = still." )
-    RT_CVAR( rt_blood_flow_speed,       0.15f,  "cycles per second of the advection. Slow on purpose -- this is a "
-                                                "thick fluid, and fast reads as a scrolling texture." )
-    RT_CVAR( rt_blood_flow_scale,       6.0f,   "detail tiles per 64-unit blood tile. Higher = smaller blobs in the "
-                                                "veins. Around 6 the blobs are a vein-width across." )
-    RT_CVAR( rt_blood_flow_dist,        0.25f,  "how far the detail travels per cycle, in blood-tile UV (1 = 64 map "
-                                                "units). With the speed above, 0.25 is about 2.4 units/s." )
+    RT_CVAR( rt_blood_flow_speed,       0.5f,   "detail tiles scrolled per second along the vein. Slow on purpose -- "
+                                                "this is a thick fluid, and fast reads as a scrolling texture." )
+    RT_CVAR( rt_blood_flow_scale,       6.0f,   "detail tiles per 64-unit blood tile, measured along the vein. "
+                                                "Higher = finer streaks." )
+    RT_CVAR( rt_blood_flow_aspect,      3.0f,   "across-vein frequency multiplier. The noise is sampled in a "
+                                                "vein-aligned frame, and this stretches it into streaks that run "
+                                                "lengthwise -- the shape that reads as liquid moving. 1 = round "
+                                                "blobs, which read as shimmer (that was version two)." )
     RT_CVAR( rt_blood_caustics,         0.0f,   "how much of rt_water_caustics a BLOOD pool projects onto the walls "
                                                 "and floor around it. 0 by default because a caustic is light "
                                                 "refracted THROUGH a fluid and focused on what is beyond it, and "
@@ -5010,6 +5018,48 @@
     RT_CVAR( rt_nukage_caustics,        0.0f,   "same for NUKAGE (D64N*): how much of rt_water_caustics a poison "
                                                 "pool projects. 0 by default -- it is opaque too. 1 restores the "
                                                 "old behaviour." )
+    RT_CVAR( rt_sludge_caustics,        0.0f,   "same for SLUDGE (D64S*): how much of rt_water_caustics a sludge "
+                                                "pool projects. 0 by default -- the coagulated crust art is as "
+                                                "opaque as blood's and poison's. 1 restores the old behaviour." )
+    RT_CVAR( rt_sludge_relief,          1.0f,   "SLUDGE (D64S*): how much of the authored _n relief survives "
+                                                "against the animated water wave. 1 = the mud bed alone -- lumps, "
+                                                "rims and pits that hold still, which is what mud is. 0 = the old "
+                                                "ripple. Its height comes from the art's full luminance range, not "
+                                                "from the vein mask blood uses: 90%% of sludge's texels saturate "
+                                                "that mask, so a mask-derived height would be a flat plateau." )
+    RT_CVAR( rt_liquid_checkerboard,    true,   "CONSOLE ONLY -- deliberately not in the Quality menu, because what "
+                                                "0 trades away is the reflection that sells WATER and no player "
+                                                "meeting it in a list would know that. How the stylized liquid "
+                                                "surfaces (water, nukage, sludge, blood) are drawn. 1 = the stock CHECKERBOARD: the lit surface "
+                                                "on odd screen columns, a mirror reflection on even ones, resolved "
+                                                "into F*mirror + (1-F)*surface. 0 = FULL RESOLUTION, NO MIRROR: every "
+                                                "pixel shades the surface, the sheen is the glossy specular off its "
+                                                "roughness. The trade is honest -- 0 loses water's reflection of the "
+                                                "room -- but the split is a stability problem on any liquid with an "
+                                                "authored normal: half the columns are rebuilt from their neighbours "
+                                                "and that pattern crawls with the camera under a moving light. A "
+                                                "liquid whose rt_*_refl is 0 (sludge ships so) takes the full-res "
+                                                "path whatever this says, which is why the mud bed needs nothing "
+                                                "from this cvar. Archived; deliberately NOT pinned." )
+    RT_CVAR( rt_sludge_refl,            0.0f,   "SLUDGE: how much of the stylized water MIRROR sludge keeps. 1 = "
+                                                "the same mirror water gets, which is the loudest single thing "
+                                                "saying 'this is water with brown paint on it'. 0 = NO MIRROR AND "
+                                                "NO CHECKERBOARD: the bed is shaded on every pixel at full "
+                                                "resolution and its wet sheen is the standard glossy specular off "
+                                                "rt_sludge_rough. Ships at 0 for two reasons: it is the lighter, "
+                                                "dedicated reflection a mud bed wants, and the checkerboard was "
+                                                "the flashlight bug -- on a high-contrast normal, half the columns "
+                                                "are rebuilt from their neighbours and the pattern crawls with the "
+                                                "camera. Any value above 0 brings the split back." )
+    RT_CVAR( rt_sludge_rough,           0.8f,   "SLUDGE: surface roughness. 0 or less = use rt_water_rough (0.1, a "
+                                                "near-mirror). This is what the denoiser and later bounces see; the "
+                                                "reflection ray itself is a mirror off the shaded normal either "
+                                                "way, so it is rt_sludge_relief that actually scatters it. Use the "
+                                                "two together." )
+    RT_CVAR_NOARCH( rt_sludge_autogoto, false,  "same as rt_blood_autogoto, for SLUDGE. Only MAP12 (6 sectors) and "
+                                                "MAP34 have sludge floors, so the odds of spawning in sight of one "
+                                                "are poor. The CCMD is rt_sludge_goto. Takes priority over "
+                                                "rt_blood_autogoto if both are set." )
     RT_CVAR_NOARCH( rt_blood_autogoto,  false,  "on the first frame of a map that has a blood pool, move the player "
                                                 "onto it. A pool is a puddle in a corner and every verdict judged "
                                                 "from the spawn point is worthless -- MAP08's sit at z -256 in pits, "
@@ -5034,7 +5084,7 @@
                                                 "true mirror at the horizon, lower keeps it a sheen." )
     RT_CVAR( rt_water_rough,            0.1f,   "stylized water: roughness of the surface half (specular "
                                                 "highlight width from lights)" )
-    RT_CVAR( rt_water_glow,             0.15f,  "stylized water: unlit on-screen sheen on the caustic veins, "
+    RT_CVAR( rt_water_glow,             0.04f,  "stylized water: unlit on-screen sheen on the caustic veins, "
                                                 "so the pattern still reads in near-black rooms. Casts no "
                                                 "light. 0 = fully lighting-dependent." )
     RT_CVAR( rt_water_veinref,          0.1f,   "stylized water: LINEAR luminance that saturates the caustic "

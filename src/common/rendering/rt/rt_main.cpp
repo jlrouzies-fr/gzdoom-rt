@@ -1570,18 +1570,29 @@ CCMD( rt_lava_goto )
 //
 // Prints every pool it found either way, so "there is no blood here" stays
 // distinguishable from "the blood is not doing anything".
-CCMD( rt_blood_goto )
+// Doom64-RT: put the player on a liquid pool.
+//
+// A pool is a puddle in a corner, and every verdict judged from the spawn point
+// is worthless -- MAP08's nine blood pools sit at z -256 in PITS, where "broken"
+// and "working, 256 units below you" are the same screenshot. Shared by
+// rt_blood_goto and rt_sludge_goto; the only thing that differs is the pair of
+// floor-texture prefixes and what to print.
+static void l_liquidGoto( const char* cmd,
+                          const char* prefix1,
+                          const char* prefix2,
+                          const char* hint,
+                          const char* whereToLook )
 {
     if( !primaryLevel )
     {
-        Printf( "rt_blood_goto: no level\n" );
+        Printf( "%s: no level\n", cmd );
         return;
     }
 
     AActor* pmo = players[ consoleplayer ].mo;
     if( !pmo )
     {
-        Printf( "rt_blood_goto: no player\n" );
+        Printf( "%s: no player\n", cmd );
         return;
     }
 
@@ -1606,7 +1617,7 @@ CCMD( rt_blood_goto )
         // so an exact match succeeds on one tic in 64. Same trap as the poison
         // bubbles' sector scan.
         const char* fl = gtex->GetName().GetChars();
-        if( strncmp( fl, "D64B1_", 6 ) != 0 && strncmp( fl, "D64B2_", 6 ) != 0 )
+        if( strncmp( fl, prefix1, 6 ) != 0 && strncmp( fl, prefix2, 6 ) != 0 )
         {
             continue;
         }
@@ -1618,7 +1629,8 @@ CCMD( rt_blood_goto )
         const bool   inside = ( primaryLevel->PointInSector( c.X, c.Y ) == &sec );
         const double z      = sec.floorplane.ZatPoint( c );
 
-        Printf( "rt_blood_goto: sector %u floor \"%s\" at (%.0f %.0f %.0f)%s\n",
+        Printf( "%s: sector %u floor \"%s\" at (%.0f %.0f %.0f)%s\n",
+                cmd,
                 i,
                 fl,
                 c.X,
@@ -1630,22 +1642,41 @@ CCMD( rt_blood_goto )
         {
             moved = true;
             pmo->SetOrigin( DVector3{ c.X, c.Y, z + 8.0 }, false );
-            Printf( "rt_blood_goto: moved you there. rt_blood_relief 0/1 flips the "
-                    "relief, rt_blood_flow_debug 1 paints the flow phase.\n" );
+            Printf( "%s: moved you there. %s\n", cmd, hint );
         }
     }
 
     if( found == 0 )
     {
-        Printf( "rt_blood_goto: no blood floor in this map. "
-                "MAP17 (39 pools), MAP32 (12) and MAP08 (9, in pits) have one.\n" );
+        Printf( "%s: no matching liquid floor in this map. %s\n", cmd, whereToLook );
     }
     else if( !moved )
     {
-        Printf( "rt_blood_goto: found %d pool(s) but every centre lies outside its "
+        Printf( "%s: found %d pool(s) but every centre lies outside its "
                 "own sector, so you were not moved.\n",
+                cmd,
                 found );
     }
+}
+
+CCMD( rt_blood_goto )
+{
+    l_liquidGoto( "rt_blood_goto",
+                  "D64B1_",
+                  "D64B2_",
+                  "rt_blood_relief 0/1 flips the relief, rt_blood_flow_debug 1 "
+                  "paints the flow phase.",
+                  "MAP17 (39 pools), MAP32 (12) and MAP08 (9, in pits) have one." );
+}
+
+CCMD( rt_sludge_goto )
+{
+    l_liquidGoto( "rt_sludge_goto",
+                  "D64S1_",
+                  "D64S2_",
+                  "rt_sludge_relief 0/1 flips the mud relief, rt_sludge_refl 0/1 "
+                  "flips the water reflection.",
+                  "only MAP12 (6 sectors) and MAP34 (the fluid sampler) have sludge floors." );
 }
 
 CCMD( rt_sky_here )
@@ -2510,13 +2541,31 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // line: those run before the level exists, so the CCMD would report "no
     // level" and the launcher would look like it had worked. Same reason
     // rt_lava_autogoto lives inside RT_UploadLavaLights.
-    if( cvar::rt_blood_autogoto && primaryLevel )
+    // Doom64-RT: put the player on a blood pool, hands-free. FIRED FOUR TIMES
+    // across the first ~3.5 seconds, and that is the fix for a bug that cost a
+    // day of measurements: a single teleport on an early frame runs, SetOrigin
+    // is called, "moved you there" prints -- and Retribution's map-start intro
+    // (the act title window) re-places the player afterwards, so every capture
+    // "from the pool" was actually from the spawn. The CCMD is idempotent, so
+    // repeating it is free; the last shot lands after the intro is done.
+    // Fires FOUR times over the first ~3.5s of maptime, not once: Retribution's
+    // act title card re-positions the player after spawn, so a single early
+    // move is silently undone and looks exactly like the CCMD not working.
+    if( ( cvar::rt_blood_autogoto || cvar::rt_sludge_autogoto ) && primaryLevel )
     {
-        static const void* s_bloodGoto = nullptr;
-        if( s_bloodGoto != primaryLevel )
+        const int          t     = primaryLevel->maptime;
+        static const void* s_lvl = nullptr;
+        static int         s_fired;
+        if( s_lvl != primaryLevel )
         {
-            s_bloodGoto = primaryLevel;
-            AddCommandString( "rt_blood_goto" );
+            s_lvl   = primaryLevel;
+            s_fired = 0;
+        }
+        if( s_fired < 4 && t >= 10 + s_fired * 35 )
+        {
+            s_fired++;
+            AddCommandString( cvar::rt_sludge_autogoto ? "rt_sludge_goto"
+                                                       : "rt_blood_goto" );
         }
     }
     RT_UploadSwitchLights();
@@ -2636,17 +2685,30 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
                                     l_col255( cvar::rt_blood_crest_r,
                                               cvar::rt_blood_crest_g,
                                               cvar::rt_blood_crest_b ) },
-        // Same 0..3 order. Only blood has authored relief and a baked flow
-        // map (d64r-liquid-art.wad + tools/gen_liquid_art.py); the other
-        // three keep the water wave and are unchanged.
-        .stylizedLiquidRelief   = { 0.f, 0.f, 0.f, cvar::rt_blood_relief },
+        // Same 0..3 order. Blood and sludge have authored relief
+        // (d64r-liquid-art.wad + tools/gen_liquid_art.py); only blood has a
+        // flow map. Water and nukage keep the water wave and are unchanged.
+        .stylizedLiquidRelief   = { 0.f, 0.f, cvar::rt_sludge_relief, cvar::rt_blood_relief },
         .stylizedLiquidFlow     = { 0.f, 0.f, 0.f, cvar::rt_blood_flow },
-        // Water and sludge project caustics as before; nukage and blood are
-        // opaque and project none. Scales rt_water_caustics, does not replace it.
-        .stylizedLiquidCaustics = { 1.f, cvar::rt_nukage_caustics, 1.f, cvar::rt_blood_caustics },
+        // Per-liquid reflection. 1 and 0 are "unchanged": 1 keeps the whole
+        // stylized Fresnel curve, and a roughness of 0 falls back to
+        // rt_water_rough. Only sludge deviates -- a mud bed is not a mirror.
+        .stylizedLiquidRefl     = { 1.f, 1.f, cvar::rt_sludge_refl, 1.f },
+        .stylizedLiquidRough    = { 0.f, 0.f, cvar::rt_sludge_rough, 0.f },
+        // Options > Quality "Liquid surfaces": 0 = full-res, no mirror, for ALL
+        // four liquids. A liquid whose refl is 0 takes that path regardless.
+        .liquidNoSplit          = cvar::rt_liquid_checkerboard ? 0.f : 1.f,
+        // Only water projects caustics now. Nukage, sludge and blood all wear
+        // opaque reference art, and a caustic is light refracted THROUGH a
+        // fluid onto what is beyond it. Scales rt_water_caustics, does not
+        // replace it.
+        .stylizedLiquidCaustics = { 1.f,
+                                    cvar::rt_nukage_caustics,
+                                    cvar::rt_sludge_caustics,
+                                    cvar::rt_blood_caustics },
         .liquidFlowSpeed        = cvar::rt_blood_flow_speed,
         .liquidFlowScale        = cvar::rt_blood_flow_scale,
-        .liquidFlowDist         = cvar::rt_blood_flow_dist,
+        .liquidFlowAspect       = cvar::rt_blood_flow_aspect,
         .liquidFlowDebug        = cvar::rt_blood_flow_debug ? 1.f : 0.f,
         .lavaEmisBoost          = std::max( 0.f, float{ cvar::rt_lava_emis } ),
         .lavaFlowStrength       = std::clamp( float{ cvar::rt_lava_flow }, 0.f, 1.f ),
@@ -3578,6 +3640,21 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .resetHistory     = static_cast< RgBool32 >( wantResetHistory ),
         .currentTime      = curtime,
     };
+
+    // Time probe, behind the flow debug cvar: the flow-map investigation found
+    // globalUniform.time FROZEN in the raygen shaders while everything RTGL
+    // does between info.currentTime and gu->time reads clean. This prints what
+    // gzdoom actually hands over, once a second, so "gzdoom sends a constant"
+    // and "RTGL loses it" stop being the same symptom.
+    if( bool{ cvar::rt_blood_flow_debug } )
+    {
+        static double s_lastTimeProbe = -1.0;
+        if( curtime - s_lastTimeProbe >= 1.0 || curtime < s_lastTimeProbe )
+        {
+            s_lastTimeProbe = curtime;
+            Printf( "RT time probe: curtime %.3f\n", curtime );
+        }
+    }
 
     RTDrawFrame.Clock();
     RgResult r = rt.rgDrawFrame( &info );
