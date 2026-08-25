@@ -367,6 +367,12 @@ struct Spark
     float     spin;
     float     aspect;
     uint32_t  baseRgb; // debris: the hit texture's average colour
+    // baseRgb is a LITERAL colour, not a sample to be corrected. The debris
+    // colour path expands chroma by rt_spark_debris_sat and then pins luminance
+    // to rt_spark_debris_albedo -- both right for a chip whose colour came from
+    // a whole-texture mean, and both wrong for a droplet handed the exact colour
+    // the liquid is painted with. Set by the liquid splash; see rt_spark_draw.cpp.
+    bool      litRgb;
     FVector3  nrm;     // the surface it came off; debris shades with it
     uint32_t  sid;     // IDENTITY, and the only thing a glow light's id may use
 };

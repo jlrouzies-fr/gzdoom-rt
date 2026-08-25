@@ -62,8 +62,8 @@ class BulletPuff : Actor
 		+ALLOWPARTICLES
 		+RANDOMIZE
 		+ZDOOMTRANS
-// HAVE_RT begin: add light when bullet hits an actor
-		+PUFFONACTORS
+// HAVE_RT begin: +PUFFONACTORS REMOVED -- it spawned the PUFF sprite on every
+// bleeding monster, on top of the blood. Do not restore it on a vendor merge.
 // HAVE_RT end
 		RenderStyle "Translucent";
 		Alpha 0.5;

@@ -4212,6 +4212,82 @@
                                                 "-- exactly the mistake that made the first debris ramps read as too "
                                                 "bright. Rock and concrete sit around 0.20-0.35 in reality. Raise it if "
                                                 "chips read as silhouettes, lower it if they read as chalk." )
+    RT_CVAR( rt_liquid_nopuff,          true,   "no vanilla PUFF sprite when a hitscan lands on WATER, POISON, SLUDGE "
+                                                "or BLOOD -- the splash replaces it. Read from P_LineAttack, which is "
+                                                "why it lives here rather than beside rt_blood_repl in p_map.cpp: "
+                                                "check_pins.py only knows the cvars in this file, and a pin it cannot "
+                                                "see is reported as pinning nothing. Lava and the sky are not in the "
+                                                "set and keep their puff. 0 = puff AND splash, which is the arm "
+                                                "spark-puff, not a shipping look." )
+    RT_CVAR( rt_spark_fluid,            true,   "a hitscan into WATER, POISON, SLUDGE or BLOOD throws a coloured splash "
+                                                "instead of the vanilla PUFF sprite (rt_liquid_nopuff turns the puff half "
+                                                "off separately). The classification is by TEXTURE NAME, not by the "
+                                                "TERRAIN lump: that lump marks lava and even F_SKY1 `liquid` too, and "
+                                                "only the name can tell water from lava. This used to be impossible -- "
+                                                "P_LineAttack refused the whole impact hook on any liquid terrain, so the "
+                                                "`fluid` class could only ever fire on the three wall FALL sheets and "
+                                                "shooting a pool produced nothing at all. LAVA IS DELIBERATELY NOT IN "
+                                                "THIS SET and keeps its puff." )
+    RT_CVAR( rt_spark_fluid_color,      true,   "a liquid droplet takes the colour the liquid is PAINTED with -- "
+                                                "rt_water_crest / rt_nukage_crest / rt_sludge_crest / rt_blood_crest -- "
+                                                "rather than the average of the flat's own art. The stylized liquid "
+                                                "shader repaints the surface from tint to crest, so the source art is "
+                                                "not what the player is looking at, and a droplet coloured from it does "
+                                                "not match the pool it came out of. Taking the crest makes the two agree "
+                                                "by construction and follows any retune for free. 0 = the texture "
+                                                "average, i.e. what every other debris class does; that is the before-"
+                                                "picture, not a second look worth shipping." )
+    // LIQUID-ONLY SHAPE. Seven multipliers that ride on top of the fluid row in
+    // RT_DEBRIS_PROFILES exactly as that row rides on the rt_spark_debris_*
+    // cvars -- so the chain is: debris cvar x class row x this. All default to
+    // 1.0, which means adding them changed nothing about how a splash looks.
+    //
+    // They exist because every other axis of a droplet is SHARED: moving
+    // rt_spark_debris_size to make a splash finer also makes every concrete chip,
+    // wood splinter and dirt crumb in the game finer, and the class row can only
+    // be changed by editing the table and rebuilding. A liquid is the one class
+    // whose look is being iterated on, so it gets a private set.
+    //
+    // Scoped to SurfKind::Fluid, not to "was this a liquid hit", so the three
+    // wall FALL sheets and anything else labelled `fluid` in spark_surfaces.txt
+    // move with them. The knob is the CLASS, which is what the name says.
+    RT_CVAR( rt_spark_fluid_count,      1.0f,   "liquid splash: multiplier on how MANY droplets, on top of "
+                                                "rt_spark_debris_count and the fluid class row (6 x 2.4 = ~14 at 1.0). "
+                                                "Liquid only -- nothing else that throws debris moves with it." )
+    RT_CVAR( rt_spark_fluid_size,       0.5f,   "liquid splash: multiplier on droplet SIZE, on top of "
+                                                "rt_spark_debris_size and the class row -- 0.05 x 0.5 x 0.5 = "
+                                                "0.0125 m shipping. Liquid only. Judged in play 2026-08-25: at 1.0 a "
+                                                "droplet was chip-sized, and a splash reads as spray rather than as "
+                                                "rubble only once the individual particle stops being resolvable." )
+    RT_CVAR( rt_spark_fluid_life,       0.1f,   "liquid splash: multiplier on droplet LIFETIME, on top of "
+                                                "rt_spark_debris_life and the class row -- 20 x 0.3 x 0.1 = 0.6 s "
+                                                "shipping, against 6 s at 1.0. Liquid only. Judged in play 2026-08-25: "
+                                                "water thrown up by a bullet is gone in an instant, and droplets that "
+                                                "lie around read as debris that happens to be blue. This also takes the "
+                                                "live count down by the same factor -- live count is spawn rate x life "
+                                                "-- so the splash is now cheap as well as brief." )
+    RT_CVAR( rt_spark_fluid_speed,      1.0f,   "liquid splash: multiplier on how FAST droplets leave the surface, on "
+                                                "top of rt_spark_debris_speed and the class row (3.4 x 1.35 = 4.6 m/s "
+                                                "at 1.0). Liquid only." )
+    RT_CVAR( rt_spark_fluid_gravity,    1.0f,   "liquid splash: multiplier on GRAVITY, on top of "
+                                                "rt_spark_debris_gravity and the class row. Below 1 the droplets hang "
+                                                "and drift; 0 leaves them where they were thrown. Liquid only." )
+    RT_CVAR( rt_spark_fluid_bounce,     1.0f,   "liquid splash: multiplier on RESTITUTION, on top of "
+                                                "rt_spark_debris_bounce and the class row (0.22 x 0.08 at 1.0, i.e. "
+                                                "almost none -- a droplet splats). Liquid only." )
+    RT_CVAR( rt_spark_fluid_spread,     1.0f,   "liquid splash: multiplier on the CONE the droplets are thrown into. "
+                                                "This is the one knob with no class row behind it: rt_spark_spread is "
+                                                "read raw and shared by sparks and every debris class alike, so the "
+                                                "fluid row's own comment claiming a splash is 'thrown wide' described "
+                                                "something nothing implemented. Now it can be. Clamped to 90 degrees "
+                                                "after multiplying. Liquid only." )
+    RT_CVAR( rt_spark_fluid_albedo,     0.6f,   "how bright a liquid droplet is. Only applies when "
+                                                "rt_spark_fluid_color is on, and it REPLACES rt_spark_debris_albedo for "
+                                                "those particles rather than stacking with it: the crest is a literal "
+                                                "colour, not a whole-texture mean, so the chroma expansion "
+                                                "(rt_spark_debris_sat) and the luminance pin that exist to rescue a dull "
+                                                "average would only damage it -- water's crest is a pale 140,204,255 and "
+                                                "the pin would drag it down to a mid grey-blue." )
     RT_CVAR_NOARCH( rt_spark_surface_debug, 0,  "1 prints the TEXTURE NAME of every surface an impact lands on, and how "
                                                 "it classified. This is the tool for building "
                                                 "rt/data/spark_surfaces.txt, and it exists because there is no other way "

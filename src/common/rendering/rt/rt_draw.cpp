@@ -991,96 +991,47 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
         // stock water. Not worth it for 45 placements across three maps.
         // Their frame-01-only material overlays stay quarantined either way —
         // that is a separate defect (see tools/set_water_meta.py).
-        struct LiquidMatch
+        // The name->family table lives in rt_internal.h as RT_LiquidIdOfName:
+        // the impact splash (p_map.cpp -> rt_spark_surfaces.cpp) needs the same
+        // answer, and a table inside this lambda could not be asked. Only the
+        // LOOKUP is shared -- the two gates below and the fall exclusion above
+        // are decisions about the water SHADER and stay here.
+        const int liquidId = RT_LiquidIdOfName( texname );
+        if( liquidId < 0 )
         {
-            const char* name;  // prefix, or full name when exact
-            bool        exact;
-            int         id;    // 0 water, 1 nukage, 2 sludge, 3 blood
-        };
-        static const LiquidMatch kLiquids[] = {
-            { "D64W1_", false, 0 },   { "D64W2_", false, 0 },
-            { "D64WATR1", true, 0 },  { "D64WATR2", true, 0 },
-            { "D64N1_", false, 1 },   { "D64N2_", false, 1 },
-            { "D64NUKG1", true, 1 },  { "D64NUKG2", true, 1 },
-            { "D64S1_", false, 2 },   { "D64S2_", false, 2 },
-            { "D64SLDG1", true, 2 },  { "D64SLDG2", true, 2 },
-            { "D64B1_", false, 3 },   { "D64B2_", false, 3 },
-            { "D64BLOD1", true, 3 },  { "D64BLOD2", true, 3 },
+            return RgMeshPrimitiveFlags( 0 );
+        }
+        if( liquidId != 0 && !cvar::rt_water_liquids )
+        {
+            return RgMeshPrimitiveFlags( 0 );
+        }
 
-            // Doom 64: Unseen Evil's liquids. Same four-palette design, different
-            // names, so the treatment above did nothing on a DOOM 1/2 map and its
-            // pools stayed opaque and near-black -- the exact problem this table
-            // exists to solve.
-            //
-            // The ids are NOT guessed from the names; they come from the mod's own
-            // replacement table (resources/d64ue_textures.floors), which is what
-            // decides which stock liquid becomes which of its flats:
-            //
-            //   FWATER1..4  -> WATERA    water
-            //   NUKAGE1..3  -> SLIMEB    nukage  (Doom's green nukage)
-            //   SLIME01..08 -> SLUDGEA/B sludge  (NOT nukage, despite the name)
-            //   BLOOD1..3   -> BLOODB    blood
-            //
-            // That SLIME/SLUDGE crossover is the trap: reading "SLIMEA" as sludge
-            // would swap green for brown on every nukage pool in DOOM II.
-            //
-            // EXACT, not prefix. These are single flats rather than 64-frame
-            // sequences, so there is no frame suffix to match past, and a prefix
-            // on a name this short would over-reach ("BLOOD" would also catch the
-            // mod's BLOODFALL wall sheets, which must stay opaque for the
-            // shadow-leak reason given above).
-            //
-            // textures/special/{WATERS,SLIMES,BLOODS}.png are the mod's swimmable
-            // surfaces and are named by full path when placed directly.
-            { "WATERA", true, 0 },  { "WATERB", true, 0 },
-            { "SLIMEA", true, 1 },  { "SLIMEB", true, 1 },
-            { "SLUDGEA", true, 2 }, { "SLUDGEB", true, 2 },
-            { "BLOODA", true, 3 },  { "BLOODB", true, 3 },
-            { "textures/special/WATERS.png", true, 0 },
-            { "textures/special/SLIMES.png", true, 1 },
-            { "textures/special/BLOODS.png", true, 3 },
-        };
         static const char* const kLiquidName[] = { "water", "nukage", "sludge", "blood" };
 
-        for( const LiquidMatch& m : kLiquids )
+        // One line per distinct frame name per session, and BEHIND
+        // rt_water_debug. Printf is gzdoom's own, so it is not subject to
+        // RTGL's message gates -- which meant RT_DiagPrintLevel kept it off
+        // the notify overlay and still wrote every line to rt-console.log:
+        // 112 of them on a Retribution map, most of the session log before
+        // the player had moved. A per-texture classification record is a
+        // DIAGNOSTIC, so it belongs behind the water diagnostic's own cvar
+        // rather than in the always-on stream. `rt_water_debug 1` brings it
+        // back, alongside the magenta surface paint it already drives.
+        static std::unordered_set< std::string > s_seen;
+        if( int{ cvar::rt_water_debug } != 0 && s_seen.insert( texname ).second )
         {
-            const bool hit = m.exact ? ( strcmp( texname, m.name ) == 0 )
-                                     : ( strncmp( texname, m.name, strlen( m.name ) ) == 0 );
-            if( !hit )
-            {
-                continue;
-            }
-            if( m.id != 0 && !cvar::rt_water_liquids )
-            {
-                return RgMeshPrimitiveFlags( 0 );
-            }
-
-            // One line per distinct frame name per session, and BEHIND
-            // rt_water_debug. Printf is gzdoom's own, so it is not subject to
-            // RTGL's message gates -- which meant RT_DiagPrintLevel kept it off
-            // the notify overlay and still wrote every line to rt-console.log:
-            // 112 of them on a Retribution map, most of the session log before
-            // the player had moved. A per-texture classification record is a
-            // DIAGNOSTIC, so it belongs behind the water diagnostic's own cvar
-            // rather than in the always-on stream. `rt_water_debug 1` brings it
-            // back, alongside the magenta surface paint it already drives.
-            static std::unordered_set< std::string > s_seen;
-            if( int{ cvar::rt_water_debug } != 0 && s_seen.insert( texname ).second )
-            {
-                Printf( RT_DiagPrintLevel(),
-                        "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER, "
-                        "liquid %d (%s)\n",
-                        texname,
-                        m.id,
-                        kLiquidName[ m.id ] );
-            }
-
-            return RgMeshPrimitiveFlags(
-                RG_MESH_PRIMITIVE_WATER |
-                ( m.id & 1 ? RG_MESH_PRIMITIVE_LIQUID_BIT0 : 0 ) |
-                ( m.id & 2 ? RG_MESH_PRIMITIVE_LIQUID_BIT1 : 0 ) );
+            Printf( RT_DiagPrintLevel(),
+                    "RT water: tagging \"%s\" as RG_MESH_PRIMITIVE_WATER, "
+                    "liquid %d (%s)\n",
+                    texname,
+                    liquidId,
+                    kLiquidName[ liquidId ] );
         }
-        return RgMeshPrimitiveFlags( 0 );
+
+        return RgMeshPrimitiveFlags(
+            RG_MESH_PRIMITIVE_WATER |
+            ( liquidId & 1 ? RG_MESH_PRIMITIVE_LIQUID_BIT0 : 0 ) |
+            ( liquidId & 2 ? RG_MESH_PRIMITIVE_LIQUID_BIT1 : 0 ) );
     };
 
     // Sprites do not RECEIVE projected water caustics. A caustic is light

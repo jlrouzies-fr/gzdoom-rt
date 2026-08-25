@@ -55,6 +55,8 @@
 #include "rt_internal.h"
 #include "rt_sparks_internal.h"
 
+#include "gamestate.h"
+
 #include <cstdio>
 
 using namespace rtx;
@@ -336,6 +338,19 @@ void SpawnSkyEmber()
         return;
     }
 
+    // NOT WHILE THE LEVEL IS ON ITS WAY OUT. The schedulers run on the WALL
+    // CLOCK (see RT_FireSkyTick), which is right for a look that must not
+    // stutter with the playsim -- but it also means they keep firing through
+    // the intermission, where there is no world to see them in and the level
+    // they would cache a sector_t* from is about to be freed. That is one half
+    // of the MAP22 -> MAP23 crash; the other half is fixed in rt_sparks.cpp,
+    // and both are kept because a renderer effect has no business seeding
+    // world-space particles outside GS_LEVEL either way.
+    if( gamestate != GS_LEVEL )
+    {
+        return;
+    }
+
     const auto&    vp = r_viewpoint;
     const FVector3 cam{ float( vp.Pos.X ) * ONEGAMEUNIT_IN_METERS,
                         float( vp.Pos.Y ) * ONEGAMEUNIT_IN_METERS,
@@ -505,6 +520,17 @@ void RT_FireSkyOnLevelLoad( const char* mapname )
 {
     g_active = false;
     g_green  = false;
+
+    // The tracked-ember ring belongs to the level that spawned them. The pool
+    // itself is cleared in RT_UpdateSparks, so leaving stale sids here could
+    // not match anything (sids are monotonic and never reused) -- but a ring
+    // that outlives its level is a lie in a debugger and costs nothing to
+    // reset.
+    for( auto& t : g_tracked )
+    {
+        t = Tracked{};
+    }
+    g_trackedNext = 0;
 
     if( mapname && mapname[ 0 ] )
     {

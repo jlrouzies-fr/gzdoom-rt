@@ -490,6 +490,47 @@ SurfKind SurfaceKindOf( FTextureID tex, FString* outName, bool* outListed )
 
 } // namespace rtsp
 
+// WHICH liquid did this hitscan land on? -1 = not one we splash, else
+// 0 water / 1 nukage / 2 sludge / 3 blood. Called from P_LineAttack, which is
+// why it is a free function with no rtsp:: and no header: rt_internal.h is not a
+// public header and playsim may not include it (p_map.cpp:104).
+//
+// TWO CALLERS, ONE ANSWER. p_map.cpp asks it twice for the same hit -- once to
+// suppress the vanilla PUFF and once to let the impact hook through the terrain
+// gate -- and they must agree, or a surface loses its puff and gets nothing, or
+// keeps its puff and gets a splash on top. That is exactly the pairing that made
+// the old behaviour read as broken, so it is deliberately one function.
+//
+// animate = FALSE, which is the whole reason this can key on a name at all.
+// GetGameTexture(tex, true) returns whichever frame of the 64-frame ANIMDEFS
+// sequence is showing this tic; Trace() stores the sector's BASE flat, so the
+// name that arrives here is D64W1_01 whatever the surface is currently drawing.
+// The renderer's own tagging had to solve this the hard way (rt_draw.cpp) -- the
+// playsim side gets it for free and must not throw it away.
+int RT_LiquidSplashId( FTextureID tex )
+{
+    if( !tex.isValid() )
+    {
+        return -1;
+    }
+    FGameTexture* gt = TexMan.GetGameTexture( tex, false );
+    if( !gt )
+    {
+        return -1;
+    }
+    const char* nm = gt->GetName().GetChars();
+
+    // Pools first, then the three wall falls. Lava matches neither, on purpose:
+    // it keeps the vanilla puff and throws nothing, which is how it shipped.
+    const int pool = rtx::RT_LiquidIdOfName( nm );
+    if( pool >= 0 )
+    {
+        return pool;
+    }
+    return rtx::RT_LiquidFallIdOfName( nm );
+}
+
+
 // The CCMD sits OUTSIDE the namespace: the macro registers a console command
 // through a file-static object, and keeping it at the same scope as every other
 // CCMD in the renderer is one less thing to be surprised by.

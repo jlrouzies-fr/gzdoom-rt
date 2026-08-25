@@ -182,6 +182,14 @@ Spark* AllocSpark( SparkKind kind )
         }
     }
 
+    // A POOL SLOT IS REUSED, so every field a spawn site may leave alone has to
+    // be cleared HERE rather than by each caller. litRgb is the one that bites:
+    // a slot that last held a liquid droplet would hand its `true` to a barrel
+    // shard or a fire-sky ember -- both of which write baseRgb and neither of
+    // which knows the flag exists -- and that particle would silently skip the
+    // chroma expansion and the luminance pin. Clearing it at the allocator is
+    // the only place that cannot be forgotten by a future spawn source.
+    s_sparks[ slot ].litRgb = false;
     return &s_sparks[ slot ];
 }
 
@@ -217,6 +225,7 @@ int s_dbgEmberSmoke = 0;
 int s_dbgMetal    = 0;
 int s_dbgConcrete = 0;
 int s_dbgOther    = 0;
+int s_dbgFluid    = 0;
 int s_dbgUnlisted = 0;
 
 // DISTINCT texture names that were hit and are NOT in the table. This is the
@@ -299,6 +308,55 @@ void RT_ClearSparks()
     g_sparkFlashCount = 0;
 }
 
+// THE COLOUR THE LIQUID IS PAINTED WITH, for liquid id 0..3.
+//
+// These are the same cvars rt_main.cpp packs into stylizedLiquidCrest, in the
+// same order -- 0 water, 1 nukage, 2 sludge, 3 blood -- and the order matters
+// there for the same reason it matters here. CREST rather than TINT because the
+// crest is what the surface actually reads as: the shader drives the vein mask
+// to a high mean on the authored art, so a pool sits most of the way to crest
+// almost everywhere, and the tint mostly sets how dark the hollows go.
+static uint32_t LiquidCrestRgb( int liquidId )
+{
+    auto pack = []( int r, int g, int b ) -> uint32_t {
+        return ( uint32_t( std::clamp( r, 0, 255 ) ) << 16 ) |
+               ( uint32_t( std::clamp( g, 0, 255 ) ) << 8 ) |
+               ( uint32_t( std::clamp( b, 0, 255 ) ) );
+    };
+    switch( liquidId )
+    {
+    case 0:
+        return pack( cvar::rt_water_crest_r, cvar::rt_water_crest_g, cvar::rt_water_crest_b );
+    case 1:
+        return pack( cvar::rt_nukage_crest_r, cvar::rt_nukage_crest_g, cvar::rt_nukage_crest_b );
+    case 2:
+        return pack( cvar::rt_sludge_crest_r, cvar::rt_sludge_crest_g, cvar::rt_sludge_crest_b );
+    case 3:
+        return pack( cvar::rt_blood_crest_r, cvar::rt_blood_crest_g, cvar::rt_blood_crest_b );
+    default:
+        return 0x808080u;
+    }
+}
+
+// THE LIQUID-ONLY OVERRIDE, applied at each use rather than by rewriting the
+// profile row.
+//
+// A third multiplier on top of `debris cvar x class row`. It is applied at the
+// point of use because two of the seven -- gravity and bounce -- are read in the
+// SIMULATION every tic, from ProfileFor(sp.surf), not at spawn. Returning a
+// doctored DebrisProfile from ProfileFor() would have meant a mutable static
+// standing in for a constexpr table, and a row whose printed value no longer
+// matched what the sim used. This way the row stays the honest statement of what
+// the class is, and the cvar stays the honest statement of what you changed.
+//
+// Keyed on SurfKind::Fluid rather than on "did this come from a liquid hit", so
+// the wall FALL sheets and anything else labelled `fluid` move with it. The
+// knob's name is the class.
+static float FluidK( SurfKind k, float mul )
+{
+    return k == SurfKind::Fluid ? std::max( 0.f, mul ) : 1.f;
+}
+
 // ---------------------------------------------------------------------------
 // Spawn -- called from playsim (P_LineAttack), so GLOBAL scope, exactly as
 // RT_SpawnFluid is. `pos` and `normal` are MAP UNITS and a unit vector; `indir`
@@ -308,12 +366,24 @@ void RT_SpawnImpactSparks( const DVector3& pos,
                            const FVector3& normal,
                            const FVector3& indir,
                            sector_t*       sec,
-                           FTextureID      hitTexture )
+                           FTextureID      hitTexture,
+                           int             liquidId )
 {
     if( !primaryLevel )
     {
         return;
     }
+
+    // LIQUID: 0 water, 1 nukage, 2 sludge, 3 blood; -1 anything else, lava and
+    // the sky included. Resolved in PLAYSIM (RT_LiquidSplashId) because the same
+    // answer suppresses the vanilla puff there, and passing it in is what stops
+    // the two decisions from drifting apart.
+    //
+    // A liquid is FORCED to SurfKind::Fluid rather than looked up in
+    // spark_surfaces.txt. That table labels only frame _01 of each 64-frame
+    // sequence, and any liquid the labeller has not reached -- every Unseen Evil
+    // pool, for one -- would fall through to Other and throw SPARKS off water.
+    const bool isLiquid = ( liquidId >= 0 ) && cvar::rt_spark_fluid;
 
     // THE SURFACE PROBE RUNS EVEN WITH SPARKS OFF, on purpose. It is a surface
     // IDENTIFICATION tool in the same family as `whatsthat` and rt_tex_probe --
@@ -325,8 +395,18 @@ void RT_SpawnImpactSparks( const DVector3& pos,
     {
         FString        pName;
         bool           pListed = false;
-        const SurfKind pSurf   = SurfaceKindOf( hitTexture, &pName, &pListed );
-        const bool     pDebris = ( cvar::rt_spark_debris && pSurf == SurfKind::Concrete );
+        SurfKind       pSurf   = SurfaceKindOf( hitTexture, &pName, &pListed );
+        if( isLiquid )
+        {
+            pSurf   = SurfKind::Fluid;
+            pListed = true;
+        }
+        // SurfThrowsDebris, not a hand-written class test. This read
+        // `pSurf == SurfKind::Concrete`, so the probe reported "sparks" for wood,
+        // dirt, flesh and fluid -- every other class that does in fact throw
+        // debris, since the real decision below has always used SurfThrowsDebris.
+        // A probe that disagrees with the code it is probing is worse than none.
+        const bool     pDebris = ( cvar::rt_spark_debris && SurfThrowsDebris( pSurf ) );
 
         // THE SAMPLED COLOUR IS PART OF THE PROBE, because "the tint does not
         // work" has two completely different causes that look identical on
@@ -402,10 +482,15 @@ void RT_SpawnImpactSparks( const DVector3& pos,
     // METAL sparks; everything else throws debris -- but only once the labelling
     // is worth trusting. With rt_spark_debris off, every impact sparks, which is
     // the shipped behaviour and does not depend on the table at all.
-    FString        texName;
-    bool           listed = false;
-    const SurfKind surf   = SurfaceKindOf( hitTexture, &texName, &listed );
-    const bool     metal  = ( surf == SurfKind::Metal );
+    FString  texName;
+    bool     listed = false;
+    SurfKind surf   = SurfaceKindOf( hitTexture, &texName, &listed );
+    if( isLiquid )
+    {
+        surf   = SurfKind::Fluid;
+        listed = true;
+    }
+    const bool metal = ( surf == SurfKind::Metal );
 
     // SPARKS ARE THE DEFAULT; ONLY CONCRETE THROWS DEBRIS.
     //
@@ -437,6 +522,14 @@ void RT_SpawnImpactSparks( const DVector3& pos,
     else if( surf == SurfKind::Concrete )
     {
         s_dbgConcrete++;
+    }
+    else if( surf == SurfKind::Fluid )
+    {
+        // Fluid used to fall into s_dbgOther, so a liquid splash appeared in no
+        // count anywhere and "is it firing at all" could not be answered from the
+        // ladder. It has its own trigger and its own population; it gets its own
+        // number.
+        s_dbgFluid++;
     }
     else
     {
@@ -504,7 +597,8 @@ void RT_SpawnImpactSparks( const DVector3& pos,
 
     const uint32_t want =
         dbr ? uint32_t( std::max( 0, int( std::lround(
-                  float( std::max( 0, int{ cvar::rt_spark_debris_count } ) ) * prof.count ) ) ) )
+                  float( std::max( 0, int{ cvar::rt_spark_debris_count } ) ) * prof.count *
+                  FluidK( surf, cvar::rt_spark_fluid_count ) ) ) ) )
             : uint32_t( std::max( 0, int{ cvar::rt_spark_count } ) );
     const uint32_t cap =
         std::min( RT_SPARK_HARDMAX, uint32_t( std::max( 0, int{ cvar::rt_spark_max } ) ) );
@@ -517,16 +611,25 @@ void RT_SpawnImpactSparks( const DVector3& pos,
     // a wall the same way. Everything else about the shape is the class row.
     const float speed =
         std::max( 0.f,
-                  dbr ? float{ cvar::rt_spark_debris_speed } * prof.speed
+                  dbr ? float{ cvar::rt_spark_debris_speed } * prof.speed *
+                                FluidK( surf, cvar::rt_spark_fluid_speed )
                       : float{ cvar::rt_spark_speed } );
-    const float spread = std::clamp( float{ cvar::rt_spark_spread }, 0.f, 90.f );
+    // rt_spark_spread has no class row behind it -- sparks and every debris class
+    // read it raw -- so this multiplier is the ONLY way a splash can be thrown
+    // wider than a chip, which the fluid row's comment has claimed all along.
+    const float spread = std::clamp( float{ cvar::rt_spark_spread } *
+                                         FluidK( surf, cvar::rt_spark_fluid_spread ),
+                                     0.f,
+                                     90.f );
     const float life =
         std::max( 0.05f,
-                  dbr ? float{ cvar::rt_spark_debris_life } * prof.life
+                  dbr ? float{ cvar::rt_spark_debris_life } * prof.life *
+                                FluidK( surf, cvar::rt_spark_fluid_life )
                       : float{ cvar::rt_spark_life } );
     const float size =
         std::max( 0.002f,
-                  dbr ? float{ cvar::rt_spark_debris_size } * prof.size
+                  dbr ? float{ cvar::rt_spark_debris_size } * prof.size *
+                                FluidK( surf, cvar::rt_spark_fluid_size )
                       : float{ cvar::rt_spark_size } );
 
     // An orthonormal basis around the reflected direction, so the cone can be
@@ -610,7 +713,21 @@ void RT_SpawnImpactSparks( const DVector3& pos,
                         : ( 0.55f + rnd01() * 1.1f );
         // Resolved here, once per impact, because the lookup decodes a bitmap on
         // first sight of a texture. Sparks never read it.
+        //
+        // A LIQUID TAKES ITS COLOUR FROM THE CREST CVAR, NOT FROM THE FLAT. The
+        // stylized shader repaints the surface from rt_*_tint_* to rt_*_crest_*,
+        // so the source art's average is not what the player is looking at, and a
+        // droplet coloured from it would not match the pool it just came out of.
+        // Taking the crest makes them agree by construction and follows any
+        // retune for free -- the same reasoning that made the spark ramp take
+        // PUFF's own palette rather than a hand-picked orange.
         sp.baseRgb = dbr ? AverageTextureColor( hitTexture ) : 0u;
+        sp.litRgb  = false;
+        if( isLiquid && dbr && cvar::rt_spark_fluid_color )
+        {
+            sp.baseRgb = LiquidCrestRgb( liquidId );
+            sp.litRgb  = true;
+        }
         sp.sid = NextSparkSid();
 
         s_dbgSpawned++;
@@ -787,6 +904,44 @@ void RT_UpdateSparks()
 
     const int tic = primaryLevel->maptime;
 
+    // A LEVEL CHANGE IS NOT ALWAYS A maptime JUMP, and reading one as the other
+    // crashed the game walking MAP22 -> MAP23 (reported and reproduced
+    // 2026-08-25). The sequence:
+    //
+    //   1. G_DoCompleted zeroes maptime while the OLD level is STILL LOADED
+    //      (g_level.cpp, the "forget the states" branch), so the backwards jump
+    //      below is spent on an intermission frame and the pool is cleared
+    //      there -- correctly, but a whole intermission early.
+    //   2. The intermission then runs for as long as the player looks at it,
+    //      and the fire sky's embers are scheduled off the WALL CLOCK rather
+    //      than off maptime (rt_firesky.cpp), so they keep arriving. Each one
+    //      caches a sector_t* from the level that is about to be freed.
+    //   3. The new level also starts at maptime 0, so the delta ACROSS THE
+    //      ACTUAL CHANGE is ZERO -- neither negative nor over a second -- and
+    //      the guard below never fires. The pool crosses the level boundary.
+    //   4. On the new level's first tic, tier 2 hands one of those stale
+    //      pointers to Trace(), which dereferences CurSector->e->XFloor and
+    //      dies in FTraceInfo::Setup3DFloors.
+    //
+    // So the pool is keyed on the LEVEL rather than on its clock. The sector
+    // array is reallocated by P_SetupLevel, which makes its address the
+    // level's identity and needs no hook to maintain -- and it protects every
+    // spawn site (impacts, barrels, arcs, embers) rather than the one that
+    // happened to expose this.
+    {
+        static const void* s_lastSectors = nullptr;
+        const void*        nowSectors =
+            primaryLevel->sectors.Size() ? (const void*)primaryLevel->sectors.Data() : nullptr;
+        if( nowSectors != s_lastSectors )
+        {
+            s_lastSectors = nowSectors;
+            RT_ClearSparks();
+            RT_ClearArcMarks();
+            s_lastTic = tic;
+            return;
+        }
+    }
+
     int steps = s_lastTic < 0 ? 0 : tic - s_lastTic;
     // A backwards or enormous jump is a level change, a load or a warp. Do not
     // integrate across it: a spark advanced by a thousand tics ends up somewhere
@@ -859,10 +1014,15 @@ void RT_UpdateSparks()
             // impact sparks have read as wrong on it (2026-08-23).
             const bool           isEmber = sp.kind == SparkKind::Spark && sp.baseRgb != 0u;
             const DebrisProfile& pr    = ProfileFor( sp.surf );
-            const float          kGrav = isDbr ? gravityD * pr.gravity : gravity;
+            const float          kGrav =
+                isDbr ? gravityD * pr.gravity * FluidK( sp.surf, cvar::rt_spark_fluid_gravity )
+                      : gravity;
             const float          kBnce =
                 isEmber ? 0.f
-                : isDbr ? std::clamp( bounceD * pr.bounce, 0.f, 1.f )
+                : isDbr ? std::clamp( bounceD * pr.bounce *
+                                          FluidK( sp.surf, cvar::rt_spark_fluid_bounce ),
+                                      0.f,
+                                      1.f )
                         : bounce;
             const float kFric =
                 isDbr ? std::clamp( fric * pr.friction, 0.f, 1.f ) : fric;
@@ -1185,9 +1345,10 @@ void SparkReport( const char* why )
     // question from the ladder above -- the ladder is "is the feature running",
     // this is "is the classification right" -- and because a per-impact print
     // (rt_spark_surface_debug) is too noisy to leave on while playing.
-    Printf( "  types: metal %d (sparks)  concrete %d  other %d  UNLISTED %d%s\n",
+    Printf( "  types: metal %d (sparks)  concrete %d  fluid %d  other %d  UNLISTED %d%s\n",
             s_dbgMetal,
             s_dbgConcrete,
+            s_dbgFluid,
             s_dbgOther,
             s_dbgUnlisted,
             cvar::rt_spark_debris ? "" : "   [rt_spark_debris 0 -- all of these spark]" );
@@ -1229,7 +1390,7 @@ void RT_SparkDebugTick()
         // Keep the counters from growing without bound while the log is off,
         // so turning it on mid-session reports this second and not this hour.
         s_dbgHits = s_dbgRejected = s_dbgSpawned = s_dbgTraces = 0;
-        s_dbgMetal = s_dbgConcrete = s_dbgOther = s_dbgUnlisted = 0;
+        s_dbgMetal = s_dbgConcrete = s_dbgFluid = s_dbgOther = s_dbgUnlisted = 0;
         s_dbgEmberSmoke = 0;
         return;
     }
@@ -1248,7 +1409,7 @@ void RT_SparkDebugTick()
     SparkReport( "1s" );
 
     s_dbgHits = s_dbgRejected = s_dbgSpawned = s_dbgTraces = 0;
-    s_dbgMetal = s_dbgConcrete = s_dbgOther = s_dbgUnlisted = 0;
+    s_dbgMetal = s_dbgConcrete = s_dbgFluid = s_dbgOther = s_dbgUnlisted = 0;
     s_dbgEmberSmoke = 0;
 }
 

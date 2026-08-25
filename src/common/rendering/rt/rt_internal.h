@@ -143,6 +143,98 @@ inline bool RT_IsLavaFlat( const char* nm )
     return strncmp( nm, "HLAVA", 5 ) == 0 || strncmp( nm, "D64LAVA", 7 ) == 0;
 }
 
+// WHICH of the four liquids is this flat? -1 none, else 0 water / 1 nukage /
+// 2 sludge / 3 blood -- the SAME order stylizedLiquidTint/Crest are indexed by
+// in rt_main.cpp. "Order matters" there means it matters here.
+//
+// This table used to be a static local inside l_waterflag (rt_draw.cpp), which
+// meant the only answer to "what liquid is this" lived inside the function that
+// sets a PRIMITIVE FLAG, and nothing else could ask. The impact splash needs the
+// same answer from playsim. Only the LOOKUP moved: l_waterflag keeps its own
+// rt_water_style / rt_water_liquids gates and keeps excluding the wall falls,
+// because those two decisions are about the water SHADER, not about what the
+// liquid is. Anything that wants the shader must still go through l_waterflag.
+//
+// PREFIX vs EXACT is deliberate and load-bearing. D64B2_01 is frame 1 of a
+// 64-frame ANIMDEFS sequence, so a prefix is the only thing that matches every
+// frame; the Unseen Evil flats are single names, and a prefix on one that short
+// would over-reach ("BLOOD" would also catch BLOODFALL).
+inline int RT_LiquidIdOfName( const char* nm )
+{
+    if( !nm || !*nm )
+    {
+        return -1;
+    }
+
+    struct LiquidMatch
+    {
+        const char* name;  // prefix, or full name when exact
+        bool        exact;
+        int         id;    // 0 water, 1 nukage, 2 sludge, 3 blood
+    };
+    static const LiquidMatch kLiquids[] = {
+        { "D64W1_", false, 0 },   { "D64W2_", false, 0 },
+        { "D64WATR1", true, 0 },  { "D64WATR2", true, 0 },
+        { "D64N1_", false, 1 },   { "D64N2_", false, 1 },
+        { "D64NUKG1", true, 1 },  { "D64NUKG2", true, 1 },
+        { "D64S1_", false, 2 },   { "D64S2_", false, 2 },
+        { "D64SLDG1", true, 2 },  { "D64SLDG2", true, 2 },
+        { "D64B1_", false, 3 },   { "D64B2_", false, 3 },
+        { "D64BLOD1", true, 3 },  { "D64BLOD2", true, 3 },
+
+        // Doom 64: Unseen Evil's liquids. Same four-palette design, different
+        // names. The ids are NOT guessed from the names; they come from the
+        // mod's own replacement table (resources/d64ue_textures.floors):
+        //
+        //   FWATER1..4  -> WATERA    water
+        //   NUKAGE1..3  -> SLIMEB    nukage  (Doom's green nukage)
+        //   SLIME01..08 -> SLUDGEA/B sludge  (NOT nukage, despite the name)
+        //   BLOOD1..3   -> BLOODB    blood
+        //
+        // That SLIME/SLUDGE crossover is the trap: reading "SLIMEA" as sludge
+        // would swap green for brown on every nukage pool in DOOM II.
+        { "WATERA", true, 0 },  { "WATERB", true, 0 },
+        { "SLIMEA", true, 1 },  { "SLIMEB", true, 1 },
+        { "SLUDGEA", true, 2 }, { "SLUDGEB", true, 2 },
+        { "BLOODA", true, 3 },  { "BLOODB", true, 3 },
+        { "textures/special/WATERS.png", true, 0 },
+        { "textures/special/SLIMES.png", true, 1 },
+        { "textures/special/BLOODS.png", true, 3 },
+    };
+
+    for( const LiquidMatch& m : kLiquids )
+    {
+        const bool hit = m.exact ? ( strcmp( nm, m.name ) == 0 )
+                                 : ( strncmp( nm, m.name, strlen( m.name ) ) == 0 );
+        if( hit )
+        {
+            return m.id;
+        }
+    }
+    return -1;
+}
+
+// The three liquid FALL wall sheets, as families. Kept OUT of RT_LiquidIdOfName
+// so that l_waterflag cannot pick them up by accident: tagging a fall
+// RG_MESH_PRIMITIVE_WATER makes the instance refractive, and ASManager then
+// rewrites its TLAS mask to INSTANCE_MASK_REFRACT only -- the wall stops
+// blocking shadow rays and the next room pours through it. A splash spawn sets
+// no primitive flag, so it is free to use them.
+//
+// SFALL is "SLIME FALL" in ANIMDEFS -- nukage, green. Not sludge. There is no
+// sludge fall and no lava fall in the game.
+inline int RT_LiquidFallIdOfName( const char* nm )
+{
+    if( !nm || !*nm )
+    {
+        return -1;
+    }
+    if( strncmp( nm, "WFALL", 5 ) == 0 ) { return 0; }
+    if( strncmp( nm, "SFALL", 5 ) == 0 ) { return 1; }
+    if( strncmp( nm, "BFALL", 5 ) == 0 ) { return 3; }
+    return -1;
+}
+
 constexpr auto ONEGAMEUNIT_IN_METERS           = 1.0f / 32.0f; // https://doomwiki.org/wiki/Map_unit
 
 constexpr auto RG_PACKED_COLOR_WHITE = RgColor4DPacked32{ 0xFFFFFFFF };

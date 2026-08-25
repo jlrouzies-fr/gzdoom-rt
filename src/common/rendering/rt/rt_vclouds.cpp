@@ -42,10 +42,22 @@
 // but it has to be the same SHAPE, or the moon would dim behind cloud that is
 // not drawn. If CmCloudMap.comp changes, this changes with it.
 //
-// OFF IS THE DECK. rt_clouds_volumetric 0 leaves RT_DrawCloudDeck exactly as
-// it was; the only thing this file does then is report enabled=0.
+// OFF IS THE DECK, AND ON IS WHAT SHIPS. rt_clouds_volumetric 0 leaves
+// RT_DrawCloudDeck exactly as it was and the only thing this file does then is
+// report enabled=0 -- but since 2026-08-25 the cvar defaults to 1 and
+// tools/d64rt-pins.cfg restates that, so the march is the cloud path on every
+// map whose preset turns rt_clouds on, not just on the five fire maps. The deck
+// is the fallback and stays one console line away.
+//
+// It had to become BOTH a default and a pin. This is the one cloud cvar the
+// engine writes at runtime (rt_firesky.cpp, on the fire maps) and it is
+// CVAR_ARCHIVE, so while it was unpinned a quit on MAP23 archived a 1 that
+// nothing reset -- and a player who had never been to a hell map got the deck
+// on MAP12 while a player who had got the march. Same build, same launcher.
 
 #include "rt_internal.h"
+
+#include "printf.h"
 
 #include <cmath>
 
@@ -344,6 +356,47 @@ void RT_VCloudsParams( RgDrawFrameVolumetricCloudParams* out )
     const bool on = RT_VCloudsActive() && g_vcloudSky;
 
     g_vcloudOnFrames = on ? g_vcloudOnFrames + 1 : 0;
+
+    // WHICH CLOUD RENDERER ACTUALLY RAN, on the edge only.
+    //
+    // There was no such line off the fire maps: rt_firesky.cpp announces itself
+    // on MAP22/23/24/28/32 and nowhere else, so "the volumetric clouds are not
+    // enabled for him" needed a VIDEO to notice instead of one grep of
+    // rt-console.log. That report was a stale gzdoom-rt2.ini deciding the cloud
+    // path, and it was invisible from both sides.
+    //
+    // It is edge-triggered HERE, where the params are built, and not at level
+    // load, because this is the last word. RT_ApplyCloudPreset and
+    // RT_FireSkyOnLevelLoad both write rt_clouds after one another on the same
+    // load -- rt_firesky.cpp's note above RT_FireSkyAnnounce records what that
+    // ordering cost -- so a print from either can be true when it runs and
+    // false a moment later. And like that one it reads the cvars BACK rather
+    // than reporting what anything just set.
+    {
+        static int s_lastPath = -1;
+
+        // 2 vs 3 separates the two ways the march can be armed but not drawing:
+        // g_vcloudSky latches on the first sky portal of the session, so a
+        // sealed opening map legitimately reports "waiting".
+        const int path = !bool{ cvar::rt_clouds }             ? 0
+                         : on                                 ? 3
+                         : bool{ cvar::rt_clouds_volumetric } ? 2
+                                                              : 1;
+        if( path != s_lastPath )
+        {
+            s_lastPath                = path;
+            const char* const kPath[] = { "OFF",
+                                          "shell deck",
+                                          "VOLUMETRIC (no sky portal drawn yet)",
+                                          "VOLUMETRIC" };
+            Printf( RT_DiagPrintLevel(),
+                    "rt_clouds: %s -> %s  (rt_clouds %d, rt_clouds_volumetric %d)\n",
+                    RT_GetMapName() ? RT_GetMapName() : "(no map)",
+                    kPath[ path ],
+                    int( bool{ cvar::rt_clouds } ),
+                    int( bool{ cvar::rt_clouds_volumetric } ) );
+        }
+    }
 
     auto col255 = []( uint32_t hex ) {
         return RgFloat3D{ RPART( hex ) / 255.f, GPART( hex ) / 255.f, BPART( hex ) / 255.f };

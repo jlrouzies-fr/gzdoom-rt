@@ -803,6 +803,28 @@ void RT_DrawSparks()
                 float tg = ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f;
                 float tb = ( sp.baseRgb & 0xFF ) / 255.f;
 
+                // A LITERAL COLOUR SKIPS BOTH CORRECTIONS BELOW, and that is the
+                // whole reason the flag exists. The chroma expansion and the
+                // luminance pin are there to rescue a WHOLE-TEXTURE MEAN, which
+                // is dull and sits at an arbitrary brightness. A liquid droplet
+                // is handed the exact colour its pool is painted with
+                // (rt_*_crest_*), so expanding its chroma would push water's pale
+                // 140,204,255 into raw cyan and the pin would then drag it down
+                // to a mid grey-blue -- two fixes for a problem this input does
+                // not have. It gets one honest scale, rt_spark_fluid_albedo, and
+                // still takes the age curve below so it fades like everything
+                // else.
+                if( sp.litRgb )
+                {
+                    const float k =
+                        std::clamp( float{ cvar::rt_spark_fluid_albedo }, 0.f, 4.f );
+                    tr = std::min( 1.f, tr * k );
+                    tg = std::min( 1.f, tg * k );
+                    tb = std::min( 1.f, tb * k );
+                }
+                else
+                {
+
                 // A WHOLE-TEXTURE MEAN IS A CHROMA KILLER, and this is the step
                 // that makes the tint visible at all.
                 //
@@ -840,6 +862,8 @@ void RT_DrawSparks()
                     tg = std::min( 1.f, tg * k );
                     tb = std::min( 1.f, tb * k );
                 }
+
+                } // !sp.litRgb
 
                 // The ramp's own darkening, as a fraction of its first entry, so
                 // a chip still fades with age whatever colour it took.
