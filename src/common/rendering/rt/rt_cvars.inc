@@ -1979,9 +1979,28 @@
     RT_CVAR( rt_clouds_volume_lintensity, 0.5f, "rt_volume_lintensity while a CLOUD map is loaded (rt_clouds on, "
                                                 "not a fire map): the moon's shafts, dialled down so the haze does "
                                                 "not compete with the deck for the sky. -1 = use the global." )
-    RT_CVAR( rt_clouds_volumetric,      false,  "0 = the shell deck (everything above), 1 = the ray-marched "
+    RT_CVAR_NOARCH( rt_clouds_volumetric, true, "0 = the shell deck (everything above), 1 = the ray-marched "
                                                 "volumetric slab. Toggle in place; the deck comes back exactly as "
-                                                "it was." )
+                                                "it was. SHIPS ON, and tools/d64rt-pins.cfg restates it -- BOTH "
+                                                "halves are load-bearing and neither is redundant. This is the one "
+                                                "cloud cvar the engine WRITES at runtime (rt_firesky.cpp on the five "
+                                                "fire maps), and it USED TO BE CVAR_ARCHIVE, so with a default of 0 and "
+                                                "no pin, one quit on a hell map archived a 1 that nothing ever reset "
+                                                "-- and whether a player saw the march or the deck on MAP12 came "
+                                                "down to whether they had ever visited MAP23. The pin beats a stale "
+                                                "ini (it runs after the config load); the default covers a launch "
+                                                "that never execs the pins at all. "
+                                                "NOARCH is the third layer and the one that actually closes it. A "
+                                                "pin only beats an ini entry that exists, and a default only applies "
+                                                "when none does -- so an old ini plus a launch with no pins fell "
+                                                "through both. This cvar is per-map state the engine manages, not a "
+                                                "preference, and it is in no menu, so it has no business being in the "
+                                                "ini at all. AND NOARCH ALONE IS NOT ENOUGH: ReadCVars applies "
+                                                "every key in the ini by name and never looks at CVAR_ARCHIVE, so "
+                                                "un-archiving stops the WRITE, not the READ. Measured 2026-08-25 -- "
+                                                "a stale archived line for THIS cvar was still in the config and "
+                                                "still being applied. gameconfigfile.cpp now skips a key whose "
+                                                "cvar is not archived, which is what finally closes it." )
     RT_CVAR( rt_vclouds_altitude,       600.f,  "bottom of the slab above the viewer, METRES" )
     RT_CVAR( rt_vclouds_thick,          500.f,  "slab thickness, METRES" )
     RT_CVAR( rt_vclouds_coverage,       0.55f,  "fraction of the sky that is cloud, 0..1" )
@@ -4906,19 +4925,19 @@
                                                 "'detected, then culled' are identical on screen and have completely "
                                                 "different fixes." )
 
-    RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
-    RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
-    RT_CVAR( rt_water_b,                255,    "water color Blue [0,255]" )
-    RT_CVAR( rt_water_wavestren,        0.4f,   "normal map strength for water. Also drives the partial-invisibility warp. 3.0 was the old default: it shattered the reflected image into sparkle, which reads as no reflection at all." )
+    RT_CVAR_NOARCH( rt_water_r,         255,    "water color Red [0,255]" )
+    RT_CVAR_NOARCH( rt_water_g,         255,    "water color Green [0,255]" )
+    RT_CVAR_NOARCH( rt_water_b,         255,    "water color Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_water_wavestren, 0.4f,   "normal map strength for water. Also drives the partial-invisibility warp. 3.0 was the old default: it shattered the reflected image into sparkle, which reads as no reflection at all." )
     // These two were hardcoded (0.05 / 1.0) with the comment "for
     // partial_invisibility" -- the invisibility warp uses the same water normal
     // field. At 0.05 the waves crawl: one full cycle of the normal texture takes
     // minutes, so the stylized water's caustics would not shimmer at all. Now
     // exposed, at RTGL's own default speed and a tighter tile scale. They still
     // also drive the partial-invisibility warp, which is only cosmetic there.
-    RT_CVAR( rt_water_wavespeed,        0.2f,   "water wave scroll speed (also the partial-invisibility warp). "
+    RT_CVAR_NOARCH( rt_water_wavespeed, 0.2f,   "water wave scroll speed (also the partial-invisibility warp). "
                                                 "0.05 was the old hardcoded value ??? effectively static." )
-    RT_CVAR( rt_water_areascale,        0.35f,  "world area one tile of the water normal texture covers. Larger "
+    RT_CVAR_NOARCH( rt_water_areascale, 0.35f,  "world area one tile of the water normal texture covers. Larger "
                                                 "= broader, slower swells; smaller = tighter ripples." )
 
     // Doom64-RT stylized water.
@@ -4938,7 +4957,7 @@
     //
     // Only applies to surfaces RTGL already considers water, i.e. textures
     // tagged "isWater" in rt/data/textures.json (tools/set_water_meta.py).
-    RT_CVAR( rt_water_style,            true,   "stylized (Doom 64) water instead of physical refract+absorb. "
+    RT_CVAR_NOARCH( rt_water_style,     true,   "stylized (Doom 64) water instead of physical refract+absorb. "
                                                 "Deep blue opaque body with the flat's own caustics, plus a "
                                                 "Fresnel-weighted reflection. 0 = stock RTGL water." )
     // Doom 64 has FOUR liquids, not one: water, nukage, sludge and blood are the
@@ -4952,39 +4971,39 @@
     // never the body brightened: water's body is deep blue but its crests are
     // pale cyan, which is what the source art's brightest texels actually are.
     // Pale, not white ??? white crests read as foam or plastic.
-    RT_CVAR( rt_water_liquids,          true,   "apply the stylized water surface to nukage / sludge / blood as "
+    RT_CVAR_NOARCH( rt_water_liquids,   true,   "apply the stylized water surface to nukage / sludge / blood as "
                                                 "well as water (D64N*, D64S*, D64B*). 0 = water only, the other "
                                                 "three go back to being flat near-black floors." )
-    RT_CVAR( rt_water_tint_r,           1,      "stylized water: body colour Red [0,255]" )
-    RT_CVAR( rt_water_tint_g,           1,      "stylized water: body colour Green [0,255]" )
-    RT_CVAR( rt_water_tint_b,          15,      "stylized water: body colour Blue [0,255]" )
-    RT_CVAR( rt_water_crest_r,        140,      "stylized water: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_water_crest_g,        204,      "stylized water: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_water_crest_b,        255,      "stylized water: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_nukage_tint_r,          1,      "stylized nukage (D64N*): body colour Red [0,255]" )
-    RT_CVAR( rt_nukage_tint_g,         5,      "stylized nukage: body colour Green [0,255]" )
-    RT_CVAR( rt_nukage_tint_b,          1,      "stylized nukage: body colour Blue [0,255]" )
-    RT_CVAR( rt_nukage_crest_r,       50,      "stylized nukage: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_nukage_crest_g,       150,      "stylized nukage: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_nukage_crest_b,       50,      "stylized nukage: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_sludge_tint_r,          9,      "stylized sludge (D64S*): body colour Red [0,255]" )
-    RT_CVAR( rt_sludge_tint_g,          3,      "stylized sludge: body colour Green [0,255]" )
-    RT_CVAR( rt_sludge_tint_b,          1,      "stylized sludge: body colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_water_tint_r,    1,      "stylized water: body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_water_tint_g,    1,      "stylized water: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_water_tint_b,   15,      "stylized water: body colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_water_crest_r, 140,      "stylized water: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_water_crest_g, 204,      "stylized water: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_water_crest_b, 255,      "stylized water: caustic vein colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_tint_r,   1,      "stylized nukage (D64N*): body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_tint_g,  5,      "stylized nukage: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_tint_b,   1,      "stylized nukage: body colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_crest_r, 50,     "stylized nukage: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_crest_g, 150,     "stylized nukage: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_crest_b, 50,     "stylized nukage: caustic vein colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_tint_r,   9,      "stylized sludge (D64S*): body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_tint_g,   3,      "stylized sludge: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_tint_b,   1,      "stylized sludge: body colour Blue [0,255]" )
     // Retuned DOWN from 255,204,115 when the reference art landed. That value
     // was calibrated against the old, dimmer flat; the exposed art drives the
     // vein mask to a ~0.44 mean, so the surface sits nearly half-way to this
     // colour EVERYWHERE and a pale tan crest made the whole bed read as light
     // sand rather than mud. Same correction rt_nukage_crest needed, for the
     // same reason.
-    RT_CVAR( rt_sludge_crest_r,       120,      "stylized sludge: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_sludge_crest_g,        78,      "stylized sludge: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_sludge_crest_b,        38,      "stylized sludge: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_blood_tint_r,          20,     "stylized blood (D64B*): body colour Red [0,255]" )
-    RT_CVAR( rt_blood_tint_g,           1,      "stylized blood: body colour Green [0,255]" )
-    RT_CVAR( rt_blood_tint_b,           1,      "stylized blood: body colour Blue [0,255]" )
-    RT_CVAR( rt_blood_crest_r,        255,      "stylized blood: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_blood_crest_g,        115,      "stylized blood: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_blood_crest_b,        102,      "stylized blood: caustic vein colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_crest_r, 120,     "stylized sludge: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_crest_g, 78,      "stylized sludge: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_crest_b, 38,      "stylized sludge: caustic vein colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_tint_r,   20,     "stylized blood (D64B*): body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_tint_g,    1,      "stylized blood: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_tint_b,    1,      "stylized blood: body colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_crest_r, 255,      "stylized blood: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_crest_g, 115,      "stylized blood: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_crest_b, 102,      "stylized blood: caustic vein colour Blue [0,255]" )
     // Coagulated blood pools. The art is d64r-liquid-art.wad: one image for all
     // 128 D64B1_/D64B2_ frames, plus _n/_h/_orm on every one of them. Built by
     // tools/gen_liquid_art.py; the whole feature is docs/rt-blood-pools.md.
@@ -4992,42 +5011,42 @@
     // WITHOUT THE WAD LOADED THESE DO NOTHING, and the failure is silent: the
     // relief needs an _n to give back, and the flow needs the vein direction
     // baked into the height map's spare channels. Check the wad before tuning.
-    RT_CVAR( rt_blood_relief,           1.0f,   "how much of the AUTHORED relief survives on blood, 0..1. 0 = the "
+    RT_CVAR_NOARCH( rt_blood_relief,    1.0f,   "how much of the AUTHORED relief survives on blood, 0..1. 0 = the "
                                                 "animated water wave, which is what blood used to get and is still "
                                                 "what water/nukage/sludge get. 1 = the _n map alone: a still surface "
                                                 "with real ridges. Rides on rt_normalmap_stren, and its depth comes "
                                                 "from the _h parallax, which rt_heightmap_stren scales." )
-    RT_CVAR( rt_blood_flow,             1.0f,   "depth of the FLOW MAP on blood: a detail texture advected along the "
+    RT_CVAR_NOARCH( rt_blood_flow,      1.0f,   "depth of the FLOW MAP on blood: a detail texture advected along the "
                                                 "vein direction baked into the height map, so blobs of liquid slide "
                                                 "down each channel. Texture moving, not brightness pulsing -- the "
                                                 "first version pulsed and read as flicker. 0 = still." )
-    RT_CVAR( rt_blood_flow_speed,       0.5f,   "detail tiles scrolled per second along the vein. Slow on purpose -- "
+    RT_CVAR_NOARCH( rt_blood_flow_speed, 0.5f,  "detail tiles scrolled per second along the vein. Slow on purpose -- "
                                                 "this is a thick fluid, and fast reads as a scrolling texture." )
-    RT_CVAR( rt_blood_flow_scale,       6.0f,   "detail tiles per 64-unit blood tile, measured along the vein. "
+    RT_CVAR_NOARCH( rt_blood_flow_scale, 6.0f,  "detail tiles per 64-unit blood tile, measured along the vein. "
                                                 "Higher = finer streaks." )
-    RT_CVAR( rt_blood_flow_aspect,      3.0f,   "across-vein frequency multiplier. The noise is sampled in a "
+    RT_CVAR_NOARCH( rt_blood_flow_aspect, 3.0f, "across-vein frequency multiplier. The noise is sampled in a "
                                                 "vein-aligned frame, and this stretches it into streaks that run "
                                                 "lengthwise -- the shape that reads as liquid moving. 1 = round "
                                                 "blobs, which read as shimmer (that was version two)." )
-    RT_CVAR( rt_blood_caustics,         0.0f,   "how much of rt_water_caustics a BLOOD pool projects onto the walls "
+    RT_CVAR_NOARCH( rt_blood_caustics,  0.0f,   "how much of rt_water_caustics a BLOOD pool projects onto the walls "
                                                 "and floor around it. 0 by default because a caustic is light "
                                                 "refracted THROUGH a fluid and focused on what is beyond it, and "
                                                 "blood is opaque -- it was casting the same rippling pool-light as "
                                                 "water, which is the loudest single thing saying 'this is water with "
                                                 "red paint on it'. 1 restores the old behaviour." )
-    RT_CVAR( rt_nukage_caustics,        0.0f,   "same for NUKAGE (D64N*): how much of rt_water_caustics a poison "
+    RT_CVAR_NOARCH( rt_nukage_caustics, 0.0f,   "same for NUKAGE (D64N*): how much of rt_water_caustics a poison "
                                                 "pool projects. 0 by default -- it is opaque too. 1 restores the "
                                                 "old behaviour." )
-    RT_CVAR( rt_sludge_caustics,        0.0f,   "same for SLUDGE (D64S*): how much of rt_water_caustics a sludge "
+    RT_CVAR_NOARCH( rt_sludge_caustics, 0.0f,   "same for SLUDGE (D64S*): how much of rt_water_caustics a sludge "
                                                 "pool projects. 0 by default -- the coagulated crust art is as "
                                                 "opaque as blood's and poison's. 1 restores the old behaviour." )
-    RT_CVAR( rt_sludge_relief,          1.0f,   "SLUDGE (D64S*): how much of the authored _n relief survives "
+    RT_CVAR_NOARCH( rt_sludge_relief,   1.0f,   "SLUDGE (D64S*): how much of the authored _n relief survives "
                                                 "against the animated water wave. 1 = the mud bed alone -- lumps, "
                                                 "rims and pits that hold still, which is what mud is. 0 = the old "
                                                 "ripple. Its height comes from the art's full luminance range, not "
                                                 "from the vein mask blood uses: 90%% of sludge's texels saturate "
                                                 "that mask, so a mask-derived height would be a flat plateau." )
-    RT_CVAR( rt_liquid_checkerboard,    true,   "CONSOLE ONLY -- deliberately not in the Quality menu, because what "
+    RT_CVAR_NOARCH( rt_liquid_checkerboard, true, "CONSOLE ONLY -- deliberately not in the Quality menu, because what "
                                                 "0 trades away is the reflection that sells WATER and no player "
                                                 "meeting it in a list would know that. How the stylized liquid "
                                                 "surfaces (water, nukage, sludge, blood) are drawn. 1 = the stock CHECKERBOARD: the lit surface "
@@ -5041,7 +5060,7 @@
                                                 "liquid whose rt_*_refl is 0 (sludge ships so) takes the full-res "
                                                 "path whatever this says, which is why the mud bed needs nothing "
                                                 "from this cvar. Archived; deliberately NOT pinned." )
-    RT_CVAR( rt_sludge_refl,            0.0f,   "SLUDGE: how much of the stylized water MIRROR sludge keeps. 1 = "
+    RT_CVAR_NOARCH( rt_sludge_refl,     0.0f,   "SLUDGE: how much of the stylized water MIRROR sludge keeps. 1 = "
                                                 "the same mirror water gets, which is the loudest single thing "
                                                 "saying 'this is water with brown paint on it'. 0 = NO MIRROR AND "
                                                 "NO CHECKERBOARD: the bed is shaded on every pixel at full "
@@ -5051,7 +5070,7 @@
                                                 "the flashlight bug -- on a high-contrast normal, half the columns "
                                                 "are rebuilt from their neighbours and the pattern crawls with the "
                                                 "camera. Any value above 0 brings the split back." )
-    RT_CVAR( rt_sludge_rough,           0.8f,   "SLUDGE: surface roughness. 0 or less = use rt_water_rough (0.1, a "
+    RT_CVAR_NOARCH( rt_sludge_rough,    0.8f,   "SLUDGE: surface roughness. 0 or less = use rt_water_rough (0.1, a "
                                                 "near-mirror). This is what the denoiser and later bounces see; the "
                                                 "reflection ray itself is a mirror off the shaded normal either "
                                                 "way, so it is rt_sludge_relief that actually scatters it. Use the "
@@ -5069,25 +5088,25 @@
                                                 "sliding along each vein means the bake and the plumbing both work. "
                                                 "Flat blue means the detail never crossed the G-buffer, which by eye "
                                                 "is identical to 'the motion is too subtle'." )
-    RT_CVAR( rt_water_caustic,          1.5f,   "stylized water: how hard the wave crests brighten the "
+    RT_CVAR_NOARCH( rt_water_caustic,   1.5f,   "stylized water: how hard the wave crests brighten the "
                                                 "texture's caustic veins. 0 = static veins." )
     // Reflection strength is deliberately NOT physical. Real water has F0=0.02,
     // so a correct Schlick term is ~2% looking straight down -- the reflection
     // is there, and it reflects sprites and geometry correctly, but at a
     // strength you cannot see. The shader keeps the SHAPE of the Schlick curve
     // and remaps its range onto [reflmin, reflmax].
-    RT_CVAR( rt_water_reflmin,          0.1f,   "stylized water: reflection strength looking straight DOWN at "
+    RT_CVAR_NOARCH( rt_water_reflmin,   0.1f,   "stylized water: reflection strength looking straight DOWN at "
                                                 "the surface. Physical water is 0.02 (invisible); this is the "
                                                 "artistic floor that makes it read as a reflective pool. 0 = "
                                                 "physically correct and effectively no reflection from above." )
-    RT_CVAR( rt_water_reflmax,          0.75f,  "stylized water: reflection strength at GRAZING angles. 1 = a "
+    RT_CVAR_NOARCH( rt_water_reflmax,   0.75f,  "stylized water: reflection strength at GRAZING angles. 1 = a "
                                                 "true mirror at the horizon, lower keeps it a sheen." )
-    RT_CVAR( rt_water_rough,            0.1f,   "stylized water: roughness of the surface half (specular "
+    RT_CVAR_NOARCH( rt_water_rough,     0.1f,   "stylized water: roughness of the surface half (specular "
                                                 "highlight width from lights)" )
-    RT_CVAR( rt_water_glow,             0.04f,  "stylized water: unlit on-screen sheen on the caustic veins, "
+    RT_CVAR_NOARCH( rt_water_glow,      0.04f,  "stylized water: unlit on-screen sheen on the caustic veins, "
                                                 "so the pattern still reads in near-black rooms. Casts no "
                                                 "light. 0 = fully lighting-dependent." )
-    RT_CVAR( rt_water_veinref,          0.1f,   "stylized water: LINEAR luminance that saturates the caustic "
+    RT_CVAR_NOARCH( rt_water_veinref,   0.1f,   "stylized water: LINEAR luminance that saturates the caustic "
                                                 "vein mask. Measured on D64W2_01: median texel 0.0024, p90 "
                                                 "0.0064, p95 0.0113, p99 0.0161, max 0.0327 ??? the flat is far "
                                                 "darker in linear space than its sRGB thumbnail suggests, so a "
@@ -5101,28 +5120,28 @@
     // on water within rt_water_caustic_dist the point's DIRECT lighting is
     // modulated by an animated caustic field. Multiplicative, never additive:
     // caustics are focused light, not a light source, so a dark room stays dark.
-    RT_CVAR( rt_water_caustics,         1.2f,   "strength of the caustics the water casts onto surrounding "
+    RT_CVAR_NOARCH( rt_water_caustics,  1.2f,   "strength of the caustics the water casts onto surrounding "
                                                 "geometry. 0 = off, and no probe ray is traced at all (this is "
                                                 "the perf switch: it costs one ray per pixel)." )
-    RT_CVAR( rt_water_caustic_scale,    0.8f,   "caustic field frequency, UV per METRE (RTGL world space is "
+    RT_CVAR_NOARCH( rt_water_caustic_scale, 0.8f, "caustic field frequency, UV per METRE (RTGL world space is "
                                                 "metres; 1 map unit = 1/32 m). 0.8 tiles the field every "
                                                 "~1.25 m = 40 map units. Higher = smaller, busier "
                                                 "filaments." )
-    RT_CVAR( rt_water_caustic_speed,    0.35f,  "caustic field scroll speed" )
-    RT_CVAR( rt_water_caustic_rise,     64.f,   "how far ABOVE the water the caustics still reach, map units. "
+    RT_CVAR_NOARCH( rt_water_caustic_speed, 0.35f, "caustic field scroll speed" )
+    RT_CVAR_NOARCH( rt_water_caustic_rise, 64.f, "how far ABOVE the water the caustics still reach, map units. "
                                                 "Deliberately separate from rt_water_caustic_dist: real caustics "
                                                 "climb only a little way up a wall, while the probe has to reach "
                                                 "much further sideways to clear a pool's ledge. Sharing one "
                                                 "range ran the pattern up the full height of every wall." )
-    RT_CVAR( rt_water_caustic_wall,     4.0f,   "extra caustic gain on VERTICAL surfaces only. The same pattern "
+    RT_CVAR_NOARCH( rt_water_caustic_wall, 4.0f, "extra caustic gain on VERTICAL surfaces only. The same pattern "
                                                 "is much fainter on a wall than on the pool bottom -- grazing "
                                                 "angle, and the light has spread further -- so one gain tuned on "
                                                 "the floor leaves the walls invisible, while raising it brightens "
                                                 "the floor just as much. 1 = no boost." )
-    RT_CVAR( rt_water_caustic_slant,    0.6f,   "how far the caustic probe tilts along the surface normal. 0 = "
+    RT_CVAR_NOARCH( rt_water_caustic_slant, 0.6f, "how far the caustic probe tilts along the surface normal. 0 = "
                                                 "straight down, which only finds water for surfaces standing "
                                                 "directly in it; higher lets a wall look out over a pool ledge." )
-    RT_CVAR( rt_water_caustic_dist,     512.f,  "how far the caustic probe reaches, in map units. The probe is "
+    RT_CVAR_NOARCH( rt_water_caustic_dist, 512.f, "how far the caustic probe reaches, in map units. The probe is "
                                                 "slanted along the surface normal, so this is a slant range, not "
                                                 "a pure height: 512 lights roughly the lower 400 units of a wall "
                                                 "standing a ledge-width back from the pool. Larger reaches higher "

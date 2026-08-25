@@ -80,6 +80,10 @@ extern RgInterface rt;
 namespace rtx
 {
 void RT_ReportPrecache();
+// Prints the liquid state (relief / refl / wave / split) once per level load, so
+// every rt-console.log says whether the blood and sludge beds actually got their
+// authored relief. Defined in rt_main.cpp.
+void RT_ReportLiquidConfig();
 }
 
 inline int RT_DiagPrintLevel()

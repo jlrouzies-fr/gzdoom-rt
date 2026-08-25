@@ -1431,6 +1431,53 @@ void rtx::RT_ReportPrecache()
     g_rt_precache_count = 0;
     g_rt_precache_ms    = 0.0;
 }
+
+// Doom64-RT: one line per level naming the LIQUID state the shader is actually
+// getting. It exists because the failure it diagnoses is silent from both ends.
+//
+// The animated water wave is GLOBAL -- getNormal() swaps it in for any
+// water-flagged primitive -- and the only thing that takes it back off a blood
+// or sludge bed is the per-liquid relief mix. So "the ripple is back on the
+// blood" has three causes that look identical in play and identical in the map:
+// the relief cvar is 0, the engine is older than the cvar (the launcher's pin
+// is then an orphan -- one "Unknown command" buried in the boot spam, and the
+// uniform reads whatever RTGL left there), or the authored _n never shipped.
+//
+// The release launcher already passes +logfile, so this line is in every
+// player's rt-console.log and a bug report answers the question by itself.
+// It reads the same cvars RT_DrawFrame uploads, so it cannot drift from them.
+void rtx::RT_ReportLiquidConfig()
+{
+    static FString s_reported;
+
+    const char* mapname = RT_GetMapName();
+    if( !mapname || s_reported.Compare( mapname ) == 0 )
+    {
+        return;
+    }
+    s_reported = mapname;
+
+    // Same order the uniform is packed in: water / nukage / sludge / blood.
+    // Water and nukage are literals there, not cvars, and are printed as such.
+    Printf( RT_DiagPrintLevel(),
+            "RT liquid: style=%d liquids=%d split=%d wave=%.2f@%.2f | "
+            "relief w/n/s/b %.2f/%.2f/%.2f/%.2f  refl %.2f/%.2f/%.2f/%.2f  "
+            "flow(blood) %.2f\n",
+            bool{ cvar::rt_water_style } ? 1 : 0,
+            bool{ cvar::rt_water_liquids } ? 1 : 0,
+            bool{ cvar::rt_liquid_checkerboard } ? 1 : 0,
+            float{ cvar::rt_water_wavestren },
+            float{ cvar::rt_water_wavespeed },
+            0.f,
+            0.f,
+            float{ cvar::rt_sludge_relief },
+            float{ cvar::rt_blood_relief },
+            1.f,
+            1.f,
+            float{ cvar::rt_sludge_refl },
+            1.f,
+            float{ cvar::rt_blood_flow } );
+}
 void rtx::RTFrameBuffer::Draw2D()
 {
     ::Draw2D( twod, *m_state );
@@ -2300,6 +2347,7 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
     RT_StatsNewFrame();
     RT_ApplyQualityPresetOnce();
     RT_ReportPrecache();
+    RT_ReportLiquidConfig();
 
     RTStartFrame.Clock();
     RgResult r = rt.rgStartFrame( &info );
