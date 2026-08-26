@@ -665,6 +665,111 @@ void RT_ApplyTintPreset( const char* mapname )
 
 //-----------------------------------------------------------------------------
 //
+// Doom64-RT: per-map SECTOR SELF-EMISSION SATURATION.
+//
+// rt_sector_emis_saturation is the COLOUR gate on rt_sector_emis: a surface
+// that already clears the lightlevel threshold self-emits only if its sector's
+// colormap tint is at least this saturated. The global 0.58 was measured on one
+// map -- MAP04 sector 68, tint 255,231,145, saturation 0.431 -- against MAP02's
+// red corridor panels, and it is a single number standing in for "is this a
+// coloured ROOM or merely a bright one" across every map in the game, whose
+// authors tinted them independently of each other.
+//
+// So it is the wrong shape for a global. A map whose tints happen to sit just
+// above 0.58 on surfaces that are only bright gets fake lights on plain walls,
+// and the only global fix is to raise the gate everywhere -- which drops the
+// panels the feature exists for on the maps that were already right. This table
+// is the per-map override for exactly that: one row, one number, the same shape
+// as RT_TINT_PRESETS above and read at the same moment.
+//
+// SAME TRAP AS RT_MOON_PRESETS AND RT_FOG_PRESETS: it writes the cvar at LEVEL
+// LOAD, after the command line is parsed, so on a listed map it overrides a
+// +rt_sector_emis_saturation pin. rt_sector_emis_presets 0 turns the table off,
+// which is what an A/B of the global value has to pass.
+//
+// To find the number for a new row: aim at the offending surface and type
+// `whatsthat`. It prints the sector's colormap tint AND the saturation computed
+// the same way this gate computes it, next to the threshold in force. Pick a
+// value above the surface you want gone and below the one you want kept.
+struct EmisPreset
+{
+    const char* map;
+    float       saturation; // rt_sector_emis_saturation. < 0: keep the launcher's
+    const char* note;
+};
+
+constexpr EmisPreset RT_EMIS_PRESETS[] = {
+    { "map08", 0.80f, "set by eye on request (2026-08-26), NOT measured with `whatsthat` -- "
+                      "so treat 0.80 as a starting point and re-derive it the documented way "
+                      "if it needs to move. At the global 0.58 too much of this map clears "
+                      "the colour gate and self-lights; 0.80 keeps only strongly coloured "
+                      "sectors. MAP08 is also the pit-blood map (9 pools, rt_blood_goto), so "
+                      "check the pools when judging it -- they sit at z -256 and a verdict "
+                      "from the spawn point is worthless." },
+};
+
+// The launcher's value, captured once before any row overwrites it, so a map
+// with no row gets the global back instead of inheriting the last listed map's
+// gate. Same one-shot guard as g_tint_base_* / g_moon_base_*, and the same trap:
+// most maps have NO row, so a leaked value would be the common case, not the
+// rare one.
+bool  g_emis_base_set = false;
+float g_emis_base_sat = 0.58f;
+
+const EmisPreset* RT_FindEmisPreset( const char* mapname )
+{
+    if( !mapname || mapname[ 0 ] == '\0' )
+    {
+        return nullptr;
+    }
+    for( const auto& p : RT_EMIS_PRESETS )
+    {
+        if( stricmp( mapname, p.map ) == 0 )
+        {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+// mapname == nullptr means "no listed map" and restores the baseline. That is
+// how the IWAD branch of RT_OnLevelLoadPresets keeps a Retribution row from
+// following the player into a stock DOOM II level.
+void RT_ApplyEmisPreset( const char* mapname )
+{
+    if( !g_emis_base_set )
+    {
+        g_emis_base_set = true;
+        g_emis_base_sat = float{ cvar::rt_sector_emis_saturation };
+    }
+
+    if( !bool{ cvar::rt_sector_emis_presets } )
+    {
+        cvar::rt_sector_emis_saturation = g_emis_base_sat;
+        return;
+    }
+
+    const EmisPreset* p = RT_FindEmisPreset( mapname );
+
+    cvar::rt_sector_emis_saturation =
+        ( p && p->saturation >= 0.f ) ? p->saturation : g_emis_base_sat;
+
+    // One line per listed map, at the diagnostic level: it lands in every
+    // player's rt-console.log without painting over the game, so a report of
+    // "the panels went out on MAP08" answers itself. A silent per-map cvar
+    // write is exactly the class of thing this project keeps losing sessions to.
+    if( p )
+    {
+        Printf( RT_DiagPrintLevel(),
+                "RT_EMIS_PRESETS: %s -> rt_sector_emis_saturation %.2f (global %.2f)\n",
+                p->map,
+                p->saturation,
+                g_emis_base_sat );
+    }
+}
+
+//-----------------------------------------------------------------------------
+//
 // Doom64-RT: per-map ILLUMINATED FOG.
 //
 // WHERE THE FOG COMES FROM. Not from here -- from the map. Doom 64 fogs whole
@@ -1060,13 +1165,18 @@ void RT_OnLevelLoadPresets( const char* mapname )
     if( !is_pwadmap )
     {
         Printf( RT_DiagPrintLevel(),
-                "RT presets: %s is an IWAD map -- skipping moon/cloud/tint/fog "
+                "RT presets: %s is an IWAD map -- skipping moon/cloud/tint/fog/emis "
                 "tables (they are keyed on Retribution map names)\n",
                 mapname ? mapname : "?" );
 
         // The baselines still have to be captured, or the FIRST preset map of the
         // session would take an IWAD map's cvars as its "launcher's values".
         RT_ApplyMoonPreset( nullptr );
+        // And the emission gate has to be put BACK, not merely left alone: a
+        // Retribution row is a live cvar write, so without this MAP08's 0.80
+        // would follow the player into the next level and quietly switch off
+        // half of rt_sector_emis there.
+        RT_ApplyEmisPreset( nullptr );
         g_fog_pending_map = "";
         g_fog_pending     = false;
         return;
@@ -1075,6 +1185,7 @@ void RT_OnLevelLoadPresets( const char* mapname )
     RT_ApplyCloudPreset( mapname );
     RT_ApplyMoonPreset( mapname );
     RT_ApplyTintPreset( mapname );
+    RT_ApplyEmisPreset( mapname );
 
     // Fog is only REQUESTED, for the reason given on g_fog_pending_map: the map's
     // own `fade`/`fogdensity` are not readable until P_SetupLevel has run, so

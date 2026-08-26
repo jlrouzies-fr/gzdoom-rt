@@ -1473,9 +1473,9 @@ void rtx::RT_ReportLiquidConfig()
             float{ cvar::rt_sludge_relief },
             float{ cvar::rt_blood_relief },
             1.f,
-            1.f,
+            float{ cvar::rt_nukage_refl },
             float{ cvar::rt_sludge_refl },
-            1.f,
+            float{ cvar::rt_blood_refl },
             float{ cvar::rt_blood_flow } );
 }
 void rtx::RTFrameBuffer::Draw2D()
@@ -1711,8 +1711,8 @@ CCMD( rt_blood_goto )
     l_liquidGoto( "rt_blood_goto",
                   "D64B1_",
                   "D64B2_",
-                  "rt_blood_relief 0/1 flips the relief, rt_blood_flow_debug 1 "
-                  "paints the flow phase.",
+                  "rt_blood_relief 0/1 flips the relief, rt_blood_refl 0/1 flips "
+                  "the water reflection, rt_blood_flow_debug 1 paints the flow phase.",
                   "MAP17 (39 pools), MAP32 (12) and MAP08 (9, in pits) have one." );
 }
 
@@ -2740,9 +2740,20 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .stylizedLiquidFlow     = { 0.f, 0.f, 0.f, cvar::rt_blood_flow },
         // Per-liquid reflection. 1 and 0 are "unchanged": 1 keeps the whole
         // stylized Fresnel curve, and a roughness of 0 falls back to
-        // rt_water_rough. Only sludge deviates -- a mud bed is not a mirror.
-        .stylizedLiquidRefl     = { 1.f, 1.f, cvar::rt_sludge_refl, 1.f },
-        .stylizedLiquidRough    = { 0.f, 0.f, cvar::rt_sludge_rough, 0.f },
+        // rt_water_rough. Only WATER is still a literal 1: it is the liquid the
+        // stylized Fresnel curve was authored for, and the one thing in the game
+        // that should reflect a room. The other three each pull their own value
+        // down (sludge 0, blood 0.3, nukage 0.5) because a mirror is what sells
+        // WATER, and wearing it is what made mud, gore and poison read as water
+        // with paint in it. A refl of exactly 0 also takes that liquid off the
+        // checkerboard split -- see rt_liquid_checkerboard; a fraction does not.
+        // Roughness stays paired with an AUTHORED normal: only sludge and blood
+        // have one, so nukage has no rt_nukage_rough to give it.
+        .stylizedLiquidRefl     = { 1.f,
+                                    cvar::rt_nukage_refl,
+                                    cvar::rt_sludge_refl,
+                                    cvar::rt_blood_refl },
+        .stylizedLiquidRough    = { 0.f, 0.f, cvar::rt_sludge_rough, cvar::rt_blood_rough },
         // Options > Quality "Liquid surfaces": 0 = full-res, no mirror, for ALL
         // four liquids. A liquid whose refl is 0 takes that path regardless.
         .liquidNoSplit          = cvar::rt_liquid_checkerboard ? 0.f : 1.f,
