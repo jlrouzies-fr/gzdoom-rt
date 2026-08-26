@@ -4811,6 +4811,179 @@
                                                 "the reason rt_spark_far is one. Its own knob so the Unmaker's reach "
                                                 "cannot be changed by tuning the arcs or the rocket." )
 
+    // -----------------------------------------------------------------------
+    // FIREBALL IMPACTS -- the four monster projectiles that are the same effect
+    // in four colours, and the last impacts in the game that left no mark.
+    //
+    //   BAL1  64DoomImpBall       orange   the imp
+    //   BAL3  64NightmareImpBall  violet   the nightmare imp
+    //   BAL7  64BaronBall         green    the HELL KNIGHT
+    //   BAL8  64BaronBall2        red      the BARON OF HELL
+    //
+    // Mechanically an ember mark whose spots wear the game's own five-frame FIRE
+    // animation as a flipbook, standing up on the surface, tinted per flavour.
+    // Every knob below is shared by all four: what separates them is COLOUR, and
+    // colour is the flavour's ramp, not a cvar.
+    // -----------------------------------------------------------------------
+    RT_CVAR( rt_fire,                   1,      "master for FIREBALL IMPACTS: a few flames actually burning on the "
+                                                "surface where a monster's fireball landed, in that projectile's own "
+                                                "colour, breathing a thread of smoke over a small scorch.\n"
+                                                "FOUR PROJECTILES, ONE EFFECT. The imp's BAL1 is orange, the nightmare "
+                                                "imp's BAL3 violet, the HELL KNIGHT's BAL7 green and the BARON OF "
+                                                "HELL's BAL8 red -- note that inversion, it is Doom 64's and the class "
+                                                "names invite getting it backwards. Each ramp was read out of that "
+                                                "sprite's own death frames, so the mark and the flash agree by "
+                                                "construction rather than by eye.\n"
+                                                "INDEPENDENT OF rt_ember. It is the rocket's ember mechanism pointed "
+                                                "at a new trigger, but the two masters are separate: switching the "
+                                                "rocket's coals off to look at something else must not take the "
+                                                "fireballs with it." )
+    RT_CVAR( rt_fire_count,             7,      "flames per fireball impact. SINGLE DIGITS, like the rocket's coals "
+                                                "and for the same reason -- what reads as fire is a few distinct "
+                                                "flames licking, not a wall of overlapping sprites.\n"
+                                                "Absolute, not a multiple of rt_ember_count: retuning the rocket must "
+                                                "not quietly add flames here." )
+    RT_CVAR( rt_fire_life,              3.5f,   "seconds a fireball's flames burn before they are out. ABSOLUTE.\n"
+                                                "SHIPPED LONG ON PURPOSE, to be settled in play rather than at design "
+                                                "time. A short flare (~0.6 s) matches the projectile's own death "
+                                                "animation and reads as one event; a longer burn reads as the wall "
+                                                "actually catching. `.\\tools\\ab.cmd fire-slow` is the long arm and "
+                                                "`fire-on` the shipping value.\n"
+                                                "NOTE THE COST. Live flames are impact rate x lifetime, and an imp is "
+                                                "the most common enemy in the game -- raising this raises how many "
+                                                "marks are alive against rt_arc_max as well as how long each lasts." )
+    RT_CVAR( rt_fire_size,              12.f,   "how tall one flame is, AS A MULTIPLE OF rt_ember_size -- the same "
+                                                "unit rt_laser_size uses, and not metres.\n"
+                                                "TWELVE, because a coal is 1 cm and a flame is not. rt_ember_size is "
+                                                "0.01, so this is a half-height of ~0.12 m before the per-flame size "
+                                                "jitter, i.e. a flame roughly a quarter of a metre tall.\n"
+                                                "THE UNIT IS WORTH STATING because getting it wrong is invisible. This "
+                                                "shipped for one session documented as metres and set to 0.09 -- which "
+                                                "multiplied out to 0.9 MILLIMETRES, and on screen that is a couple of "
+                                                "bright pixels. It read exactly like a texture that was not loading, "
+                                                "and an absurd-value run (0.6, still under a centimetre) 'confirmed' "
+                                                "it by barely changing. Sizes here are multiples of a coal." )
+    RT_CVAR( rt_fire_scatter,           0.9f,   "how far the flames spread across the mark, as a multiple of "
+                                                "rt_ember_scatter. Wider than the rocket's coals -- a fireball "
+                                                "SPLASHES, and flames clustered in the middle read as one big flame "
+                                                "with a bad silhouette." )
+    RT_CVAR( rt_fire_bright,            1.6f,   "flame brightness, as a multiple of rt_ember_bright.\n"
+                                                "THE ONLY BRIGHTNESS LEVER, and it is the vertex ALPHA. A flame is "
+                                                "an ADDITIVE quad -- it is light, not a surface -- so how bright it "
+                                                "reads is how much it adds, and that is alpha. There is no emissive "
+                                                "knob here: an emissive one would belong to traced geometry, which "
+                                                "is the construction this effect was moved OFF (a traced flame drew "
+                                                "its own dark outline as a solid occluder and the denoiser smeared "
+                                                "its core into a shapeless glow).\n"
+                                                "Not a linear gain past 1: alpha is 8-bit, so a multiplier above 1 "
+                                                "cannot raise the peak, it WIDENS it -- the flame holds full "
+                                                "brightness for more of its life instead of dimming from birth. "
+                                                "Same arithmetic as rt_spark_bright." )
+    RT_CVAR( rt_fire_rate,              9.0f,   "flipbook speed, in FRAMES PER SECOND. The sheet is the game's own "
+                                                "FIRE A-E, five drawings, so 9 runs the loop about twice a second.\n"
+                                                "Each flame gets its own PHASE into the loop, so raising this does not "
+                                                "make them step together -- ten flames on the same drawing at the same "
+                                                "moment is one flame drawn ten times and the eye catches it at once." )
+    RT_CVAR( rt_fire_flicker,           0.45f,  "how hard the flames GUTTER, as a fraction of their own brightness. "
+                                                "Drives the flame quads AND the light the mark casts, from the same "
+                                                "term -- so the glow on the wall guttering and the flame guttering are "
+                                                "one event. Two rigs would drift apart and read as a lamp standing "
+                                                "near a fire rather than as the fire's own light.\n"
+                                                "IT IS THE TORCH RIG, not the coal's. RT_UploadFlameLights' three "
+                                                "incommensurate harmonics, weights summing to 1 so this stays a true "
+                                                "fraction and the signal never audibly loops. The coal's curve "
+                                                "(rt_ember_flicker) is deliberately weighted so the BRIGHT end is "
+                                                "narrow -- right for something that mostly smoulders, and wrong for "
+                                                "fire, which is lit the whole time and jitters about that. A flame "
+                                                "given the coal's curve reads as a lamp with a fault.\n"
+                                                "0 is a steady flame; arm `fire-steady`." )
+    RT_CVAR( rt_fire_flicker_rate,      2.2f,   "how fast the flames gutter, in Hz for the rig's base harmonic (the "
+                                                "other two run at 2.37x and 4.11x it, which is what stops the pattern "
+                                                "repeating).\n"
+                                                "FASTER THAN A COAL'S 1.6 on purpose: a coal breathes and a flame "
+                                                "flickers, and the rate is most of that difference. Each flame gets "
+                                                "its own phase, so seven on one mark do not gutter in unison." )
+    RT_CVAR( rt_fire_sway,              0.35f,  "how far a flame's TIP licks sideways, as a fraction of its half-width. "
+                                                "A SHEAR, not a slide: the foot stays planted on the surface and only "
+                                                "the top two corners move, because translating the whole quad reads as "
+                                                "the sprite sliding along the wall.\n"
+                                                "On its own clock, incommensurate with the brightness pulse -- leaning "
+                                                "and brightening on the same beat reads as one sine driving both." )
+    RT_CVAR( rt_fire_tex,               1,      "flames wear the authored flame sheet at rt/mat/d64rt/fire/fire.png. "
+                                                "Off falls back to flat coloured quads, which is what the effect does "
+                                                "anyway when the sheet is missing -- and is the honest BEFORE for "
+                                                "judging whether the art is buying anything.\n"
+                                                "THE SHEET MUST BE IN BOTH rt/mat AND rt/mat_dev. developerMode reads "
+                                                "mat_dev in preference, and a file in only one tree resolves to the "
+                                                "1x1 transparent placeholder -- which an alpha-tested quad discards "
+                                                "entirely, with no error anywhere. Run "
+                                                "`py -3 tools/gen_fire_impact_art.py`, which writes all four trees." )
+    RT_CVAR( rt_fire_tint,              1,      "the flame art is TINTED to the projectile's colour by the traced "
+                                                "primitive's own colour, so one white sheet serves all four "
+                                                "fireballs.\n"
+                                                "IT WORKS BECAUSE prim.color MULTIPLIES THE TEXEL. RTGL1's "
+                                                "HitInfo.inl does `unpackUintColor( layerColors[0] ) * "
+                                                "getTextureSample(...)`, and layerColors[0] IS "
+                                                "RgMeshPrimitiveInfo::color. This file used to claim the opposite -- "
+                                                "'with an albedo texture present RTGL1 ignores the primitive colour' "
+                                                "-- and that was never tested, because the only customer passed white. "
+                                                "What is genuinely per-primitive-only is the NO-TEXTURE fallback lower "
+                                                "in that shader, which is what the debris whiteout was about.\n"
+                                                "Off draws every fireball's flames white: the arm that shows the tint "
+                                                "doing its work." )
+    RT_CVAR( rt_fire_glow,              90.f,   "how far a fireball mark's light reaches. Absolute, not a multiple of "
+                                                "rt_ember_glow_intensity -- intensity IS the reach for these, the "
+                                                "radius is the emitter SIZE.\n"
+                                                "ONE LIGHT PER MARK, never one per flame, and the arithmetic is why: "
+                                                "rt_arc_glow_max is TEN across the whole game and an imp is the most "
+                                                "common enemy there is. Seven flames x three imps into ten slots means "
+                                                "whichever mark you stand on takes every one and the rest of the room "
+                                                "goes dark. The Unmaker had to be cut from 26 candidates to 1 for "
+                                                "exactly this.\n"
+                                                "Note the projectile is ALREADY lighting the wall for its first third "
+                                                "of a second: all four carry six GLDEFS flickerlights ramping down "
+                                                "across their death frames. This should read as continuing that decay, "
+                                                "not stacking on it." )
+    RT_CVAR( rt_fire_far,               40.f,   "metres beyond which a fireball impact leaves no mark. A SPAWN cull, "
+                                                "for the reason rt_spark_far is one. Its own knob so the fireballs' "
+                                                "reach cannot be changed by tuning the arcs, the rocket or the laser." )
+    RT_CVAR( rt_fire_burn_scale,        1.4f,   "the scorch under the flames, as a multiple of rt_arc_burn_radius. "
+                                                "WELL UNDER the rocket's 3.4 and the barrel's 3.5: a fireball is not a "
+                                                "blast, and an imp throws a great many of them." )
+    RT_CVAR( rt_fire_burn_life,         25.f,   "seconds a fireball's scorch lasts before it fades. NON-ZERO, and it "
+                                                "is the only impact in the game that does not mark a wall "
+                                                "permanently.\n"
+                                                "Deliberate: rt_arc_burn_life 0 means FOREVER, which is right for a "
+                                                "rocket crater and wrong for the most common enemy in the game -- "
+                                                "every stray fireball leaving a forever-scorch would char whole "
+                                                "corridors and churn the 192-entry mark pool until rockets and plasma "
+                                                "started disappearing too. Carried per mark, so a rocket burning on "
+                                                "the same wall keeps its permanent one.\n"
+                                                "The scorch holds flat for 60%% of this and fades over the last 40%%." )
+    RT_CVAR( rt_fire_smoke,             1,      "flames breathe a thread of smoke while they burn. The rocket ember's "
+                                                "wisp emitter pointed at the fireballs, so it takes the whole "
+                                                "rt_ember_smoke_* group -- but NOT rt_ember or rt_ember_smoke "
+                                                "themselves, which are the rocket's masters and must not switch this "
+                                                "off.\n"
+                                                "Still needs rt_smoke: a wisp is a real parcel in the froxel volume, "
+                                                "not a private particle system." )
+    RT_CVAR( rt_fire_smoke_delay,       0.15f,  "seconds before a fireball's first wisp.\n"
+                                                "SHORT, unlike the rocket's rt_ember_smoke_delay of 0.65. That delay "
+                                                "exists to get out of the way of the rocket's own death smoke burst, "
+                                                "and a fireball has none to dodge -- none of the four is in "
+                                                "RT_PROJECTILE_SMOKE. Inheriting the rocket's value would give a fire "
+                                                "that burns for half a second before it occurs to it to smoke." )
+    RT_CVAR( rt_fire_smoke_scale,       1.6f,   "how much fatter a flame's smoke thread is than a coal's -- one "
+                                                "multiplier on both the wisp RADIUS and its DENSITY, because either "
+                                                "alone leaves the thread invisible (smoke_blendTint weights colour by "
+                                                "density, so a thin parcel loses the blend to the room's medium).\n"
+                                                "Applied at the point of use rather than by doctoring the profile, so "
+                                                "the shared rt_ember_smoke_* values stay the honest statement of what "
+                                                "a coal's wisp is." )
+    RT_CVAR_NOARCH( rt_fire_debug,      0,      "print a line per fireball impact, and name the flame sheet at load. "
+                                                "NOARCH: a debug switch left in the ini is how a session ends up "
+                                                "wondering where the console spam is coming from." )
+
     RT_CVAR( rt_barrel,                 1,      "master for EXPLODING BARREL DESTRUCTION: a scorch churned into the "
                                                 "floor where the barrel stood, and pieces of the barrel itself thrown "
                                                 "off it.\n"

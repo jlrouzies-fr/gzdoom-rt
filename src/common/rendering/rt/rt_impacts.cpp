@@ -64,6 +64,20 @@ constexpr ArcStyle RT_ARC_STYLES[ int( ArcFlavor::COUNT ) ] = {
     // rt_laser_arc_scale, carried per mark, because how small "very small" is
     // wanted dialing in play rather than compiling in.
     { RT_LASER_RAMP, RT_LASER_RAMP_N, 0.30f, "unmaker" },
+    // THE FOUR FIREBALLS. Their scale is 1 and it is NEVER READ: a fire mark is
+    // spawned with withArcs = false, so arcLife is 0 and the filigree branch
+    // never runs. The rows exist for the RAMP and the debug name, which is the
+    // whole of what separates one fireball from another -- every size, count,
+    // life and smoke question is answered once, by the rt_fire_* cvars, for all
+    // four together.
+    //
+    // Stated as 1.0 rather than 0 anyway, because a 0 here would look like a
+    // deliberate "no size" and mislead the next reader into hunting for where a
+    // fire mark gets scaled.
+    { RT_FIRE_ORANGE_RAMP, RT_FIRE_ORANGE_RAMP_N, 1.0f, "fire-orange" },
+    { RT_FIRE_VIOLET_RAMP, RT_FIRE_VIOLET_RAMP_N, 1.0f, "fire-violet" },
+    { RT_FIRE_GREEN_RAMP, RT_FIRE_GREEN_RAMP_N, 1.0f, "fire-green" },
+    { RT_FIRE_RED_RAMP, RT_FIRE_RED_RAMP_N, 1.0f, "fire-red" },
 };
 
 const ArcStyle& ArcStyleFor( ArcFlavor f )
@@ -128,6 +142,45 @@ constexpr ArcSource RT_ARC_SOURCES[] = {
     // player would paint a solid line of marks down every corridor. That rule
     // already existed for the rocket's trail; it earns its keep again here.
     { "UnmakerLaser", ArcFlavor::Unmaker, ImpactFx::Laser },
+    // THE FIREBALLS. Four monster projectiles that are the same effect in four
+    // colours, and the last impacts in the game that left no mark at all.
+    //
+    // "BaronBall2" MUST COME BEFORE "BaronBall", and this is the one genuinely
+    // new hazard in this table. The loop above returns the FIRST substring
+    // match, and "BaronBall" is a substring of "64BaronBall2" -- so in the other
+    // order every Baron of Hell shot would burn a Hell Knight's GREEN mark, on a
+    // table that otherwise reads as correct. No other pair here overlaps.
+    //
+    // "DoomImpBall" and "NightmareImpBall" do NOT overlap: neither is a
+    // substring of the other, so their order is free. The monsters themselves
+    // (64DoomImp, 64NightmareImp) fail the MF_MISSILE test and never reach here.
+    //
+    // AND MIND WHICH MONSTER THROWS WHICH. The HELL KNIGHT fires 64BaronBall,
+    // which is GREEN; the BARON OF HELL fires 64BaronBall2, which is RED. That
+    // inversion is Doom 64's, it has been got backwards in this project before
+    // (docs/sprite-illumination.md), and the class names actively invite it.
+    { "BaronBall2", ArcFlavor::FireRed, ImpactFx::Fire },
+    { "BaronBall", ArcFlavor::FireGreen, ImpactFx::Fire },
+    // THE CACODEMON'S BALL, and it SHARES the baron's red ramp rather than
+    // getting one of its own. That is a deliberate exception to this file's
+    // otherwise unbroken rule -- a ramp comes from the projectile's own death
+    // sprite -- so the reasoning is recorded rather than left to look like an
+    // oversight.
+    //
+    // BAL2's own palette was read and measured: F8F8F8 F8D0A0 D07038 C85820 ...
+    // It opens WHITE, passes through peach and orange, and only reaches red
+    // halfway down. That is a hot fireball bursting, and it is what the artist
+    // drew -- but it is not a RED flame, and red is what this one is wanted as.
+    // BAL8's ramp is the game's own authored red-fireball ladder (F83000 down,
+    // no white at the top and no brown at the bottom), which is exactly it.
+    //
+    // The game agrees, which is what settles it: CACOBALL and BARONBALL2 carry
+    // the SAME GLDEFS colour, 1.0 0.0 0.0. Two projectiles Doom 64 itself lights
+    // identically red sharing one red ramp is coherent; giving one of them a
+    // white-to-orange flame while its own dynamic light is pure red would not be.
+    { "CacodemonBall", ArcFlavor::FireRed, ImpactFx::Fire },
+    { "NightmareImpBall", ArcFlavor::FireViolet, ImpactFx::Fire },
+    { "DoomImpBall", ArcFlavor::FireOrange, ImpactFx::Fire },
 };
 
 // "Rocket" is the one key here loose enough to catch things that are not
@@ -215,7 +268,8 @@ void SpawnArcMark( const FVector3& at,
                    float           emberBright,
                    float           emberScatter,
                    float           emberLife,
-                   float           emberGlow )
+                   float           emberGlow,
+                   float           burnLife )
 {
     const uint32_t cap =
         std::min( RT_ARC_MARK_MAX, uint32_t( std::max( 0, int{ cvar::rt_arc_max } ) ) );
@@ -273,6 +327,7 @@ void SpawnArcMark( const FVector3& at,
     m.emberScatter = std::max( 0.f, emberScatter );
     m.emberLife    = std::max( 0.f, emberLife );
     m.emberGlow    = std::max( 0.f, emberGlow );
+    m.burnLife     = std::max( 0.f, burnLife );
     // THE FILIGREE SIZE. Every other flavour states it as a constant in
     // RT_ARC_STYLES, because "a BFG mark is twice a plasma one" is a fact about
     // the weapons rather than a preference. The Unmaker's is a cvar: the whole
@@ -286,7 +341,16 @@ void SpawnArcMark( const FVector3& at,
     // goes off at this same point on this same frame. Embers breathing from
     // t = 0 give one opaque ball with the embers invisible inside it -- and the
     // embers are the entire point of the effect.
-    m.nextSmoke = std::max( 0.f, float{ cvar::rt_ember_smoke_delay } );
+    //
+    // A FIREBALL HAS ITS OWN, AND IT IS SHORT. The delay exists to get out of
+    // the way of the rocket's death burst -- and the fireballs have no burst to
+    // dodge: none of the four is in RT_PROJECTILE_SMOKE, so the only smoke at
+    // that point is the one being scheduled here. Inheriting the rocket's 0.65 s
+    // would make a fire that visibly burns for half a second before it occurs to
+    // it to smoke.
+    m.nextSmoke = ( fx == ImpactFx::Fire )
+                      ? std::max( 0.f, float{ cvar::rt_fire_smoke_delay } )
+                      : std::max( 0.f, float{ cvar::rt_ember_smoke_delay } );
     // SCALED BY THE WEAPON, and resolved here rather than at draw time: two
     // marks from different weapons can be alive at once.
     // SIZE AND DURATION ARE SEPARATE for the Unmaker, and prising them apart
@@ -306,6 +370,17 @@ void SpawnArcMark( const FVector3& at,
     // shorter than the arcs, or the mark would be evicted out from under a
     // filigree that is still drawing.
     m.life = std::max( 0.05f, m.arcLife );
+    // NEVER SHORTER THAN THE SPOTS EITHER, and this only started mattering with
+    // the fireballs. Every earlier ember mark burns FOREVER, so `life` was
+    // always FLT_MAX and could not possibly undercut emberLife; a fire mark is
+    // the first with a finite scorch, and without this line a short
+    // rt_fire_burn_life would evict the mark out from under flames that are
+    // still drawing. The bug would look like "the fire cuts off early", which
+    // reads as a lifetime cvar not working rather than as an eviction.
+    if( FxHasEmbers( fx ) )
+    {
+        m.life = std::max( m.life, m.emberLife );
+    }
     if( cvar::rt_arc_burn )
     {
         // rt_arc_burn_life 0 MEANS FOREVER, and forever is really "until the
@@ -313,7 +388,11 @@ void SpawnArcMark( const FVector3& at,
         // a firefight -- what bounds how far back the wall damage goes is
         // rt_arc_max, not a clock, and saying so with a sentinel is clearer than
         // picking a number large enough to look permanent.
-        const float bl = float{ cvar::rt_arc_burn_life };
+        //
+        // THE MARK'S OWN VALUE WINS when it states one. A fireball's scorch must
+        // fade -- see the parameter's note -- and it has to be able to say so
+        // while a rocket burning next to it keeps its permanent one.
+        const float bl = m.burnLife > 0.f ? m.burnLife : float{ cvar::rt_arc_burn_life };
         m.life = bl <= 0.f ? FLT_MAX : std::max( m.life, std::max( 0.05f, bl ) );
     }
     m.flavor = flavor;
@@ -364,8 +443,15 @@ void AgeArcMarks( float dt )
     // system, so with the smoke system off there is nothing for them to spawn
     // into and asking is pointless. Stated here rather than discovered as "the
     // embers do not smoke".
-    const bool wantSmoke =
-        cvar::rt_ember && cvar::rt_ember_smoke && cvar::rt_smoke && cvar::rt_arc_burn;
+    //
+    // TWO GATES, NOT ONE, and splitting them is the point. A fireball's thread
+    // must not stop because someone switched the ROCKET's embers off to look at
+    // something else -- that is the silent coupling this file has had to undo
+    // three times. The half both share (there must BE a smoke system, and a
+    // scorch to sit the spots in) is stated once.
+    const bool smokeBase      = cvar::rt_smoke && cvar::rt_arc_burn;
+    const bool wantEmberSmoke = smokeBase && cvar::rt_ember && cvar::rt_ember_smoke;
+    const bool wantFireSmoke  = smokeBase && cvar::rt_fire && cvar::rt_fire_smoke;
 
     const float emberLifeBase = std::max( 0.05f, float{ cvar::rt_ember_life } );
     const float every     = std::max( 0.02f, float{ cvar::rt_ember_smoke_every } );
@@ -394,6 +480,15 @@ void AgeArcMarks( float dt )
 
         // PER MARK: a laser burn cools on its own ten-second clock.
         const float emberLife = m.emberLife > 0.f ? m.emberLife : emberLifeBase;
+
+        const bool  isFire    = ( m.fx == ImpactFx::Fire );
+        const bool  wantSmoke = isFire ? wantFireSmoke : wantEmberSmoke;
+        // A FLAME IS A BIGGER EMITTER THAN A COAL, and one multiplier says so
+        // for both axes that decide whether a thread is visible at all. Applied
+        // at the point of use rather than by doctoring the profile, the same way
+        // rt_spark_fluid_* does -- the shared rt_ember_smoke_* values stay the
+        // honest statement of what a coal's wisp is.
+        const float smokeMul  = isFire ? std::max( 0.f, float{ cvar::rt_fire_smoke_scale } ) : 1.f;
 
         if( wantSmoke && FxHasEmbers( m.fx ) && nEmber > 0 && budget > 0 &&
             m.age >= m.nextSmoke )
@@ -437,9 +532,9 @@ void AgeArcMarks( float dt )
                 // the multiplier has to cancel it -- the expression
                 // RT_AmbientSmoke uses, for the same reason.
                 p.count  = 1.f / std::max( 1.f, float( int{ cvar::rt_smoke_count } ) );
-                p.radius = std::max( 0.01f, float{ cvar::rt_ember_smoke_radius } ) /
+                p.radius = std::max( 0.01f, float{ cvar::rt_ember_smoke_radius } ) * smokeMul /
                            std::max( 0.001f, float{ cvar::rt_smoke_radius } );
-                p.density = std::max( 0.f, float{ cvar::rt_ember_smoke_density } );
+                p.density = std::max( 0.f, float{ cvar::rt_ember_smoke_density } ) * smokeMul;
                 p.life    = std::max( 0.05f, float{ cvar::rt_ember_smoke_life } );
                 // IT MUST DRIFT OFF THE WALL, and speed 0 was the bug.
                 //
@@ -461,7 +556,7 @@ void AgeArcMarks( float dt )
                 p.growth     = 0.14f;
                 p.trail      = 0; // the countdown above IS the trail
                 p.trailEvery = 0;
-                p.note       = "rocket ember";
+                p.note       = isFire ? "fireball flame" : "rocket ember";
                 // AMBIENT, so rt_smoke_ambient_budget bounds these as well and
                 // a rocket barrage cannot starve the player's own muzzle smoke.
                 p.ambient = true;
@@ -808,7 +903,7 @@ void RT_UpdateProjectileImpacts()
     // avoid, and it would have looked like a barrel bug rather than a gate. Each
     // branch below still tests its OWN cvar, so either can be judged with the
     // other out of the way.
-    if( !primaryLevel || !( cvar::rt_arc || cvar::rt_barrel || cvar::rt_laser ) )
+    if( !primaryLevel || !( cvar::rt_arc || cvar::rt_barrel || cvar::rt_laser || cvar::rt_fire ) )
     {
         g_projs.clear();
         g_lasers.clear();
@@ -902,14 +997,14 @@ void RT_UpdateProjectileImpacts()
 
                     if( cvar::rt_arc_debug )
                     {
-                        Printf( "rt_laser: IMPACT at %.2f %.2f %.2f  n %.2f %.2f %.2f (tic %d)\n",
+                        Printf( "rt_laser: IMPACT at %.2f %.2f %.2f  n %.2f %.2f %.2f (tic %d)\n",
                                 at.X, at.Y, at.Z, n.X, n.Y, n.Z, tic );
                     }
                 }
                 else if( cvar::rt_arc_debug )
                 {
                     Printf( "rt_laser: dead laser at %.0f %.0f %.0f with NO SURFACE within "
-                            "%.0f units (or beyond the cull)\n",
+                            "%.0f units (or beyond the cull)\n",
                             mo->X(), mo->Y(), mo->Z(),
                             float( cvar::rt_laser_probe ) );
                 }
@@ -1023,6 +1118,8 @@ void RT_UpdateProjectileImpacts()
                                          m.fx == ImpactFx::Ember ? float{ cvar::rt_ember_far }
                                          : m.fx == ImpactFx::Laser
                                              ? float{ cvar::rt_laser_far }
+                                         : m.fx == ImpactFx::Fire
+                                             ? float{ cvar::rt_fire_far }
                                              : float{ cvar::rt_arc_far } );
 
         if( ( lastM - eye ).LengthSquared() <= far_m * far_m )
@@ -1064,6 +1161,41 @@ void RT_UpdateProjectileImpacts()
                                   std::max( 0.f, float{ cvar::rt_laser_scatter } ),
                                   std::max( 0.1f, float{ cvar::rt_laser_life } ) );
                 }
+                else if( m.fx == ImpactFx::Fire )
+                {
+                    if( !cvar::rt_fire )
+                    {
+                        continue;
+                    }
+
+                    // A FIREBALL SPLASH. The same ember mark the rocket leaves,
+                    // with three things stated per mark because a fireball and a
+                    // rocket can be burning on the same wall at the same time:
+                    // how many flames, how long they last, and -- the one that
+                    // is new to this system -- how long the SCORCH lasts.
+                    //
+                    // The count is a share of rt_ember_count for the same reason
+                    // the laser's is: it makes the mark carry an ABSOLUTE number
+                    // of spots, so retuning the rocket's coals cannot quietly
+                    // add flames to a fireball.
+                    const float spots = std::max( 0.f, float( int{ cvar::rt_fire_count } ) );
+                    const float base  = std::max( 1.f, float( int{ cvar::rt_ember_count } ) );
+
+                    SpawnArcMark( at,
+                                  n,
+                                  m.flavor,
+                                  /*withArcs=*/false,
+                                  std::max( 0.f, float{ cvar::rt_fire_burn_scale } ),
+                                  ImpactFx::Fire,
+                                  spots / base,
+                                  /*emberArt=*/false, // the FIRE sheet, not the ember one
+                                  std::max( 0.05f, float{ cvar::rt_fire_size } ),
+                                  std::max( 0.f, float{ cvar::rt_fire_bright } ),
+                                  std::max( 0.f, float{ cvar::rt_fire_scatter } ),
+                                  std::max( 0.1f, float{ cvar::rt_fire_life } ),
+                                  std::max( 0.f, float{ cvar::rt_fire_glow } ),
+                                  std::max( 0.f, float{ cvar::rt_fire_burn_life } ) );
+                }
                 else if( m.fx == ImpactFx::Ember )
                 {
                     // THE ROCKET: a churn on the floor plus scattered embers.
@@ -1082,7 +1214,12 @@ void RT_UpdateProjectileImpacts()
                     (void)sec; // a mark does not move, so it needs no sector
                     SpawnArcMark( at, n, m.flavor );
                 }
-                if( cvar::rt_arc_debug )
+                // THE FIREBALLS ANSWER TO THEIR OWN SWITCH as well as the arcs',
+                // because the question "did my fireball produce a mark" must be
+                // askable without turning on a line per plasma bolt -- and the
+                // plasma rifle fires a great deal faster than an imp.
+                if( cvar::rt_arc_debug ||
+                    ( m.fx == ImpactFx::Fire && cvar::rt_fire_debug ) )
                 {
                     Printf( "rt_arc: IMPACT %s at %.2f %.2f %.2f  n %.2f %.2f %.2f (tic %d)\n",
                             RT_ARC_STYLES[ int( m.flavor ) ].name,
@@ -1176,9 +1313,46 @@ CCMD( arc_here )
             wantArc = true;
             scale   = std::max( 0.f, float{ cvar::rt_laser_burn_scale } );
         }
+        // THE FOUR FIREBALLS. Spelled out one per name rather than taking a
+        // colour argument, so the lab's -Kind and the capture filename both name
+        // exactly what was planted -- `lab-fire-green.png` is a file you can
+        // still identify a week later.
+        else if( a.CompareNoCase( "fire" ) == 0 || a.CompareNoCase( "fire-orange" ) == 0 )
+        {
+            flavor  = ArcFlavor::FireOrange;
+            fx      = ImpactFx::Fire;
+            wantArc = false;
+            scale   = std::max( 0.f, float{ cvar::rt_fire_burn_scale } );
+        }
+        else if( a.CompareNoCase( "fire-violet" ) == 0 )
+        {
+            flavor  = ArcFlavor::FireViolet;
+            fx      = ImpactFx::Fire;
+            wantArc = false;
+            scale   = std::max( 0.f, float{ cvar::rt_fire_burn_scale } );
+        }
+        else if( a.CompareNoCase( "fire-green" ) == 0 )
+        {
+            flavor  = ArcFlavor::FireGreen;
+            fx      = ImpactFx::Fire;
+            wantArc = false;
+            scale   = std::max( 0.f, float{ cvar::rt_fire_burn_scale } );
+        }
+        else if( a.CompareNoCase( "fire-red" ) == 0 )
+        {
+            flavor  = ArcFlavor::FireRed;
+            fx      = ImpactFx::Fire;
+            wantArc = false;
+            scale   = std::max( 0.f, float{ cvar::rt_fire_burn_scale } );
+        }
         else if( a.CompareNoCase( "plasma" ) != 0 )
         {
-            Printf( "arc_here: expected plasma | bfg | arach | ember | laser\n" );
+            Printf( "arc_here: expected plasma | bfg | arach | ember | laser | "
+                    "fire-orange | fire-violet | fire-green | fire-red\n"
+                    "NOTE a planted mark exercises the RENDERER ONLY. The four "
+                    "fireballs are MONSTER projectiles, so the only way to test "
+                    "that anything asks for one is to summon the monster: "
+                    "64DoomImp, 64NightmareImp, 64HellKnight, 64BaronOfHell.\n" );
             return;
         }
     }
@@ -1254,7 +1428,31 @@ CCMD( arc_here )
     // A laser mark carries its own spot count, size, brightness and clock, so
     // the lab has to hand them over exactly as the impact path does -- planting
     // one with the ember defaults would be judging a different effect.
-    if( fx == ImpactFx::Laser )
+    // A FIRE MARK CARRIES ITS OWN COUNT, SIZE, CLOCK AND SCORCH LIFE, so the lab
+    // has to hand them over exactly as the impact path does. Planting one with
+    // the ember defaults would be photographing a different effect -- the same
+    // trap the laser branch below exists for.
+    if( fx == ImpactFx::Fire )
+    {
+        const float spots = std::max( 0.f, float( int{ cvar::rt_fire_count } ) );
+        const float base  = std::max( 1.f, float( int{ cvar::rt_ember_count } ) );
+
+        SpawnArcMark( at,
+                      n,
+                      flavor,
+                      false,
+                      scale,
+                      fx,
+                      spots / base,
+                      false,
+                      std::max( 0.05f, float{ cvar::rt_fire_size } ),
+                      std::max( 0.f, float{ cvar::rt_fire_bright } ),
+                      std::max( 0.f, float{ cvar::rt_fire_scatter } ),
+                      std::max( 0.1f, float{ cvar::rt_fire_life } ),
+                      std::max( 0.f, float{ cvar::rt_fire_glow } ),
+                      std::max( 0.f, float{ cvar::rt_fire_burn_life } ) );
+    }
+    else if( fx == ImpactFx::Laser )
     {
         const float spots = std::max( 0.f, float( int{ cvar::rt_laser_spots } ) );
         const float base  = std::max( 1.f, float( int{ cvar::rt_ember_count } ) );

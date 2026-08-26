@@ -127,7 +127,8 @@ std::array< SparkFlash, RT_SPARK_FLASH_MAX >   s_flashes{};
 // each effect can be judged with the other out of the way.
 bool SparkSystemOn()
 {
-    return cvar::rt_spark || cvar::rt_arc || cvar::rt_barrel || cvar::rt_laser;
+    return cvar::rt_spark || cvar::rt_arc || cvar::rt_barrel || cvar::rt_laser ||
+           cvar::rt_fire;
 }
 
 // THE POOL ALLOCATOR, lifted out of RT_SpawnImpactSparks when the barrel gained
