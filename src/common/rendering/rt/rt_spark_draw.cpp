@@ -1521,6 +1521,7 @@ void RT_DrawSparks()
         // than an absolute -- weights inside the rig sum to 1 so that stays true.
         const float fireFlicker = std::max( 0.f, float{ cvar::rt_fire_flicker } );
         const float fireRate    = std::max( 0.f, float{ cvar::rt_fire_flicker_rate } );
+        const float fireGlowRad = std::max( 0.005f, float{ cvar::rt_fire_glow_radius } );
         const int   fireFrames = FireArtFrames();
 
         for( uint32_t ai = 0; ai < s_arcCount; ai++ )
@@ -2608,19 +2609,32 @@ void RT_DrawSparks()
                         // the same reason -- what has to agree is when the two
                         // reach zero, not the shape in between.
                         //
-                        // A FIREBALL MARK CASTS ONE LIGHT, NOT ONE PER FLAME, and
-                        // the arithmetic is why. rt_arc_glow_max ships pinned at
-                        // TEN, nearest-first, across the whole game -- and an imp
-                        // is the most common enemy there is. Ten flames per mark
-                        // and three imps firing would put thirty candidates into
-                        // a ten-slot cap, so whichever mark you happened to be
-                        // standing on would take every slot and the rest of the
-                        // room would go dark. That is exactly the failure the
-                        // Unmaker had to be cut from 26 candidates to 1 to fix.
+                        // A FIREBALL MARK CASTS ONE LIGHT, NOT ONE PER FLAME.
+                        // A fire is one light source, and an imp is the most
+                        // common enemy in the game -- seven candidates per mark
+                        // times a corridor of imps is the light-density
+                        // arithmetic of rt-lighting-practices 20, and the
+                        // Unmaker had to be cut from 26 candidates to 1 for
+                        // exactly that.
                         //
-                        // One light at the first flame, carrying the mark's whole
-                        // glow. rt_fire_glow is the intensity, and intensity IS
-                        // the reach for these -- the radius is the emitter size.
+                        // AND THE ONE LIGHT MUST THEN CARRY ALL SEVEN FLAMES'
+                        // WORTH, which is the half that was got wrong first and
+                        // reported from play as the fire casting no light at all.
+                        //
+                        // rt_ember_glow_intensity is 55 and it is tuned for ONE
+                        // COAL OF TEN: a rocket's mark puts out about 550 in
+                        // total, spread over its bed. Dropping to a single
+                        // emitter and leaving it near the per-coal value is six
+                        // times too little, and it lights nothing you can see.
+                        //
+                        // rt_laser_glow had already written this down -- it went
+                        // 55 -> 220 the moment the Unmaker became a single spot,
+                        // for the same reason and in the same words. Repeating
+                        // the mistake one feature later is why the arithmetic is
+                        // spelled out here rather than left in a cvar's help.
+                        //
+                        // rt_fire_glow is that flux; intensity IS the reach for
+                        // these, the radius is the emitter's SIZE.
                         const bool glowThisSpot =
                             ( m.fx != ImpactFx::Fire ) || ( e == 0 );
 
@@ -2658,7 +2672,14 @@ void RT_DrawSparks()
                                                   0.f,
                                                   1.f ),
                                 emberGlowInt,
-                                emberGlowRad,
+                                // THE EMITTER'S SIZE, and a fire is not a coal.
+                                // This is the sphere the light is cast FROM, so
+                                // it sets how soft the shadows it throws are --
+                                // not how far it reaches, which is the intensity
+                                // above. A quarter-metre of flame radiating from
+                                // a 10 cm point throws a harder edge than it
+                                // should.
+                                ( m.fx == ImpactFx::Fire ) ? fireGlowRad : emberGlowRad,
                                 // The creepers' upper half is already taken, so
                                 // embers ride the branch half -- an ember mark
                                 // never draws branches, so the two can never be
