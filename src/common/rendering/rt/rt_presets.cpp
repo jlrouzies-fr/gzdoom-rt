@@ -706,6 +706,23 @@ constexpr EmisPreset RT_EMIS_PRESETS[] = {
                       "sectors. MAP08 is also the pit-blood map (9 pools, rt_blood_goto), so "
                       "check the pools when judging it -- they sit at z -256 and a verdict "
                       "from the spawn point is worthless." },
+    { "map12", 0.80f, "set by eye on request (2026-08-27), NOT measured with `whatsthat` -- "
+                      "same status as the map08 row above: 0.80 is a starting point, and if "
+                      "it needs to move, re-derive it the documented way. At the global 0.58 "
+                      "too much of this map clears the colour gate and self-lights; 0.80 "
+                      "keeps only strongly coloured sectors. MAP12 is also one of the nine "
+                      "MAPINFO fog maps (see RT_FOG_PRESETS below), so judge it with the "
+                      "medium in force -- fog lifts the apparent brightness of a wall and "
+                      "will flatter a gate that is still too low." },
+    { "map13", 0.80f, "set by eye on request (2026-08-27), NOT measured with `whatsthat` -- "
+                      "same status as the two rows above: 0.80 is a starting point, and if "
+                      "it needs to move, re-derive it the documented way. At the global 0.58 "
+                      "too much of this map clears the colour gate and self-lights; 0.80 "
+                      "keeps only strongly coloured sectors. MAP13 is the MOON map "
+                      "(RT_MOON_PRESETS = 90, rt_sun aimed by the `moon` CCMD), so it is the "
+                      "one map where a wall can be bright because the directional light is "
+                      "ON it -- judge this gate somewhere the moon does not reach, or a "
+                      "sunlit wall will read as a self-emitter that the gate never touched." },
 };
 
 // The launcher's value, captured once before any row overwrites it, so a map

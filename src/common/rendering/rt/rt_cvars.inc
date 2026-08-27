@@ -1019,8 +1019,21 @@
     RT_CVAR( rt_flame_light_scale,      1.0f,   "global multiplier on the per-flame table intensity. The table is already "
                                                 "balanced against GLDEFS' relative sizes (candle 16, wall torch 28, standing "
                                                 "torch 40), so scale the whole family here rather than retuning one entry" )
-    RT_CVAR( rt_flame_light_radius,     0.09f,  "RT source radius in meters. A flame is a small, soft source; too wide and "
-                                                "the shadows it throws across a corridor lose their edge entirely" )
+    RT_CVAR( rt_flame_light_radius,     0.f,    "RT source radius in meters, FORCED onto every flame. 0 (the default) means "
+                                                "each row of RT_FLAME_KINDS uses its own radius, measured off that flame's "
+                                                "sprite -- 0.42 for a standing torch down to 0.20 for the candle. Was a flat "
+                                                "0.09 until 2026-08-27, and that was the torch fizzle: the light for a flame "
+                                                "sits INSIDE its own billboard (a wall sconce's is 56% up the quad), those "
+                                                "sprites are noShadow so nothing occludes it, and a sphere light's radiance "
+                                                "is intensity/(PI*r^2) with the solid angle saturating at 2*PI once the "
+                                                "shading point is inside the sphere -- so the sprite's own texels were taking "
+                                                "55,000 on a sconce and 70,700 on a standing torch, five to six times the "
+                                                "barrel configuration that produced screen/barrelsBlinkFizzle.png. Radius is "
+                                                "the lever and intensity is not: far away the solid angle goes as PI*r^2/d^2 "
+                                                "and cancels the radiance exactly, so how a torch lights its ROOM does not "
+                                                "depend on this at all, while the near field falls as 1/r^2. Set 0.09 here to "
+                                                "reproduce the old look; wider than the table softens the shadows a torch "
+                                                "throws down a corridor. See docs/flame-lighting.md" )
     RT_CVAR( rt_flame_light_flicker,    0.15f,  "flicker depth, 0..1, as a fraction of base intensity (0 = steady). Three "
                                                 "incommensurate sines per actor, so the pattern never visibly repeats. "
                                                 "GLDEFS asks for a hard two-state switch (size/secondarySize at chance 0.5); "

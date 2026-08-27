@@ -21,7 +21,54 @@ struct RtFlameKind
     unsigned rgb;
     float    up;        // map units above the actor origin, from GLDEFS `offset 0 N 0`
     float    intensity; // RT intensity, scaled by GLDEFS `size` relative to the others
+    float    radius;    // METRES. Source SIZE, not a falloff distance -- see below
 };
+
+// WHY EVERY ROW CARRIES ITS OWN RADIUS (2026-08-27), and why the number is much
+// bigger than the 0.09 m this family shipped with until now.
+//
+// The light for a flame is placed at (actor XY, actor Z + `up`), and the flame's
+// own billboard CONTAINS that point -- every family, measured off the WAD:
+//
+//   A03x/GTCH  16x43 sprite, up 24  -> 56% up the quad, in the dark bracket
+//   TL*        27x100,       up 80  -> 80% up the quad, in the flame
+//   TS*        18x85,        up 64  -> 75%
+//   ?FLM       16x35,        up  8  -> 23%
+//   FIRE       32x50,        up 32  -> 66%
+//   CAND        8x31,        up 16  -> 52%
+//
+// Those sprites all carry `noShadow: true` in textures.json (correct: a billboard's
+// shadow collapses to a line and its SHAPE turns with the camera), so nothing
+// occludes the light from its own surface. RTGL1 encodes a sphere light as
+// radiance = intensity / (PI * radius^2) (LightManager.cpp EncodeAsSphereLight), and
+// once the shading point is INSIDE the sphere the solid angle saturates at 2*PI
+// (Light.h calcSolidAngleForSphere), so the most a flame's own texels can receive is
+//
+//     2 * intensity / (PI * radius^2)
+//
+// At the old 0.09 m that is 55,000 for a wall sconce and 70,700 for a standing
+// torch. For scale: the exploding-barrel sprite that produced screen/
+// barrelsBlinkFizzle.png -- white speckles crawling in a band at mid-height -- was
+// 33,000, and the fix that settled it left it at 11,500. The torches were running
+// at five to six times the configuration that was already reported as broken, which
+// is what "the torches fizzle like the barrels did" is.
+//
+// THE LEVER IS THE RADIUS, NOT THE INTENSITY. Far from the light the solid angle is
+// ~PI*r^2/d^2, which cancels the 1/r^2 in the radiance exactly: how a torch lights
+// its room is INDEPENDENT of this number. Only the near field, which is the sprite
+// itself, scales -- as 1/r^2. So widening the source is free where it matters and
+// 15-20x cheaper where it hurts. (It also cannot leak through the wall a sconce is
+// mounted on: sampleSphereLight only ever samples the hemisphere facing the shading
+// point, so the half of the sphere buried in the wall is never picked.)
+//
+// The values are the flame's own extent, off the sprites: the saturated texels of
+// A030A0 span 5x31 map units, TLYLA0's 11x24, FIREA0's 18x36. Every radius below is
+// SMALLER than its flame's half-height -- 0.09 m was a 2.9-unit marble at the centre
+// of a 30-unit fire, which is the part that was wrong. Peaks land at 2,600-4,100,
+// about a third of the barrel's settled level.
+//
+// `rt_flame_light_radius` overrides all of them when set above zero; that is the
+// A/B sweep, and 0.09 there restores the old behaviour exactly.
 
 constexpr unsigned RT_FLAME_BLUE   = 0x4488FF;
 constexpr unsigned RT_FLAME_GREEN  = 0x44FF66;
@@ -39,25 +86,30 @@ constexpr unsigned RT_FLAME_BIGFIRE = 0xFF8020;
 
 constexpr RtFlameKind RT_FLAME_KINDS[] = {
     // standing torches, long (27x100) — GLDEFS TORCHLONG*
-    { "TLBL", RT_FLAME_BLUE, 80.f, 900.f },
-    { "TLGR", RT_FLAME_GREEN, 80.f, 900.f },
-    { "TLRD", RT_FLAME_RED, 80.f, 900.f },
-    { "TLYL", RT_FLAME_YELLOW, 80.f, 900.f },
+    { "TLBL", RT_FLAME_BLUE, 80.f, 900.f, 0.42f },
+    { "TLGR", RT_FLAME_GREEN, 80.f, 900.f, 0.42f },
+    { "TLRD", RT_FLAME_RED, 80.f, 900.f, 0.42f },
+    { "TLYL", RT_FLAME_YELLOW, 80.f, 900.f, 0.42f },
     // standing torches, short (18x85) — GLDEFS TORCHSHORT*, same size, lower offset
-    { "TSBL", RT_FLAME_BLUE, 64.f, 900.f },
-    { "TSGR", RT_FLAME_GREEN, 64.f, 900.f },
-    { "TSRD", RT_FLAME_RED, 64.f, 900.f },
-    { "TSYL", RT_FLAME_YELLOW, 64.f, 900.f },
-    // wall sconces — GLDEFS size 28, so below the standing torches
-    { "A030", RT_FLAME_YELLOW, 24.f, 700.f },
-    { "A031", RT_FLAME_BLUE, 24.f, 700.f },
-    { "A032", RT_FLAME_RED, 24.f, 700.f },
-    { "GTCH", RT_FLAME_GREEN, 24.f, 700.f },
+    { "TSBL", RT_FLAME_BLUE, 64.f, 900.f, 0.42f },
+    { "TSGR", RT_FLAME_GREEN, 64.f, 900.f, 0.42f },
+    { "TSRD", RT_FLAME_RED, 64.f, 900.f, 0.42f },
+    { "TSYL", RT_FLAME_YELLOW, 64.f, 900.f, 0.42f },
+    // wall sconces — GLDEFS size 28, so below the standing torches.
+    // The one row whose `up` lands OFF its flame: 24 is GLDEFS', and the sprite's
+    // flame runs Z 28..41, so the light sits ~5 units low, in the dark metal
+    // bracket. Left at GLDEFS' number -- the table is the mod's, and with the
+    // radius corrected the bracket no longer blows out -- but it is why A030 was
+    // the family the fizzle got reported on.
+    { "A030", RT_FLAME_YELLOW, 24.f, 700.f, 0.34f },
+    { "A031", RT_FLAME_BLUE, 24.f, 700.f, 0.34f },
+    { "A032", RT_FLAME_RED, 24.f, 700.f, 0.34f },
+    { "GTCH", RT_FLAME_GREEN, 24.f, 700.f, 0.34f },
     // loose fires burning on the floor — GLDEFS size 32, offset only 8 up
-    { "BFLM", RT_FLAME_BLUE, 8.f, 650.f },
-    { "GFLM", RT_FLAME_GREEN, 8.f, 650.f },
-    { "RFLM", RT_FLAME_RED, 8.f, 650.f },
-    { "YFLM", RT_FLAME_YELLOW, 8.f, 650.f },
+    { "BFLM", RT_FLAME_BLUE, 8.f, 650.f, 0.32f },
+    { "GFLM", RT_FLAME_GREEN, 8.f, 650.f, 0.32f },
+    { "RFLM", RT_FLAME_RED, 8.f, 650.f, 0.32f },
+    { "YFLM", RT_FLAME_YELLOW, 8.f, 650.f, 0.32f },
     // 64BigFire (32x50), the bonfire — GLDEFS BIGFIRE, size 32 like the loose fires but
     // offset 32 up, so it is the one flame here whose GLDEFS offset lands ABOVE the
     // sprite's own midpoint (~25u). This row was missing until 2026-08-10 on the stated
@@ -65,9 +117,12 @@ constexpr RtFlameKind RT_FLAME_KINDS[] = {
     // at 117 placements across nine maps it is by far the most common fire in the game.
     // The sprite is shared with 64MotherFire and 64MotherFireTrail, which GLDEFS also
     // binds to BIGFIRE, so the projectile and its trail are lit by this row too.
-    { "FIRE", RT_FLAME_BIGFIRE, 32.f, 650.f },
-    // candle — GLDEFS size 16, the smallest flame in the game
-    { "CAND", RT_FLAME_CANDLE, 16.f, 260.f },
+    { "FIRE", RT_FLAME_BIGFIRE, 32.f, 650.f, 0.40f },
+    // candle — GLDEFS size 16, the smallest flame in the game. Its radius is the one
+    // that is NOT measured off the art: CAND?0 is 8x31 and most of the amber in it is
+    // the wax body catching its own light, not flame (the same reason the colour was
+    // picked by eye), so this is the intensity ratio against the wall sconce instead.
+    { "CAND", RT_FLAME_CANDLE, 16.f, 260.f, 0.20f },
 };
 
 static const RtFlameKind* RT_FlameKindOf( AActor* mo )
@@ -803,7 +858,10 @@ void RT_UploadFlameLights()
     {
         return;
     }
-    const float  srcRadius = std::max( 0.01f, float{ cvar::rt_flame_light_radius } );
+    // 0 (the default) = each row's own radius, which is the whole point of the column.
+    // Anything positive forces one source size on the entire family; that is the A/B
+    // sweep, and 0.09 restores what shipped before 2026-08-27.
+    const float  radOverride = std::max( 0.f, float{ cvar::rt_flame_light_radius } );
     const float  flicker   = std::clamp( float{ cvar::rt_flame_light_flicker }, 0.f, 1.f );
     const float  speed     = std::max( 0.f, float{ cvar::rt_flame_light_speed } );
     const float  wobble    = std::max( 0.f, float{ cvar::rt_flame_light_wobble } );
@@ -914,6 +972,9 @@ void RT_UploadFlameLights()
         const float kG = ( ( c.kind->rgb >> 8 ) & 0xFF ) / 255.0f;
         const float kB = ( c.kind->rgb & 0xFF ) / 255.0f;
 
+        const float srcRadius =
+            std::max( 0.01f, radOverride > 0.f ? radOverride : c.kind->radius );
+
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
@@ -958,14 +1019,16 @@ void RT_UploadFlameLights()
         if( ( ++s_tick % 60 ) == 0 )
         {
             Printf( "rt_flame_light: uploaded=%zu of %zu wanted (cap %d, within %.0fu) "
-                    "scale=%.2f flicker=%.2f wobble=%.1f\n",
+                    "scale=%.2f flicker=%.2f wobble=%.1f radius=%s\n",
                     cand.size(),
                     wanted,
                     budget,
                     maxDist,
                     scale,
                     flicker,
-                    wobble );
+                    wobble,
+                    radOverride > 0.f ? "FORCED (see rt_flame_light_radius)"
+                                      : "per-kind table" );
         }
     }
 }
