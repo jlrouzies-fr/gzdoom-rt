@@ -780,6 +780,28 @@ void FGameConfigFile::ReadCVars (uint32_t flags)
 		{
 			cvar = new FStringCVar (key, NULL, flags);
 		}
+		// Doom64-RT: A CVAR THAT IS NOT ARCHIVED MUST NOT BE RESTORED FROM THE
+		// ARCHIVE. Stock reads every key in the section and applies it by name,
+		// without ever looking at CVAR_ARCHIVE -- so taking a cvar off the ini
+		// stops it being WRITTEN but not being READ, and a line left in an older
+		// config keeps setting it. Worse, it is now never rewritten either, so
+		// the stale line survives every clean exit that would have refreshed it.
+		//
+		// That is not academic: the liquid look family (rt_blood_relief and the
+		// rest) was moved to RT_CVAR_NOARCH precisely so no old gzdoom-rt2.ini
+		// could put the animated water wave back on a blood or sludge bed, and
+		// without this the conversion would have protected only fresh installs.
+		//
+		// Safe by construction: a key can only be in the config because some
+		// build archived it, and a cvar that is not archived today has no other
+		// way to get there. Auto-created cvars take the branch above and are
+		// given CVAR_ARCHIVE, so they are unaffected. ClearCurrentSection() +
+		// C_ArchiveCVars() then drops the orphaned line on the next clean exit,
+		// which makes this self-cleaning rather than a permanent filter.
+		else if (!(cvar->GetFlags() & CVAR_ARCHIVE))
+		{
+			continue;
+		}
 		val.String = const_cast<char *>(value);
 		cvar->SetGenericRep (val, CVAR_String);
 	}

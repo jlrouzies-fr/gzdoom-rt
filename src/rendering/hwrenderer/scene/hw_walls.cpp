@@ -371,6 +371,13 @@ void HWWall::DrawWall(HWWallDispatcher*di, FRenderState &state, bool translucent
 		RtPrim::Identity);
 	// 'this->seg->sidedef' is not unique, hope that primitives for each of them are pushed in a certain order
 	auto rttemp = rtstate.push_uniqueid<RtManyPrimsPerId::Set0>(this->seg->sidedef);
+	// The painted half of rt_pillar_chase. Asked per sidedef, because that is the
+	// only thing that knows WHICH face of the pillar this is, and the crest's whole
+	// claim is that different faces are lit at different moments. The strength rides
+	// along in RT_ChasePanelEmisCurrent(); see rt_lights_fixtures.cpp.
+	auto rtchase = rtstate.push_type( RT_ChasePanelBegin( this->seg->sidedef )
+	                                      ? RtPrim::ChasedPanel
+	                                      : RtPrim::Identity );
 	auto rtwall =
 	    rtstate.push_type( RT_IsWallNoMotionVectors( this->seg,
 	                                                 type == RENDERWALL_TOP      ? side_t::top

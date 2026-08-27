@@ -60,6 +60,31 @@ using namespace rtx;
 // entry below turns it DOWN, not up. The values are set for parity with the
 // cloud families rather than measured in game -- start there and look.
 //
+// THAT LAST PARAGRAPH WAS WRONG, AND THE FIRE ROWS BELOW ARE THE CORRECTION
+// (2026-08-23, from play). A full-image mean is the wrong statistic for this
+// art. Measured per row over all 100 frames of FRSKYNRM, in linear radiance:
+//
+//     top quarter of the image      0.0% of total energy
+//     bottom quarter                 60%
+//
+// The fire is a BAND at and below the horizon, and the 953x above is carried
+// almost entirely by rows pointing at directions a Doom wall blocks. What a
+// room collects is the sky its opening subtends, cosine-weighted and therefore
+// biased UP -- and up is black. Dividing the multiplier by 21 to compensate for
+// a mean the geometry never gathers is how a sky measures three orders of
+// magnitude above the starfield and still delivers nothing to the level.
+//
+// The same measurement retires the green/orange split's justification, though
+// not the split itself. FRSKYNRM is indeed 2.32x FRSKYGRN over the whole image
+// -- that number reproduces exactly -- but over the UPPER HALF the two are
+// 0.99x, i.e. identical. The entire 2.32x lives in the horizon band. The ratio
+// is kept anyway, because rt_sky scales the dome's APPEARANCE as well as its
+// light, and equalising it would make the orange band render dimmer than its
+// own art: the console game's orange sky is brighter than its green one and
+// should stay so. So both rows were scaled by the same factor, preserving a
+// relationship that was measured correctly even though its stated purpose was
+// not what it achieved.
+//
 // Parity, not preservation: the point is that no two maps sit a thousand times
 // apart, NOT that the new skies deliver what the old starfield did. A burning
 // sky should light a level more than a starfield; it should not light it 953x
@@ -84,6 +109,12 @@ struct MoonPreset
     bool        disc;      // draw the MOONDISC quad at all
     float       sky;       // rt_sky, the dome's own radiance. < 0: keep
     const char* note;
+    // rt_sun_color. 0 = keep the launcher's, and it is LAST on purpose: a
+    // trailing member can be omitted in aggregate init, so adding it did not
+    // force a value into every existing row. That is the same rule the negative
+    // sentinels above encode -- a row says the things it is for and nothing
+    // else -- and here it is enforced by the language rather than by habit.
+    uint32_t    sun_color;
 };
 
 constexpr MoonPreset RT_MOON_PRESETS[] = {
@@ -149,18 +180,29 @@ constexpr MoonPreset RT_MOON_PRESETS[] = {
     // environment light works, because a cosine-weighted diffuse ray hits it
     // constantly.
     //
-    // sky 1.2 / 2.7 is parity with the cloud families at the global 25, off the
-    // measured mean radiances (953x and 410x the starfield). Both are starting
-    // points to look at, not settled numbers.
-    { "map22", -1.f, -1.f, 0.f, false, 1.2f,
+    // sky 175 / 400. These were 1.2 / 2.7 -- parity with the cloud families off
+    // a full-image mean radiance, which is the statistic the block at the top of
+    // this file now explains is the wrong one for a sky whose energy is all in a
+    // horizon band. At 1.2 these maps received effectively nothing and read as
+    // "a fire background that emits no light".
+    //
+    // 400 on MAP23 is judged in play (2026-08-23) and is where the green maps
+    // sit. 175 is 400 scaled by the families' own measured 2.32x, so the orange
+    // dome keeps rendering brighter than the green one exactly as its art is --
+    // NOT judged in play yet, and MAP22 is the one to look at first if either
+    // family reads wrong. See docs/plan-fire-skies.md and tools/arms/firesky-*.
+    //
+    // This is a per-map field, so it cannot reach any other map: a map with no
+    // row gets g_moon_base_sky, the launcher's pinned rt_sky 25.
+    { "map22", -1.f, -1.f, 0.f, false, 175.f,
       "Fire sky. Moon off entirely -- disc and light -- and the dome does the "
-      "lighting." },
-    { "map24", -1.f, -1.f, 0.f, false, 1.2f, "Fire sky, as MAP22." },
-    { "map28", -1.f, -1.f, 0.f, false, 1.2f, "Fire sky, as MAP22." },
-    { "map23", -1.f, -1.f, 0.f, false, 2.7f,
-      "Green fire sky -- FRSKYGRN is 2.3x dimmer than FRSKYNRM, hence the higher "
-      "multiplier for the same delivered light." },
-    { "map32", -1.f, -1.f, 0.f, false, 2.7f, "Green fire sky, as MAP23." },
+      "lighting, which it now actually has the radiance to do." },
+    { "map24", -1.f, -1.f, 0.f, false, 175.f, "Fire sky, as MAP22." },
+    { "map28", -1.f, -1.f, 0.f, false, 175.f, "Fire sky, as MAP22." },
+    { "map23", -1.f, -1.f, 0.f, false, 400.f,
+      "Green fire sky. The value judged in play; the orange rows are derived "
+      "from this one, not the other way round." },
+    { "map32", -1.f, -1.f, 0.f, false, 400.f, "Green fire sky, as MAP23." },
 
     { "map01", 180.f, 90.f, -1.f, true, -1.f,
       "`moon 180 180` -- straight overhead, light pouring vertically. Chosen to "
@@ -183,6 +225,31 @@ constexpr MoonPreset RT_MOON_PRESETS[] = {
       "colonnade's want -y -- and 135 was the geometric compromise between them. "
       "90 reads better than the compromise did: it rakes hard through the north "
       "colonnade and still catches the west windows obliquely." },
+    { "map02", 120.f, 40.f, -1.f, true, -1.f,
+      "`moon 120 40` -- aimed in play and settled there (2026-08-22). Aim only: "
+      "intensity and sky stay whatever the launcher pinned, so this row says the "
+      "one thing it is for and cannot go stale against a later tuning pass." },
+    { "map15", 20.f, 60.f, -1.f, true, -1.f,
+      "`moon 20 60` -- paired with this map's CLOUDPNK deck going to full "
+      "transmit (RT_CLOUD_PRESETS). Aim only." },
+    { "map19", 20.f, 60.f, -1.f, true, -1.f,
+      "`moon 20 60`, as MAP15 -- same CLOUDPNK deck, same aim." },
+    { "map20", 20.f, 60.f, -1.f, true, -1.f,
+      "`moon 20 60`, as MAP15 -- same CLOUDPNK deck, same aim." },
+    { "map27", 20.f, 60.f, 1.f, true, -1.f,
+      "`moon 20 60`, as MAP15, but intensity pinned to 1 -- CLOUDBRN deck, own "
+      "tint (RT_CLOUD_PRESETS)." },
+    { "map17", 20.f, 60.f, -1.f, true, -1.f,
+      "`moon 20 60`, as MAP15 -- CLOUDBRN deck, own tint (RT_CLOUD_PRESETS). "
+      "The first row to set rt_sun_color: FF9966, a warm peach, so the "
+      "moonlight agrees with the orange deck it arrives through instead of "
+      "fighting it with the global cold B4C8FF.",
+      0xFF9966 },
+    { "map10", 90.f, 60.f, -1.f, true, -1.f,
+      "`moon 90 60`. Sun colour FFB380, the SAME hex as this map's cloud tint "
+      "(RT_CLOUD_PRESETS) rather than merely a warm one -- light and deck matched "
+      "exactly, which is the arrangement MAP17 approaches from the other side.",
+      0xFFB380 },
 };
 
 // The launcher's aim, captured once before any preset overwrites it, so a map
@@ -195,6 +262,7 @@ float g_moon_base_b    = 0.f;
 float g_moon_base_i    = 0.f;
 bool  g_moon_base_disc = false;
 float g_moon_base_sky  = 0.f;
+uint32_t g_moon_base_color = 0;
 
 const MoonPreset* RT_FindMoonPreset( const char* mapname )
 {
@@ -270,15 +338,16 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
       "skybox room, ACS script 670) that RT never draws. Slightly desaturated "
       "cool grey rather than the default blue -- the level is lit green-grey and "
       "a strongly blue sky reads as a separate scene behind it." },
-    { "map14", true, 0x8C7AB4, 0.85f, 0.010f, -1, -1.f, -1.f,
-      "Purple. Thinner and slower than MAP11 -- this is weather, not a storm, so "
-      "the deck should sit still enough to read as a backdrop." },
-    { "map10", true, 0xC28153, 0.85f, 0.010f, -1, -1.f, -1.f,
-      "Burnt orange. MAP10's skybox room is a CLOUDBRN overcast over a MOUNTB "
-      "ridge, and the tint is that flat's own hue lifted to the luminance the "
-      "other presets sit at -- the slice art is achromatic, so the tint is the "
-      "cloud colour outright. Wind 0.010 because ACS script 670 scrolls the "
-      "authored ceiling at 3, the same rate MAP14 does; MAP11's storm is 4." },
+    { "map14", true, 0x6135A0, 1.0f, 0.010f, 8, 1.0f, 0.45f,
+      "MAXED, as MAP12 -- same CLOUDPRP room, same tint, same full shape (shells "
+      "8, thick 1.0, transmit 0.45). Used to be its own thinner purple (8C7AB4, "
+      "alpha 0.85, shells/thick default); superseded on request to match MAP12." },
+    { "map10", true, 0xFFB380, 0.85f, 0.010f, -1, -1.f, -1.f,
+      "Pale warm orange, and the map's moon row (RT_MOON_PRESETS) carries this "
+      "same FFB380 as rt_sun_color so the light matches the deck exactly. Was "
+      "C28153, the CLOUDBRN flat's own hue lifted to the other presets' "
+      "luminance. Wind 0.010 because ACS script 670 scrolls the authored ceiling "
+      "at 3, the same rate MAP14 does; MAP11's storm is 4." },
     { "map16", true, 0xC28153, 0.85f, 0.010f, -1, -1.f, -1.f,
       "The other CLOUDBRN map, same room and same scroll rate as MAP10, so the "
       "same orange. Kept as its own row rather than shared, because the table is "
@@ -317,22 +386,29 @@ constexpr CloudPreset RT_CLOUD_PRESETS[] = {
       "Same purple as MAP12 -- same CLOUDPRP room, same MOUNTC ridge, same "
       "scroll rate -- but not MAP12's maxed shape: this map wants the deck as "
       "scenery, not as its light source." },
-    { "map09", true, 0xE85062, 0.85f, 0.014f, -1, -1.f, -1.f,
-      "Red-pink. The CLOUDPNK rooms are a lurid magenta-crimson (the flat's mean "
-      "is 740317); this is that hue pushed off magenta towards red, which is "
-      "what the level's own lighting sits under. Wind 0.014 rather than the 0.010 "
+    { "map09", true, 0xFF0000, 0.85f, 0.014f, -1, -1.f, -1.f,
+      "Pure red, on request -- was E85062 (red-pink pushed off the CLOUDPNK "
+      "rooms' magenta-crimson mean, 740317). Wind 0.014 rather than the 0.010 "
       "its neighbours get: MAP09's ACS scrolls the authored ceiling at 4, the "
       "storm's rate, not 3." },
-    { "map15", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
+    { "map15", true, 0x990000, 0.85f, 0.010f, 3, -1.f, 1.0f,
+      "CLOUDPNK deck, dark red-brown tint and full transmit -- paired with the "
+      "map15 moon row (RT_MOON_PRESETS, `moon 20 60`). Deviates from MAP09's "
+      "shape (shells 3, transmit 1.0 vs the family's default -1/-1) on purpose." },
     { "map18", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
-    { "map19", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
-    { "map20", true, 0xE85062, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDPNK, as MAP09." },
-    { "map17", true, 0xA67454, 0.85f, 0.010f, -1, -1.f, -1.f,
-      "Brown. Same CLOUDBRN flat as MAP10/16 but deliberately duller and dimmer "
-      "than their C28153 -- those two are a lit orange overcast over a ridge, "
-      "these two are a flat brown sky with no ridge at all in the room, and the "
-      "same orange over them reads as a sunset the level does not have." },
-    { "map27", true, 0xA67454, 0.85f, 0.010f, -1, -1.f, -1.f, "CLOUDBRN, as MAP17." },
+    { "map19", true, 0x990000, 0.85f, 0.010f, 3, -1.f, 1.0f,
+      "CLOUDPNK deck, as MAP15 -- same tint, shells and transmit, same moon aim." },
+    { "map20", true, 0x990000, 0.85f, 0.010f, 3, -1.f, 1.0f,
+      "CLOUDPNK deck, as MAP15 -- same tint, shells and transmit, same moon aim." },
+    { "map17", true, 0xFF661A, 0.85f, 0.010f, 3, -1.f, 1.0f,
+      "CLOUDBRN deck, orange tint and full transmit, shells 3 -- paired with the "
+      "map17 moon row (RT_MOON_PRESETS, `moon 20 60`), which also carries the "
+      "matching rt_sun_color FF9966 so the light through this deck is as warm as "
+      "the deck. Supersedes A67454 and then FFA366; same shape as MAP15/19/20/27." },
+    { "map27", true, 0xFF6600, 0.85f, 0.010f, 3, -1.f, 1.0f,
+      "CLOUDBRN deck, orange tint and full transmit, shells 3 -- paired with the "
+      "map27 moon row (RT_MOON_PRESETS, `moon 20 60`). Same shape as MAP15/19/20, "
+      "own tint per the ask." },
 };
 
 bool  g_cloud_base_set   = false;
@@ -411,6 +487,7 @@ void RT_ApplyMoonPreset( const char* mapname )
         g_moon_base_i    = float{ cvar::rt_sun_intensity };
         g_moon_base_disc = bool{ cvar::rt_moon_geo };
         g_moon_base_sky  = float{ cvar::rt_sky };
+        g_moon_base_color = *( cvar::rt_sun_color );
     }
 
     if( !bool{ cvar::rt_moon_presets } )
@@ -426,8 +503,40 @@ void RT_ApplyMoonPreset( const char* mapname )
     cvar::rt_sun_a         = ( p && p->altitude >= 0.f ) ? p->altitude : g_moon_base_a;
     cvar::rt_sun_b         = ( p && p->azimuth >= 0.f ) ? p->azimuth : g_moon_base_b;
     cvar::rt_sun_intensity = ( p && p->intensity >= 0.f ) ? p->intensity : g_moon_base_i;
+    // A CLOUD MAP'S MOON IS BRIGHTER. The cloud table runs before this one,
+    // so rt_clouds here says "this map has a deck"; a map whose row does not
+    // state its own intensity takes rt_clouds_sun_intensity instead of the
+    // launcher's, because under a deck only a fraction of it gets through
+    // (rt_clouds_transmit). Not on the fire maps: their rows state 0 and the
+    // fire mode owns the moon there anyway.
+    if( !( p && p->intensity >= 0.f ) && bool{ cvar::rt_clouds } &&
+        float{ cvar::rt_clouds_sun_intensity } >= 0.f && !RT_FireSkyMapName( mapname ) )
+    {
+        cvar::rt_sun_intensity = float{ cvar::rt_clouds_sun_intensity };
+    }
     cvar::rt_moon_geo      = p ? p->disc : g_moon_base_disc;
     cvar::rt_sky           = ( p && p->sky >= 0.f ) ? p->sky : g_moon_base_sky;
+    // 0 = keep the launcher's, as everywhere else here. Black is the sentinel
+    // for the same reason it is in RT_ResolveFog: a black sun emits nothing, so
+    // it is not a value any row can legitimately want.
+    RT_SetColorCVar( cvar::rt_sun_color,
+                     ( p && p->sun_color != 0 ) ? p->sun_color : g_moon_base_color );
+
+    // Say what was applied. The cloud and fog tables announce themselves and this
+    // one did not, which makes a row impossible to confirm from a log: `moon` on
+    // the command line runs BEFORE the level loads, so it prints the launcher's
+    // pinned aim no matter what the table then does. Adding a row and checking it
+    // took effect had no evidence behind it until this line existed.
+    Printf( RT_DiagPrintLevel(),
+            "RT moon: %s -> azimuth %.0f altitude %.0f intensity %.0f colour %06X "
+            "disc %s%s\n",
+            mapname ? mapname : "(baseline capture)",
+            float{ cvar::rt_sun_b },
+            float{ cvar::rt_sun_a },
+            float{ cvar::rt_sun_intensity },
+            *( cvar::rt_sun_color ) & 0xFFFFFF,
+            bool{ cvar::rt_moon_geo } ? "on" : "off",
+            p ? " [RT_MOON_PRESETS row]" : " [no row -- launcher's values]" );
 }
 
 //-----------------------------------------------------------------------------
@@ -552,6 +661,111 @@ void RT_ApplyTintPreset( const char* mapname )
 
     cvar::rt_sector_tint_albedo =
         ( p && p->albedo >= 0.f ) ? p->albedo : g_tint_base_albedo;
+}
+
+//-----------------------------------------------------------------------------
+//
+// Doom64-RT: per-map SECTOR SELF-EMISSION SATURATION.
+//
+// rt_sector_emis_saturation is the COLOUR gate on rt_sector_emis: a surface
+// that already clears the lightlevel threshold self-emits only if its sector's
+// colormap tint is at least this saturated. The global 0.58 was measured on one
+// map -- MAP04 sector 68, tint 255,231,145, saturation 0.431 -- against MAP02's
+// red corridor panels, and it is a single number standing in for "is this a
+// coloured ROOM or merely a bright one" across every map in the game, whose
+// authors tinted them independently of each other.
+//
+// So it is the wrong shape for a global. A map whose tints happen to sit just
+// above 0.58 on surfaces that are only bright gets fake lights on plain walls,
+// and the only global fix is to raise the gate everywhere -- which drops the
+// panels the feature exists for on the maps that were already right. This table
+// is the per-map override for exactly that: one row, one number, the same shape
+// as RT_TINT_PRESETS above and read at the same moment.
+//
+// SAME TRAP AS RT_MOON_PRESETS AND RT_FOG_PRESETS: it writes the cvar at LEVEL
+// LOAD, after the command line is parsed, so on a listed map it overrides a
+// +rt_sector_emis_saturation pin. rt_sector_emis_presets 0 turns the table off,
+// which is what an A/B of the global value has to pass.
+//
+// To find the number for a new row: aim at the offending surface and type
+// `whatsthat`. It prints the sector's colormap tint AND the saturation computed
+// the same way this gate computes it, next to the threshold in force. Pick a
+// value above the surface you want gone and below the one you want kept.
+struct EmisPreset
+{
+    const char* map;
+    float       saturation; // rt_sector_emis_saturation. < 0: keep the launcher's
+    const char* note;
+};
+
+constexpr EmisPreset RT_EMIS_PRESETS[] = {
+    { "map08", 0.80f, "set by eye on request (2026-08-26), NOT measured with `whatsthat` -- "
+                      "so treat 0.80 as a starting point and re-derive it the documented way "
+                      "if it needs to move. At the global 0.58 too much of this map clears "
+                      "the colour gate and self-lights; 0.80 keeps only strongly coloured "
+                      "sectors. MAP08 is also the pit-blood map (9 pools, rt_blood_goto), so "
+                      "check the pools when judging it -- they sit at z -256 and a verdict "
+                      "from the spawn point is worthless." },
+};
+
+// The launcher's value, captured once before any row overwrites it, so a map
+// with no row gets the global back instead of inheriting the last listed map's
+// gate. Same one-shot guard as g_tint_base_* / g_moon_base_*, and the same trap:
+// most maps have NO row, so a leaked value would be the common case, not the
+// rare one.
+bool  g_emis_base_set = false;
+float g_emis_base_sat = 0.58f;
+
+const EmisPreset* RT_FindEmisPreset( const char* mapname )
+{
+    if( !mapname || mapname[ 0 ] == '\0' )
+    {
+        return nullptr;
+    }
+    for( const auto& p : RT_EMIS_PRESETS )
+    {
+        if( stricmp( mapname, p.map ) == 0 )
+        {
+            return &p;
+        }
+    }
+    return nullptr;
+}
+
+// mapname == nullptr means "no listed map" and restores the baseline. That is
+// how the IWAD branch of RT_OnLevelLoadPresets keeps a Retribution row from
+// following the player into a stock DOOM II level.
+void RT_ApplyEmisPreset( const char* mapname )
+{
+    if( !g_emis_base_set )
+    {
+        g_emis_base_set = true;
+        g_emis_base_sat = float{ cvar::rt_sector_emis_saturation };
+    }
+
+    if( !bool{ cvar::rt_sector_emis_presets } )
+    {
+        cvar::rt_sector_emis_saturation = g_emis_base_sat;
+        return;
+    }
+
+    const EmisPreset* p = RT_FindEmisPreset( mapname );
+
+    cvar::rt_sector_emis_saturation =
+        ( p && p->saturation >= 0.f ) ? p->saturation : g_emis_base_sat;
+
+    // One line per listed map, at the diagnostic level: it lands in every
+    // player's rt-console.log without painting over the game, so a report of
+    // "the panels went out on MAP08" answers itself. A silent per-map cvar
+    // write is exactly the class of thing this project keeps losing sessions to.
+    if( p )
+    {
+        Printf( RT_DiagPrintLevel(),
+                "RT_EMIS_PRESETS: %s -> rt_sector_emis_saturation %.2f (global %.2f)\n",
+                p->map,
+                p->saturation,
+                g_emis_base_sat );
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -951,13 +1165,18 @@ void RT_OnLevelLoadPresets( const char* mapname )
     if( !is_pwadmap )
     {
         Printf( RT_DiagPrintLevel(),
-                "RT presets: %s is an IWAD map -- skipping moon/cloud/tint/fog "
+                "RT presets: %s is an IWAD map -- skipping moon/cloud/tint/fog/emis "
                 "tables (they are keyed on Retribution map names)\n",
                 mapname ? mapname : "?" );
 
         // The baselines still have to be captured, or the FIRST preset map of the
         // session would take an IWAD map's cvars as its "launcher's values".
         RT_ApplyMoonPreset( nullptr );
+        // And the emission gate has to be put BACK, not merely left alone: a
+        // Retribution row is a live cvar write, so without this MAP08's 0.80
+        // would follow the player into the next level and quietly switch off
+        // half of rt_sector_emis there.
+        RT_ApplyEmisPreset( nullptr );
         g_fog_pending_map = "";
         g_fog_pending     = false;
         return;
@@ -966,6 +1185,7 @@ void RT_OnLevelLoadPresets( const char* mapname )
     RT_ApplyCloudPreset( mapname );
     RT_ApplyMoonPreset( mapname );
     RT_ApplyTintPreset( mapname );
+    RT_ApplyEmisPreset( mapname );
 
     // Fog is only REQUESTED, for the reason given on g_fog_pending_map: the map's
     // own `fade`/`fogdensity` are not readable until P_SetupLevel has run, so

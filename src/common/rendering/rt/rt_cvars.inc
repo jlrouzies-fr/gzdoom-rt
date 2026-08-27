@@ -1,4 +1,4 @@
-// The complete list of Doom64-RT cvars. Included TWICE, with the RT_CVAR* macros
+﻿// The complete list of Doom64-RT cvars. Included TWICE, with the RT_CVAR* macros
 // meaning different things each time:
 //
 //   rt_cvars.h   -- declaring face:  extern ValueToCVarRef<...> name;
@@ -15,6 +15,27 @@
 
     RT_CVAR( rt_cpu_cullmode,           0,      "[IMPACTS CPU PERFORMANCE HEAVILY] 0: BSP + all neighbor sectors of visible,  1 - original GZDoom's BSP/clip checks,  2: uploading whole map, no culling at all" )
     RT_CVAR( rt_cpu_nocullradius,       10.f,   "[IMPACTS CPU PERFORMANCE] Radius (in meters) in which culling must not be applied. Applicable with rt_cpu_cullmode=0" )
+
+    RT_CVAR_NOARCH( rt_cull_neighbor_subsector, true,
+                                                "1 = cullmode 0's 'neighbor of visible' expansion (hw_bsp.cpp) works per "
+                                                "SUBSECTOR, 0 = the original per-SECTOR behaviour. A Doom sector can own "
+                                                "many subsectors spread across the whole map, and the neighbor test only "
+                                                "needs ONE shared seg to fire -- so under the old behaviour, one tiny "
+                                                "shared edge with a visible sector uploaded that sector's ENTIRE subsector "
+                                                "list, including walls nowhere near the seg that made it 'adjacent'.\n"
+                                                "MAP05 sector 17 (an open-sky canyon) shares an ~8-map-unit edge with "
+                                                "sector 58 (a small lit fixture box). Whenever anything near sector 58 gets "
+                                                "seeded visible, the old behaviour uploaded sector 17's far wall too -- "
+                                                "which then renders as if it plugs the canyon shut, independent of whether "
+                                                "that wall is actually in view. rt_cpu_nocullradius cannot touch this: the "
+                                                "neighbor expansion is unconditional, not gated by the radius. Reported "
+                                                "2026-08-21, screen/map5NotCulledWall.png.\n"
+                                                "The fix scopes the identical one-hop adjacency test to the specific "
+                                                "subsector on each side of a seg (seg_t::PartnerSeg->Subsector) instead of "
+                                                "every subsector the far sector happens to own. A sector spanning one small "
+                                                "room is unaffected either way. Default on; kept as a switch in case some "
+                                                "other map relied on the wider reach to avoid a DIFFERENT pop-in -- not "
+                                                "confirmed to happen anywhere, just not ruled out." )
 
     RT_CVAR( rt_menu_hidehud,           true,   "hide the in-game HUD while a menu is open. The status bar is drawn every "
                                                 "frame regardless of what is on top of it, so a long options page runs its "
@@ -40,6 +61,74 @@
                                                 "nothing on screen to read and no way to type rt_stat_dump, so without this "
                                                 "a measurement run produces a log with no measurements in it. Implies "
                                                 "rt_stat_force. 35 = once a second." )
+
+    RT_CVAR_NOARCH( rt_precache,         true,  "upload a level's textures when it LOADS instead of when each one is first "
+                                                "drawn. The RT backend never implemented gzdoom's PrecacheMaterial hook, so "
+                                                "until 2026-08-20 every texture in the game uploaded mid-frame during play: "
+                                                "one imp sprite frame cost 20-44 ms and a lost soul 60 ms, scattered through "
+                                                "the session, because each frame AND rotation is a separate texture that is "
+                                                "not touched until that pose is first visible. The same uploads at load "
+                                                "measure 0.2-0.6 ms. 0 restores the old lazy behaviour for A/B." )
+
+    RT_CVAR_NOARCH( rt_precache_budget,  8000,  "how many textures the level-load precache may upload before it stops and "
+                                                "lets the rest load lazily. A safety valve against RTGL1's texture array, "
+                                                "not a tuning knob: ONE material can claim five entries "
+                                                "(TEXTURES_PER_MATERIAL_COUNT), so the slot count runs far ahead of this "
+                                                "number and overflow does not fail loudly -- it drops textures with a "
+                                                "\"Reached texture limit\" Warning and the game carries on drawing its HUD as "
+                                                "white and pink blocks.\n"
+                                                "WHY 8000. The array was 4096, where 1526 precached cleanly and 2094 "
+                                                "overflowed, and this cvar existed to hold the line at 1600. RTGL1's "
+                                                "TEXTURE_COUNT_MAX is now 16384 (clamped to what the GPU reports), so the "
+                                                "budget no longer has to truncate: precaching every actor class wants ~2100 "
+                                                "and 8000 clears it with room to spare while still capping a runaway. Raising "
+                                                "it further is only meaningful alongside TEXTURE_COUNT_MAX in the RTGL1 repo." )
+
+    RT_CVAR_NOARCH( rt_precache_actors,  true,  "precache the sprites of EVERY actor class the game defines, not only the "
+                                                "ones placed in the level. gzdoom's precacher walks the thinkers present at "
+                                                "load, so anything spawned during play arrives cold and pays 12-61 ms per "
+                                                "sprite frame and rotation, mid-frame. That is a scripted ambush (Retribution "
+                                                "spawns 7-8 lost souls off a switch), and equally it is every casing, blood "
+                                                "splat, gib, puff and piece of debris -- all of which exist only as a "
+                                                "consequence of play and so are never present at load. Filtering to monsters "
+                                                "was tried first and left a debris sprite costing 33.6 ms on an empty map. "
+                                                "Mostly a one-off cost: hardware textures outlive a level change, so the "
+                                                "first load pays and later ones do not. 0 restores stock behaviour." )
+
+    RT_CVAR_NOARCH( rt_stat_spike,       0.0f,  "DIAGNOSTIC: log any frame that took longer than this many MILLISECONDS "
+                                                "(0 = off). Implies rt_stat_force.\n"
+                                                "WHY IT HAD TO EXIST. Everything else on this stat is an AVERAGE, and an "
+                                                "average cannot see a stutter. The FRAME line is frames over elapsed "
+                                                "nanoseconds across half a second, and rt_stat_every samples that once a "
+                                                "second -- so one 24 ms frame inside a 500 ms window moves the reported "
+                                                "number by about 0.02 ms. A MAP02 run whose whole point was two felt "
+                                                "hitches reported a flat 8.7 ms / 115 fps for its entire length "
+                                                "(2026-08-19). The phase columns were no better: the two frames that "
+                                                "looked like spikes had drawframe up 7x and `start` down by the same "
+                                                "amount, total unchanged -- the CPU blocking inside rgDrawFrame instead "
+                                                "of at the N-2 fence, which is what a GPU-bound frame does and not a "
+                                                "hitch at all.\n"
+                                                "So this reports the OUTLIER, not the mean: every frame over the "
+                                                "threshold prints its own line, with the phase split, the counts, and "
+                                                "the position and sector to walk back to. Start at about 2x your normal "
+                                                "frame time. Prefer rt_stat_spike_rel, which works out that multiple for "
+                                                "itself; this one is then a FLOOR under it." )
+
+    RT_CVAR_NOARCH( rt_stat_spike_rel,   0.0f,  "DIAGNOSTIC: spike threshold as a MULTIPLE of the current average frame "
+                                                "time (0 = use the fixed rt_stat_spike instead). The effective threshold "
+                                                "is max(rel x average, rt_stat_spike), so the fixed value acts as a floor.\n"
+                                                "WHY A MULTIPLE. A millisecond threshold is only correct for the frame "
+                                                "rate it was chosen at. 14 ms was picked against a 115 fps measurement "
+                                                "run; the first release-path session it met ran at 58 fps, where 17 ms is "
+                                                "NORMAL -- so every single frame tripped it and the recorder wrote 2123 "
+                                                "lines saying nothing (2026-08-19). Resolution, upscaler, vsync and "
+                                                "whether the window has focus all move the baseline, and none of them are "
+                                                "known when the threshold is set. A multiple of the measured average "
+                                                "survives all of them.\n"
+                                                "1.6 is the shipped value: high enough that ordinary frame-to-frame "
+                                                "variation never trips it, low enough to catch a hitch you would call "
+                                                "slight. The average is the half-second one, so a handful of outliers "
+                                                "cannot inflate it enough to hide themselves." )
 
     RT_CVAR_NOARCH( rt_autospawn,           0,  "DIAGNOSTIC: summon a crowd of monsters starting at this maptime TIC (0 = "
                                                 "off), one wave every 8 tics. The companion to rt_autofire, and it exists "
@@ -136,6 +225,33 @@
                                                 "readout panels (PANEL_LAMPS in tools/make_seqlight_fix.py), which are the only "
                                                 "9804s in the game (2026-08-12)" )
 
+    RT_CVAR( rt_dynlight_pulse_scale,   1.0f,   "intensity trim for PulseLight (9801) only -- the Pulse twin of "
+                                                "rt_dynlight_flicker_scale.\n"
+                                                "\n"
+                                                "WITHOUT IT A PULSE CANNOT ANIMATE. Intensity is hi * "
+                                                "rt_dynlight_intensity, so a 20/16 fixture at the pinned 40 runs "
+                                                "640..800 across its cycle while rt_dynlight_max clamps at 500: the "
+                                                "ENTIRE swing sits above the ceiling and the light is pinned flat at "
+                                                "500 every frame. Reported as 'they are static' on the SMONF panels "
+                                                "(2026-08-22); the three 9801s Retribution already ships are clamped "
+                                                "the same way and have simply never been looked at. Radius cannot buy "
+                                                "the headroom back -- rt_dynlight_minradius 16 drops any light small "
+                                                "enough to fit underneath.\n"
+                                                "\n"
+                                                "1.0 is inert, so this changes nothing until pinned. That is the point: "
+                                                "rt_dynlight_flicker_scale deliberately excluded PulseLight because "
+                                                "folding the two together would have retuned authored content nobody "
+                                                "had complained about." )
+    RT_CVAR( rt_dynlight_pulse_floor,  -1.0f,   "blink floor for PulseLight (9801) only. NEGATIVE = inherit "
+                                                "rt_dynlight_blink_floor, which is the default and is why this cannot "
+                                                "move an existing fixture on its own.\n"
+                                                "\n"
+                                                "Same escape hatch as rt_dynlight_rndflicker_floor, for the same "
+                                                "reason: rt_dynlight_blink_floor is GLOBAL, and the 0.8 that settled "
+                                                "the 199-panel SMON flicker wall leaves a pulse swinging only 1.25x. "
+                                                "Beside a texture whose own lit texels ramp about 1.8x, that reads as "
+                                                "a static light next to a blinking panel. Lower = wider swing." )
+
     RT_CVAR( rt_dynlight_flicker,       true,   "upload Flicker/RandomFlicker FDynamicLights (9802).\n"
                                                 "\n"
                                                 "Was false, and that suppressed EVERY SMON WALL MONITOR LIGHT IN THE GAME. The "
@@ -206,6 +322,119 @@
     RT_CVAR( rt_wall_strip_max,         128,    "hard cap on strip lights per frame, so a large open map cannot flood the light "
                                                 "list and wreck ReSTIR/RR temporal reuse" )
     RT_CVAR( rt_wall_strip_debug,       false,  "periodic console dump of wall strip light uploads + rejection tally" )
+    RT_CVAR( rt_wall_strip_winding,     true,   "place a ONE-SIDED wall strip light using Doom's own winding -- the front "
+                                                "sidedef is the RIGHT of v1->v2, so a one-sided line's open air is on the "
+                                                "right -- instead of nudging it toward sector_t::centerspot. centerspot is a "
+                                                "BOUNDING-BOX MIDPOINT and a sector is not required to contain it: MAP01's "
+                                                "pre-exit pillar is a RING sector whose bbox midpoint lands in the VOID CORE, "
+                                                "so the centrespot rule pushed all six of that pillar's lights two units into "
+                                                "solid geometry where they were fully occluded and emitted nothing. Set 0 to "
+                                                "restore the old behaviour: that is the BEFORE half of the A/B, not a fallback. "
+                                                "Two-sided lines are unaffected either way -- there both sides are real "
+                                                "sectors, the winding is genuinely ambiguous, and centerspot is still the test" )
+
+    RT_CVAR( rt_pillar_chase,           true,   "put the turning light back on MAP01's pre-exit hall pillar. The hall had a "
+                                                "light travelling around that pillar in the original: ACS script 12, type "
+                                                "OPEN, 64 Light_Fade calls over tags 20..27, which are laid TWICE around the "
+                                                "ring of 16 wedge sectors. tools/make_seqlight_fix.py strips that script and "
+                                                "repaints the hall 255 -> 160 with it (stripping alone would PIN all 27 "
+                                                "sectors at the top of the ramp and make the hall brighter). What is left "
+                                                "lighting the pillar is the wall-strip walk: SFLATAQ, the 4x4 bulb array, on "
+                                                "exactly four faces at 0/90/180/270 degrees -- four static lights. This "
+                                                "sweeps a crest around those lights so the movement is back on the fixture "
+                                                "the art actually paints bulbs on. Rides rt_wall_strips: with that off there "
+                                                "are no pillar lights to chase" )
+    RT_CVAR( rt_pillar_chase_period,    1.83f,  "seconds per revolution of the crest. 1.83 is script 12's own lap: 8 steps of "
+                                                "4 tics, and its tags repeat twice around the ring, so one crest covered the "
+                                                "full circle in 64 tics" )
+    RT_CVAR( rt_pillar_chase_floor,     0.35f,  "intensity multiplier for a face the crest is nowhere near, as a fraction of "
+                                                "rt_wall_strip_intensity. NOT 0.78, which is what script 12's own 200/255 "
+                                                "ramp works out to: that ramp moved SECTOR LIGHTLEVEL across sixteen wedges, "
+                                                "where a wave has room to read at low contrast. Here it moves four discrete "
+                                                "lights 90 degrees apart, and at 0.78 the chase is invisible" )
+    RT_CVAR( rt_pillar_chase_width,     140.f,  "half-width in degrees of the crest: a face this far from it sits at "
+                                                "rt_pillar_chase_floor. Above 90 the crest is still lifting one face as it "
+                                                "reaches the next, which is what keeps four discrete lights reading as one "
+                                                "thing turning rather than as four taking turns blinking" )
+    RT_CVAR( rt_pillar_chase_cw,        true,   "sweep clockwise in map coordinates, which is the ORIGINAL direction: script "
+                                                "12 steps tag 20 -> 21 -> 22..., and those tags sit at DECREASING angles "
+                                                "around the pillar (20 at 12 deg, 21 at 349, 22 at 321...). Set 0 to reverse" )
+    RT_CVAR( rt_pillar_chase_spot,      false,  "make a chase pillar's panel lights SPOT lights aimed off the wall instead "
+                                                "of spheres sitting on it. OFF, because it costs the floor. "
+                                                "This was added on the theory that the panel being inside its own light was "
+                                                "what kept the painted bulbs looking permanently on -- a strip light is a "
+                                                "0.35 m sphere (11.2 map units at 32 to the metre) placed TWO units off a "
+                                                "32-unit panel, so irradiance on its own face is I/(d^2+r^2), about 33x what "
+                                                "a surface two metres away gets. That arithmetic is real, but it was NOT the "
+                                                "cause: the bulbs were constant because RTGL1's primary ray uses the raw _e "
+                                                "sample (see rt_pillar_chase_bulb_screen), and fixing that fixed them with "
+                                                "the spheres still in place. "
+                                                "What the spot costs is the pool of light at the pillar's base. RTGL1 clamps "
+                                                "a spot cone to 89 degrees (LightManager.cpp EncodeAsSpotLight), so it cannot "
+                                                "express a HEMISPHERE -- and aimed horizontally off a wall, everything at "
+                                                "about 90 degrees, which is the floor the fixture stands on, falls outside "
+                                                "the cone. Kept as a cvar because it is the right shape for a fixture that "
+                                                "genuinely should not light its own mounting, not because it is right here" )
+    RT_CVAR( rt_pillar_chase_lightofs,  2.f,    "how far off the panel, in MAP UNITS, a chase pillar's light sits. 2 is what "
+                                                "the wall-strip walk uses everywhere. Raise it if the panel's own albedo "
+                                                "washes out -- at 2 units the emitter's 11.2-unit radius swallows the face it "
+                                                "is mounted on. It does not affect the painted bulbs, which are driven by "
+                                                "rt_pillar_chase_bulb_emis and do not care where the light is" )
+    RT_CVAR( rt_pillar_chase_spot_outer, 88.f,  "outer cone half-angle in degrees for those spots. Wide on purpose: the "
+                                                "fixture has to wash the floor and the walls beside it, not throw a "
+                                                "torch beam. Narrower than 90 so the cone cannot graze back along the panel" )
+    RT_CVAR( rt_pillar_chase_spot_inner, 0.f,   "inner cone half-angle in degrees. 0 gives a smooth falloff across the whole "
+                                                "cone, which is what the flashlight uses (rt_weapon.cpp) and what keeps a "
+                                                "spot from reading as a hard-edged disc on the floor" )
+    RT_CVAR( rt_pillar_chase_bulb_lagsec, 0.6f, "SECONDS the painted bulbs trail the analytic lights' crest. Both halves "
+                                                "read the identical crest every frame (rt_pillar_chase_debug prints both "
+                                                "against maptime) -- the bulbs are not driven faster. What differs is "
+                                                "AFTER: a bulb's emission lands on the primary ray and changes the frame it "
+                                                "is set, while the lights' pool on the floor goes through ReSTIR temporal "
+                                                "reuse and the A-SVGF history first, and arrives late. Measured by eye in "
+                                                "the pillar lab: with the bulbs held 25 degrees back (0.13 s) they still "
+                                                "led by about half a second, so the delay is roughly 0.6 s. In seconds, "
+                                                "not degrees, because a propagation delay does not change when the lap "
+                                                "does -- at rt_pillar_chase_period 1.83 this is about 118 degrees, at 6 s "
+                                                "it is 36, and both are the same number of frames. 0 = no hold-back" )
+    RT_CVAR( rt_pillar_chase_bulbs,     true,   "drive the PAINTED bulbs with the crest as well as the analytic lights. "
+                                                "SFLATAQ carries an authored _e mask that glows at a constant strength, so "
+                                                "with the lights alone the pillar reads as four permanently-on lamps with "
+                                                "something moving behind them -- the bulbs have to switch WITH the light or "
+                                                "the fixture never reads as turning. Applies only to faces carrying a bulb "
+                                                "array; the pillar's SPACEAA and SPACEAG faces have no bulbs painted on them "
+                                                "and are left alone. Needs RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE or RTGL1's "
+                                                "TextureMeta.cpp overwrites the value with the material's constant a moment "
+                                                "later and every frame of this is discarded in silence" )
+    RT_CVAR( rt_pillar_chase_bulb_screen, true, "let the crest scale what the bulbs LOOK LIKE, not just what they feed into "
+                                                "the GI. Sets RG_MESH_PRIMITIVE_EMISSIVE_SCREEN_SCALED. With an _e map "
+                                                "RTGL1's primary and reflection paths use the RAW _e sample and apply "
+                                                "emissiveMult on the INDIRECT path only (HitInfo.inl), which is right for "
+                                                "every painted lamp that is simply ON and wrong for one that is supposed to "
+                                                "switch. With this off the chase still runs and the bulbs still never "
+                                                "change -- that is the BEFORE half of the A/B, and it is how this shipped "
+                                                "twice before the shader was read" )
+    RT_CVAR( rt_pillar_chase_bulb_gi,   50.f,   "what a chase panel feeds the GI at the crest, in the material's own "
+                                                "units. SFLATAQ's textures.json says 20; 50 was chosen by eye in the lab "
+                                                "so the crest reads clearly above the fill. THIS IS THE LIGHT THAT "
+                                                "TURNS: four 32x64 panels at 20 are a far bigger source than four I=180 "
+                                                "spheres (cutting it to ~1 read as 'no more light cast'; freezing it read "
+                                                "as 'the light is always on'). It chases on the TRUE crest -- the same "
+                                                "one the spheres use -- and is never delayed; only the bulbs on screen "
+                                                "are (rt_pillar_chase_bulb_lagsec). Delaying the GI with them was the "
+                                                "mistake that made the gap unclosable: the pool is the bulbs' own "
+                                                "bounce, so every frame added to the bulbs moved it by the same amount" )
+    RT_CVAR( rt_pillar_chase_bulb_emis, 1.0f,   "what those bulbs LOOK LIKE at the crest, as a multiplier on the raw _e "
+                                                "sample. 1.0 is screen-neutral -- the brightness the art already had. Kept "
+                                                "separate from rt_pillar_chase_bulb_gi because one number cannot serve "
+                                                "both: 20x on screen is a white square, and 1x in the GI is a dead room" )
+    RT_CVAR( rt_pillar_chase_bulb_floor, 0.05f, "emissive multiplier for a bulb face the crest is nowhere near. Lower than "
+                                                "rt_pillar_chase_floor on purpose: an unlit BULB should look off, while an "
+                                                "unlit face should still be dimly washed by its neighbours. Not 0 -- a bulb "
+                                                "that goes completely black reads as a hole in the panel rather than as a "
+                                                "lamp that is out" )
+    RT_CVAR( rt_pillar_chase_debug,     false,  "periodic console dump of the crest angle, and of each chased light's angle "
+                                                "and resulting multiplier" )
 
     RT_CVAR( rt_keytrim_lights,         false,  "key-coloured lights on locked-door trim: STRAKR/STRAKB/STRAKY, the "
                                                 "CRTRAKA/CBTRAKA/CYTRAKA door plates, and Unseen Evil's keytrim_* strips. "
@@ -613,7 +842,7 @@
                                                 "(see rt_wall_strips), so the bright fists cannot light the forearm beside "
                                                 "them at any emissiveMult. Offsets and per-monster colour are generated from "
                                                 "the mod's authored brightmaps by tools/gen_hand_light_offsets.py" )
-    RT_CVAR( rt_hand_light_intensity,   45.f,   "RT intensity per FIST, shared by both monsters. Two lights each, so the "
+    RT_CVAR( rt_hand_light_intensity,   65.f,   "RT intensity per FIST, shared by both monsters. Two lights each, so the "
                                                 "perceived total is roughly double this. Deliberately small ??? a passive "
                                                 "knight should barely wash its own hands, not light the room; its BAL7 "
                                                 "projectile (1000) is what lights a room during an attack" )
@@ -834,6 +1063,32 @@
                                                 "a light feature. This is what stops the flood: 180 means 'glowing panel' in a dark "
                                                 "corridor and 'ordinary lit room' on a bright deck, so an absolute threshold either "
                                                 "misses the panels or turns every wall in the level into a light (2026-08-07)" )
+    RT_CVAR( rt_sector_emis_saturation, 0.58f,  "minimum colour saturation of the sector's colormap tint (rtstate.m_sectorLightColor, "
+                                                "i.e. Colormap.LightColor -- the same hue primColor tints the surface with, see "
+                                                "RT_SectorHue) required for a lightlevel-qualifying surface to actually self-emit "
+                                                "[0..1, (max-min)/max over rgb]. 0 = off, any qualifying surface emits regardless "
+                                                "of colour, which is how this behaved before 2026-08-21.\n"
+                                                "WHY. rt_sector_emis was written for MAP02's red corridor panels -- a genuinely "
+                                                "coloured room, not merely a bright one -- but the threshold only ever looked at "
+                                                "lightlevel, so a plain white/grey wall in an equally bright room (MAP03 sector 54 "
+                                                "SPACEAP1, sector 70 SPACECL1; MAP04 sector 68 SPACEAF) qualified exactly the same "
+                                                "way and self-lit with nothing casting it -- it reads as a fake light on a wall "
+                                                "that is just bright, not as a light source.\n"
+                                                "WHY 0.58, NOT 0.12. `whatsthat` on MAP04 sector 68 measured colormap tint "
+                                                "255,231,145 -- saturation 0.431, a warm cream/lamp tint that reads as ordinary "
+                                                "light to the eye, not as a coloured room -- and 0.12 let it straight through. "
+                                                "0.12 only ever excluded true near-greys. Confirmed in play (2026-08-21): 0.5 "
+                                                "already dropped the MAP04 wall with MAP02's red corridor panels still glowing; "
+                                                "0.58 keeps that margin over 0.431 without a live re-check at this exact value" )
+    RT_CVAR_NOARCH( rt_sector_emis_presets, true, "apply the per-map SELF-EMISSION SATURATION table (RT_EMIS_PRESETS) at level "
+                                                "load, which raises rt_sector_emis_saturation on the maps whose colormap tints "
+                                                "clear the global 0.58 on surfaces that are merely bright -- a per-map override "
+                                                "of the one number that decides whether a bright surface is a LIGHT or just lit. "
+                                                "A map with no row is left EXACTLY as it is. 0 turns the whole table off.\n"
+                                                "SAME TRAP AS RT_MOON_PRESETS AND RT_FOG_PRESETS: the table writes "
+                                                "rt_sector_emis_saturation at LEVEL LOAD, after the command line is parsed, so "
+                                                "on a listed map it overrides a +rt_sector_emis_saturation pin. Set this to 0 "
+                                                "to A/B the global value on a map that has a row" )
     RT_CVAR( rt_sector_emis_debug,      false,  "print the computed self-emission threshold and the map median it came from" )
     RT_CVAR( rt_sector_emis_override,   true,   "LET SECTOR SELF-EMISSION SURVIVE A TEXTURE THAT HAS A MATERIAL ENTRY. Sets "
                                                 "RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE on the surfaces rt_sector_emis lit, so "
@@ -1662,10 +1917,179 @@
                                                 "rt_sun_intensity. So cloud drifting over the moon really does dim the "
                                                 "shafts, and it changes as the wind moves. Floored at 0.12 -- taking a "
                                                 "moon-lit map to zero is a worse failure than blocking too little." )
+    RT_CVAR_COLOR( rt_clouds_tint_top,       0, "SECOND tint, at the TOP of the shell stack; rt_clouds_tint is the "
+                                                "base. 0 = no gradient, which is every existing deck map "
+                                                "unchanged.\n"
+                                                "ONE TINT OVER EVERY SHELL IS WHY A HOT COLOUR STILL READS AS "
+                                                "WEATHER: it makes dense and thin cloud the same hue at different "
+                                                "brightness. Fire-lit cloud changes in HUE through its depth -- "
+                                                "incandescent near the fire, dull red above, near-black smoke on "
+                                                "top -- and that is a gradient, not a brightness ramp." )
+    RT_CVAR( rt_clouds_litfrom,         0,      "which way the shell brightness ramp runs. 0 = lit from ABOVE, the "
+                                                "shipping behaviour and what the slice art is baked for: "
+                                                "gen_clouds.py integrates Beer-Lambert transmittance TOP-DOWN, so "
+                                                "the tops are lit and the undersides dark, which is a moon.\n"
+                                                "1 = lit from BELOW, for a burning sky. The underside is the "
+                                                "surface a player looks at, so on a fire map the ramp is upside "
+                                                "down. This does not re-bake the art -- it is the free "
+                                                "approximation; the real fix is a bottom-up bake." )
+    RT_CVAR( rt_clouds_underlit,        0.f,    "STANDING underglow on the deck: the same additive pass a "
+                                                "lightning strike uses, driven by a constant instead of an "
+                                                "envelope, and weighted toward the lower shells by the same "
+                                                "1 - 0.7f. This is what makes a deck read as lit BY something "
+                                                "under it rather than as painted. 0 = off, which is every map "
+                                                "that is not a fire map." )
+    RT_CVAR_COLOR( rt_clouds_underlit_color, 0xFF7A20, "colour of the standing underglow" )
+    RT_CVAR( rt_clouds_fireback,        0.f,    "FIRE BEHIND THE CLOUD -- an additive layer drawn before the shells, "
+                                                "so every one of them composites over it. 0 = off, which is every "
+                                                "map that is not a fire map.\n"
+                                                "THIS IS THE ONE THAT MAKES A BURNING SKY, and it is a compositing "
+                                                "model rather than a colour. Measured over screen/infernalStorm.png "
+                                                "and screen/fireskylook.jpg the target is DARK: median luminance "
+                                                "~30 of 255, p25 ~22, with a thin hot tail at p90 ~62-74 and p99.9 "
+                                                "~200. A small fraction of the sky is incandescent and the rest is "
+                                                "nearly black.\n"
+                                                "Neither the tint nor the underglow can produce that. rt_clouds_tint "
+                                                "is a MULTIPLY over near-achromatic art, so a shell lands at one "
+                                                "hue and a brightness following the slice's own luminance -- a "
+                                                "smooth gradient. The underglow fails from the other side: it "
+                                                "brightens where the cloud is DENSE, lighting the body instead of "
+                                                "the gaps. Backlighting inverts both: an opaque shell covers the "
+                                                "fire and reads as a black silhouette, a thin one lets it through "
+                                                "as a rim or a crack." )
+    RT_CVAR_COLOR( rt_clouds_fireback_color, 0xFF5A10, "colour of the fire behind the cloud" )
+    RT_CVAR( rt_clouds_fireback_tiles,  2.2f,   "tiling of the fire layer as a MULTIPLE of rt_clouds_tiles. Above 1 "
+                                                "so the fire is finer-grained than the cloud in front of it, which "
+                                                "is what makes the gaps read as cracks rather than as one more "
+                                                "cloud layer." )
+    RT_CVAR( rt_clouds_fireback_wind,   0.02f,  "the fire layer's own wind. Deliberately NOT rt_clouds_wind: two "
+                                                "layers drifting together read as one painted image, and the "
+                                                "relative motion between them is most of what sells depth here." )
+    RT_CVAR( rt_clouds_fireback_slice,  3,      "which CLOUDV slice (1..8) supplies the fire's shape. A different "
+                                                "one from the shells so the two do not correlate." )
     RT_CVAR( rt_clouds_flash,           2.2f,   "how hard a lightning strike lights the deck, as a multiplier on the "
                                                 "strike envelope before it is clamped to a full additive pass. Above 1 "
                                                 "the flash saturates early, which is right for lightning. The pass is "
                                                 "weighted toward the LOWER shells -- the strike is under the deck." )
+
+    // ----------------------------------------------------------------------
+    // VOLUMETRIC clouds (rt_vclouds.cpp, RTGL1's CmCloudMap.comp). A real
+    // ray-marched slab, lit by the moon from above and optionally by fire from
+    // below, drawn INSTEAD of the shell deck when rt_clouds_volumetric is on.
+    // rt_clouds is still the master switch, and the tint / transmit / wind
+    // direction / fireback colour are shared with the deck so a per-map preset
+    // means the same thing under both.
+    //
+    // It is marched once per frame into a 1024x256 map of world directions,
+    // not per pixel: both the screen's sky pass and the GI cubemap sample that
+    // map, so it costs the same at 4K as at 540p, and the clouds light the
+    // level through GI for free.
+    // ----------------------------------------------------------------------
+    RT_CVAR( rt_clouds_sun_intensity,   200.f,  "rt_sun_intensity on a CLOUD map whose moon row does not state its "
+                                                "own (the storm maps): under a deck only rt_clouds_transmit of the "
+                                                "moon gets through, so it starts brighter. Not on the fire maps. "
+                                                "-1 = the launcher's value everywhere." )
+    RT_CVAR( rt_clouds_volume_lintensity, 0.5f, "rt_volume_lintensity while a CLOUD map is loaded (rt_clouds on, "
+                                                "not a fire map): the moon's shafts, dialled down so the haze does "
+                                                "not compete with the deck for the sky. -1 = use the global." )
+    RT_CVAR_NOARCH( rt_clouds_volumetric, true, "0 = the shell deck (everything above), 1 = the ray-marched "
+                                                "volumetric slab. Toggle in place; the deck comes back exactly as "
+                                                "it was. SHIPS ON, and tools/d64rt-pins.cfg restates it -- BOTH "
+                                                "halves are load-bearing and neither is redundant. This is the one "
+                                                "cloud cvar the engine WRITES at runtime (rt_firesky.cpp on the five "
+                                                "fire maps), and it USED TO BE CVAR_ARCHIVE, so with a default of 0 and "
+                                                "no pin, one quit on a hell map archived a 1 that nothing ever reset "
+                                                "-- and whether a player saw the march or the deck on MAP12 came "
+                                                "down to whether they had ever visited MAP23. The pin beats a stale "
+                                                "ini (it runs after the config load); the default covers a launch "
+                                                "that never execs the pins at all. "
+                                                "NOARCH is the third layer and the one that actually closes it. A "
+                                                "pin only beats an ini entry that exists, and a default only applies "
+                                                "when none does -- so an old ini plus a launch with no pins fell "
+                                                "through both. This cvar is per-map state the engine manages, not a "
+                                                "preference, and it is in no menu, so it has no business being in the "
+                                                "ini at all. AND NOARCH ALONE IS NOT ENOUGH: ReadCVars applies "
+                                                "every key in the ini by name and never looks at CVAR_ARCHIVE, so "
+                                                "un-archiving stops the WRITE, not the READ. Measured 2026-08-25 -- "
+                                                "a stale archived line for THIS cvar was still in the config and "
+                                                "still being applied. gameconfigfile.cpp now skips a key whose "
+                                                "cvar is not archived, which is what finally closes it." )
+    RT_CVAR( rt_vclouds_altitude,       600.f,  "bottom of the slab above the viewer, METRES" )
+    RT_CVAR( rt_vclouds_thick,          500.f,  "slab thickness, METRES" )
+    RT_CVAR( rt_vclouds_coverage,       0.55f,  "fraction of the sky that is cloud, 0..1" )
+    RT_CVAR( rt_vclouds_density,        0.03f,  "extinction per metre inside dense cloud. 0.03 over a 500 m slab is "
+                                                "opaque in the cores and translucent at the edges." )
+    RT_CVAR( rt_vclouds_feature,        500.f,  "size of the largest cloud shapes, METRES. Judge it against the "
+                                                "altitude: a feature of F metres under a slab H metres up subtends "
+                                                "about atan(F/H) of sky, so 1500 m at 600 m was ~70 degrees -- the "
+                                                "whole overhead was one noise cell, cloud or clear (measured with "
+                                                "the debug view: transmittance 1 overhead, cloud only at the rim)." )
+    RT_CVAR( rt_vclouds_detail,         0.5f,   "how much the fine erosion eats the edges, 0..1. 0 = smooth blobs." )
+    RT_CVAR( rt_vclouds_wind,           6.f,    "wind speed, METRES PER SECOND, along rt_clouds_wind_dir" )
+    RT_CVAR( rt_vclouds_steps,          32,     "view-ray steps through the slab, 4..128. The cost knob." )
+    RT_CVAR( rt_vclouds_lightsteps,     6,      "steps toward the light per view step, 1..16. Self-shadowing; the "
+                                                "dark undersides come from here." )
+    RT_CVAR( rt_vclouds_light,          1.0f,   "strength of the moon's light on the cloud, in sky-texture units "
+                                                "(1 = as bright as white sky art). Colour is rt_sun_color." )
+    RT_CVAR( rt_vclouds_under,          0.f,    "strength of a light from BELOW the cloud -- a burning ground. The "
+                                                "fire sky's rt_clouds_fireback is ADDED to this, so the fire maps "
+                                                "get it without a second preset. Colour is rt_clouds_fireback_color." )
+    RT_CVAR( rt_vclouds_ambient,        0.06f,  "flat ambient on every cloud sample, sky-texture units, tinted by "
+                                                "rt_clouds_tint. Keeps the shadowed side from going pure black." )
+    RT_CVAR( rt_vclouds_asym,           0.3f,   "Henyey-Greenstein asymmetry for the moon's light, -0.95..0.95" )
+    RT_CVAR( rt_vclouds_horizon,        4.f,    "altitude in degrees below which the clouds fade to nothing" )
+    RT_CVAR( rt_vclouds_history,        0.8f,   "temporal blend with last frame's map, 0..0.97. Keyed by world "
+                                                "DIRECTION, not screen position: nothing in front of the sky can "
+                                                "invalidate it, which is the sprite-smear the froxel fog had." )
+    RT_CVAR( rt_vclouds_flash,          0.15f,  "how hard a lightning strike lights the cloud from inside, as a "
+                                                "multiplier on the strike envelope into the ambient term" )
+    // THE FIRE SKY, volumetric. The reference (screen/fireskylook.jpg, and the
+    // burning-sky reference of 2026-08-23) is not cloud lit from below: it is
+    // DARK cloud with fire BETWEEN and INSIDE it. Two terms, both in
+    // rt_clouds_fireback_color and both in absolute units (see rt_vclouds.cpp
+    // on rt_sky): a glow behind the slab, and fire pockets in the slab.
+    RT_CVAR( rt_vclouds_back,           0.f,    "glow BEHIND the slab: clear sky is this colour, thin cloud burns "
+                                                "with it, dense cloud is a black silhouette against it. 0 = off." )
+    RT_CVAR( rt_vclouds_fire,           0.f,    "emission of the FIRE POCKETS, a second sparse field inside the slab "
+                                                "that glows along the ray in the gaps and thin edges and lights the "
+                                                "cloud around it -- the fire between the clouds. 0 = off." )
+    RT_CVAR( rt_vclouds_fire_scale,     300.f,  "pocket feature size, METRES" )
+    RT_CVAR( rt_vclouds_fire_cover,     0.25f,  "fraction of the slab that burns, 0..1" )
+    RT_CVAR( rt_vclouds_fire_lit,       1.f,    "how strongly a pocket lights the cloud near it" )
+    RT_CVAR( rt_vclouds_layers,         1,      "1 = one slab with fire pockets. 2 = TWO DECKS with the fire as a "
+                                                "SHEET in the gap between them: an emissive burning layer that "
+                                                "lights the upper deck's underside and the lower deck's tops, each "
+                                                "through its own cloud. The reference's fire-between-the-clouds." )
+    RT_CVAR( rt_vclouds_gap,            0.25f,  "with 2 layers, the gap between the decks as a fraction of "
+                                                "rt_vclouds_thick, 0.02..0.8" )
+    RT_CVAR( rt_vclouds_sheet_ext,      0.3f,   "the fire sheet's own extinction relative to the cloud's, so looking "
+                                                "through fire is a haze and not glass" )
+    RT_CVAR( rt_vclouds_fire_pulse,     0.5f,   "how much each burning patch BREATHES, 0..1: a slow swell and fade "
+                                                "per patch, a cycle every few seconds, on the emission and on the "
+                                                "light it throws on the decks. 0 = steady fire." )
+    RT_CVAR( rt_vclouds_fire_pulse_speed, 1.f,  "speed of the pulse and the flicker, 1 = a few seconds a cycle" )
+    RT_CVAR( rt_vclouds_fire_flicker,   0.2f,   "fast flicker on top of the pulse, 0..1. rt_vclouds_history smooths "
+                                                "it -- lower the history if it reads too soft." )
+    // FLAME CASCADES (screen/flameCasdades.png): the fire raining DOWN from
+    // the cloud base as thin vertical streaks, seeded under the burning parts
+    // of the sheet. Emission only -- the streaks occlude nothing -- and the
+    // march starts rt_vclouds_cascade_len under the base to cover them, which
+    // coarsens its steps a little; raise rt_vclouds_steps if the cloud suffers.
+    RT_CVAR( rt_vclouds_cascade,        0.f,    "emission of the cascades, absolute units. 0 = off." )
+    RT_CVAR( rt_vclouds_cascade_len,    400.f,  "how far below the base the streaks reach, METRES" )
+    RT_CVAR( rt_vclouds_cascade_cover,  0.3f,   "fraction of the base that rains, 0..1" )
+    RT_CVAR( rt_vclouds_cascade_speed,  80.f,   "fall speed along the streaks, METRES PER SECOND" )
+    RT_CVAR( rt_vclouds_cascade_width,  40.f,   "streak width, METRES. Narrower is more streaks." )
+    RT_CVAR( rt_vclouds_sunshadow,      true,   "1 = every shadow ray toward the moon samples the cloud map where it "
+                                                "crosses the slab, so the shafts have GAPS where the clouds have "
+                                                "gaps and the ground gets cloud shadows that drift with the wind. "
+                                                "0 = the deck's behaviour: the whole light dims by the cover over "
+                                                "the moon, uniformly. Either way a fully covered column passes "
+                                                "rt_clouds_transmit of the light, tinted, and rt_clouds_occlude "
+                                                "scales the effect. A lightning strike is never occluded -- it is "
+                                                "inside the deck, not behind it." )
+    RT_CVAR_NOARCH( rt_vclouds_debug,   0,      "0 off, 1 paint transmittance, 2 paint density only, 3 march but do "
+                                                "not composite" )
 
     // ----------------------------------------------------------------------
     // Lightning. Driven by the engine's own Hexen storm thinker
@@ -1681,12 +2105,20 @@
                                                 "point at it -- at 1 spp that is far too noisy to light a room, exactly "
                                                 "as it is for the moon (see rt_moon_geo). The bolt is scenery; this "
                                                 "light is the source. Same pairing, same rule: move one, move both." )
-    RT_CVAR( rt_lightning_intensity,  2200.f,   "peak intensity of the lightning directional light. Large next to "
+    RT_CVAR( rt_lightning_intensity,  300.f,    "peak intensity of the lightning directional light. Large next to "
                                                 "rt_sun_intensity (90) on purpose -- it lasts a fifth of a second and "
                                                 "has to overwhelm the moon while it does." )
     RT_CVAR_COLOR( rt_lightning_color, 0xC8D8FF, "lightning colour (hex). Slightly cooler than the moon's B4C8FF." )
     RT_CVAR( rt_lightning_decay,        0.18f,  "exponential decay time of ONE stroke, seconds. The visible flash runs "
                                                 "roughly 3x this." )
+    RT_CVAR( rt_lightning_afterglow,    0.9f,   "seconds the strike's LIGHT lingers after the last stroke, as a "
+                                                "slow exponential tail on the directional light only. The "
+                                                "lingering-light fixes made the denoiser stop smearing a strike, "
+                                                "which was right and also made it over in a blink; this puts a "
+                                                "tail back in the light itself, where it is honest. The bolt and "
+                                                "the cloud flash do not linger -- a ghost bolt is the thing "
+                                                "rt_lightning_bolt_min exists to kill. 0 = off." )
+    RT_CVAR( rt_lightning_afterglow_level, 0.3f, "the tail's starting level as a fraction of the strike's peak, 0..1" )
     RT_CVAR( rt_lightning_strokes,      3,      "max sub-strokes per strike, 1..6. Real lightning is a burst of return "
                                                 "strokes a few tens of ms apart, and the stutter is most of what makes "
                                                 "a flash read as lightning rather than as someone toggling a light. "
@@ -1710,7 +2142,7 @@
     RT_CVAR( rt_lightning_alt_min,      25.f,   "lowest altitude a strike is placed at, degrees" )
     RT_CVAR( rt_lightning_alt_max,      55.f,   "highest altitude a strike is placed at, degrees" )
     RT_CVAR( rt_lightning_bolt,         true,   "draw the visible bolt quad (BOLT1..BOLT4) at the strike bearing" )
-    RT_CVAR( rt_lightning_bolt_size,    60.f,   "apparent HEIGHT of the bolt on the sky, degrees. Width follows from "
+    RT_CVAR( rt_lightning_bolt_size,    10.f,    "apparent HEIGHT of the bolt on the sky, degrees. Width follows from "
                                                 "the texture's aspect, so the bolt is never stretched." )
     RT_CVAR( rt_lightning_sectorflash,  true,   "let the stock thinker keep flashing every F_SKY1 sector's lightlevel "
                                                 "(MAP11 has 106 of them). That is the vanilla flash, and under RT it "
@@ -1723,8 +2155,199 @@
     // NOARCH: every other RT_CVAR is CVAR_ARCHIVE, so a diagnostic left on in
     // one console session comes back on every later launch. Same trap as
     // rt_sun_leak_debug and rt_water_debug.
+    RT_CVAR( rt_lightning_bolt_min,     0.12f,  "flash level below which the bolt is CUT rather than faded. With "
+                                                "rt_lightning_decay it decides how long a bolt is on screen: at the "
+                                                "shipping 0.18 decay this gives about a fifth of a second, which is "
+                                                "most of why a bolt is so rarely seen. Lower it for a longer bolt; "
+                                                "too low and a ghost of one hangs in the sky, which is the artefact "
+                                                "the cut exists to prevent." )
+    RT_CVAR( rt_lightning_bolt_add,     false,  "draw the bolt ADDITIVELY instead of translucently. Translucent "
+                                                "lerps toward the texel, so a white bolt over a sky the flash has "
+                                                "already driven to white is invisible however opaque it is -- the "
+                                                "two are the same colour. Additive puts the channel above whatever "
+                                                "is behind it. Off by default so MAP11's storm is unchanged." )
+    RT_CVAR( rt_lightning_bolt_gain,    1.6f,   "multiplier from the flash envelope to the bolt's alpha. Was a "
+                                                "hardcoded 1.6; a cvar because it is one of three levers on "
+                                                "whether a bolt is visible against its own flash -- and the "
+                                                "weakest of them. Dimming the flash is the one that works." )
+    RT_CVAR( rt_lightning_aim_view,     0.f,    "probability 0..1 that a strike is aimed into the player's CURRENT "
+                                                "VIEW instead of at a uniformly random bearing.\n"
+                                                "THIS EXISTS BECAUSE A BOLT IS ALMOST NEVER SEEN. The bolt is only "
+                                                "drawn while the flash envelope is above 0.12 -- a few tenths of a "
+                                                "second -- and a uniform bearing puts it behind you most of the "
+                                                "time, so the level lights up and there is nothing in the sky to "
+                                                "explain it. Reported that way from play (2026-08-23). The LIGHT "
+                                                "and the bolt always shared one bearing and still do; what changes "
+                                                "here is only which bearing gets picked.\n"
+                                                "0 is the default and is MAP11's storm untouched -- a real storm's "
+                                                "strikes are not aimed at the observer, and that map has its own "
+                                                "thunder to explain an off-screen flash. The fire sky sets it high "
+                                                "because a strike there is a scheduled EVENT rather than weather." )
+    RT_CVAR( rt_lightning_need_cloud,   0.6f,   "minimum deck coverage a strike's bearing must have, 0..1. 0 = off.\n"
+                                                "The deck only fills the whole sky at rt_clouds_shells 6 or more -- "
+                                                "which is what MAP12 wants and why 6 is the default -- but turn the "
+                                                "shells down and it has real gaps, and a bolt drawn in one hangs in "
+                                                "clear air with nothing around it to flash. This rolls a few "
+                                                "candidate bearings and keeps the best-covered one.\n"
+                                                "It reads g_cloudCoverAz, which RT_DrawCloudDeck builds from the "
+                                                "same shell walk that answers the moon's transmittance, so it "
+                                                "cannot disagree with what was actually drawn. A sky with no deck "
+                                                "at all leaves every bin at 0 and the strike then goes wherever it "
+                                                "likes -- which is correct, not a failure: rt_clouds 0 is a "
+                                                "legitimate state and a storm there should still strike." )
+    RT_CVAR( rt_lightning_aim_cone,     55.f,   "half-angle in degrees of the cone rt_lightning_aim_view aims "
+                                                "into. Wider than the FOV on purpose: a bolt landing dead centre "
+                                                "every time reads as scripted, and the edge of vision is where one "
+                                                "is most startling." )
     RT_CVAR_NOARCH( rt_lightning_debug,     0,  "print each strike's bearing, altitude, stroke pattern and bolt "
                                                 "variant, then one line per frame while the flash is live" )
+
+    // The alternative fire sky (rt_firesky.cpp). Applies ONLY to the five hell
+    // maps -- MAP22/24/28 orange, MAP23/32 green -- and only while the master
+    // below is on. See docs/plan-fire-skies.md.
+    RT_CVAR( rt_fireskies_new,          false,  "ALTERNATIVE fire sky for the five hell maps. Off = the WAD's own "
+                                                "animated FRSKYNRM/FRSKYGRN dome at the corrected rt_sky (175/400). "
+                                                "On = that dome is replaced by a dark backdrop and the sky is built "
+                                                "out of the cloud deck, falling meteors and coloured strikes "
+                                                "instead. Opt-in because it is a different sky, not a fix to the "
+                                                "old one; `firesky` reports what it is doing." )
+    RT_CVAR( rt_firesky_dome,           true,   "take the dome to ALLBLACK -- the WAD's own black texture -- while "
+                                                "the mode is on. NOT a starfield and not a painted backdrop: the "
+                                                "first pass used MOONSKY and the night sky read straight through "
+                                                "wherever the deck did not cover, which on a hell map is wrong "
+                                                "twice over. Black means the deck and the strikes are the only "
+                                                "things in the sky. Off keeps the map's animated FRSKY* dome." )
+    RT_CVAR( rt_firesky_clouds,         true,   "drive the cloud deck on these maps, MAXED exactly as MAP12 maxes "
+                                                "it -- full alpha, all 8 shells, double thickness -- and tinted "
+                                                "hard orange or green. Off leaves rt_clouds where the launcher had "
+                                                "it." )
+    RT_CVAR( rt_firesky_vcloud_light,   3.f,    "rt_vclouds_light while the mode is on -- the moon's light on the "
+                                                "cloud. The global value is tuned for a moonlit storm deck." )
+    RT_CVAR( rt_firesky_vclouds,        true,   "switch rt_clouds_volumetric ON for these maps (two decks with the "
+                                                "fire sheet between them, the cascades, the back glow -- the "
+                                                "rt_vclouds_* values as pinned), and restore it on the next map so "
+                                                "the storm maps keep their shell deck. 0 = the shell deck here too." )
+    RT_CVAR( rt_firesky_cloud_horizon,  3.5f,   "rt_clouds_horizon while the mode is on: how close to the horizon "
+                                                "the deck reaches, in degrees. THE STORM'S 9 IS WHY THE SKY LOOKED "
+                                                "EMPTY -- the deck is a bowl overhead, so at 9 degrees everything "
+                                                "from the horizon up to that angle is bare dome and you have to "
+                                                "look UP to find any cloud at all. Lower fills more of the sky; too "
+                                                "low and the rim reaches past the geometry it should stay inside." )
+    RT_CVAR( rt_firesky_cloud_wind,     0.008f, "rt_clouds_wind while the mode is on. Slower than the storm's "
+                                                "0.014: this is heavy smoke sitting over a fire, not weather." )
+    RT_CVAR( rt_firesky_cloud_transmit, 0.45f,  "rt_clouds_transmit while the mode is on -- what a FULLY covered "
+                                                "patch passes, coloured by the tint. MAP12's value, for MAP12's "
+                                                "reason: at this thickness anything lower makes the deck a lid "
+                                                "rather than a sky. THIS IS THE KNOB if the level is too dark." )
+    RT_CVAR( rt_firesky_moon,           true,   "put a moon back overhead (azimuth 90, altitude 90) as the light "
+                                                "the deck filters. RT_MOON_PRESETS turns the moon OFF on all five "
+                                                "of these maps, so without this there is no directional light at "
+                                                "all and the deck has nothing to transmit. The DISC stays hidden "
+                                                "either way -- a cold moon in a burning sky is the brightest wrong "
+                                                "thing on screen." )
+    RT_CVAR( rt_firesky_moon_intensity, 140.f,  "rt_sun_intensity while the mode is on. Above the global 90 "
+                                                "because the deck is at full cover and rt_clouds_transmit passes "
+                                                "only a fraction of it." )
+    RT_CVAR( rt_firesky_embers,         true,   "embers drifting in the sky. REAL PARTICLES in the shared spark "
+                                                "pool, not painted on the dome -- so they are traced, lit and can "
+                                                "carry a glow. They spawn ONLY under an open sky (a sector whose "
+                                                "ceiling is F_SKY1), which is why standing indoors shows none and "
+                                                "that is correct rather than broken." )
+    RT_CVAR( rt_firesky_ember_rate,     5.f,    "embers per second, jittered 0.35x..1.65x on each interval. Was 1.2: "
+                                                "these are meant to read as a few things drifting a long way off, "
+                                                "not as falling snow." )
+    RT_CVAR( rt_firesky_ember_life,     7.f,    "seconds an ember lives. It is in the shared pool, so it also obeys "
+                                                "rt_spark_max and the pool's own eviction." )
+    RT_CVAR( rt_firesky_ember_size,     0.05f,  "metres, edge of one ember, before a 0.7x..1.4x spread. Larger than "
+                                                "an impact spark because these are much further away." )
+    RT_CVAR_COLOR( rt_firesky_ember_color, 0,  "tint of the embers (hex), multiplied over the spark ramp so they "
+                                                "still cool and go out the palette's way. 0 = match the map's fire "
+                                                "colour (green on MAP23/32, orange elsewhere)." )
+    RT_CVAR( rt_firesky_ember_fall,     0.5f,   "initial downward speed in m/s. SLOW is the whole point -- what "
+                                                "separates a drifting ember from a spark is the descent rate. The "
+                                                "shared sim adds rt_spark_gravity on top, so this is where the fall "
+                                                "starts and not the whole of it." )
+    RT_CVAR( rt_firesky_ember_radius,   34.f,   "metres, radius of the disc around the camera embers are sampled "
+                                                "in. Wide, because the ask was for MORE SPACING: at a fixed rate a "
+                                                "wider disc is the same number of embers spread over more sky." )
+    RT_CVAR( rt_firesky_ember_height,   40.f,   "metres above the eye an ember appears. NOT clamped under the "
+                                                "sector's sky ceiling any more: that is map geometry, often a few "
+                                                "metres over a courtyard, and nothing is up there -- the sim skips "
+                                                "the ceiling for an ember under F_SKY1 and retires one that drifts "
+                                                "over a roof. Mind rt_firesky_ember_life against the fall time." )
+    RT_CVAR( rt_firesky_ember_floor,    6.f,    "metres above the eye at which an ember BURNS OUT. This is what "
+                                                "keeps them in the sky: asked for as \"do not make the embers fall "
+                                                "on the floor\" (2026-08-23). Without it the shared sim's gravity "
+                                                "and collision land them, and they settle and glow on the ground "
+                                                "like rocket coals -- correct for a rocket, wrong for a sky. "
+                                                "0 (or below) lets them fall all the way: they LAND, settle and "
+                                                "lie glowing until their life runs out (asked for 2026-08-23)." )
+    RT_CVAR( rt_firesky_ember_glow_max, 100,     "how many sky embers may carry a light at once, nearest first. ITS "
+                                                "OWN budget, separate from rt_spark_glow_max: ~80 embers are in the "
+                                                "air at a time and they would otherwise crowd the weapon sparks out "
+                                                "of the global cap, or raise it for everything. 0 = none." )
+    RT_CVAR( rt_firesky_ember_glow_intensity, 500.f, "intensity of a sky ember's light, in the ember's tint" )
+    RT_CVAR( rt_firesky_ember_smoke,    0.25f,  "seconds between the tiny smoke parcels an ember leaves behind it "
+                                                "while hot (the first two thirds of its life). Each parcel stays "
+                                                "where the ember was, so the thread is drawn by the fall. 0 = no "
+                                                "smoke. Counts against rt_smoke_ambient_budget." )
+    RT_CVAR( rt_firesky_ember_smoke_density, 0.15f, "density of those parcels, as a multiplier on rt_smoke_density. "
+                                                "Thin: a thread, not a plume." )
+    RT_CVAR( rt_firesky_strikes,        true,   "schedule strikes on these maps. They have no `lightning` keyword "
+                                                "in their MAPINFO, so without this the storm machinery never runs "
+                                                "here -- the strike itself is renderer-side, which is why a "
+                                                "scheduler is all it takes." )
+    RT_CVAR( rt_firesky_strike_min,     16.f,   "shortest gap between scheduled strikes, seconds. Went 7 -> 4 -> 16 "
+                                                "across two play reports: a strike is an EVENT, and one every few "
+                                                "seconds stops being one. For reference the storm thinker MAP11 "
+                                                "uses waits 5-20 s, and that map is authored as a storm." )
+    RT_CVAR( rt_firesky_strike_max,     45.f,   "longest gap between scheduled strikes, seconds" )
+    RT_CVAR( rt_firesky_flash,          0.55f,  "rt_clouds_flash while the mode is on -- how hard a strike lights "
+                                                "the deck. LOWER than the storm's 2.2, and that is the fix for "
+                                                "\"the bolt is hidden by the flash\" (2026-08-23): the deck is "
+                                                "re-drawn additively over the whole sky, so at the storm's value "
+                                                "there is no headroom left for the bolt to be brighter than the "
+                                                "cloud behind it. Nothing about the bolt can win that; the flash "
+                                                "has to come down." )
+    RT_CVAR( rt_firesky_strike_intensity, 900.f, "rt_lightning_intensity while the mode is on. Well under the "
+                                                "storm's 2200: that value was set against MAP11, where the strike "
+                                                "has to beat a moon at 90 and read across an open outdoor level. "
+                                                "Here it also drives the tonemapper, and an exposure that is "
+                                                "slammed on every strike washes the bolt out along with the rest "
+                                                "of the picture." )
+    RT_CVAR( rt_firesky_fireback,       1.0f,   "rt_clouds_fireback while the mode is on -- the fire the deck is "
+                                                "silhouetted AGAINST. THIS IS THE KNOB for how much the sky burns; "
+                                                "rt_firesky_underlit is not, and was mistaken for it. Read "
+                                                "rt_clouds_fireback for why a backlit layer is the only one of the "
+                                                "three that can give black cloud against hot cracks." )
+    RT_CVAR( rt_firesky_underlit,       0.15f,  "rt_clouds_underlit while the mode is on -- the standing glow on "
+                                                "the deck's underside. A SUPPORTING term, not the effect: it was "
+                                                "0.6 and read as a flat wash, because an additive pass keyed to "
+                                                "the slice's own density brightens the cloud BODY, which is the "
+                                                "part that should stay dark. Too high and it flattens into a lit "
+                                                "slab, which is "
+                                                "the failure the storm's flash weighting already documents." )
+    RT_CVAR( rt_firesky_bolt_size,      10.f,   "rt_lightning_bolt_size while the mode is on -- the bolt's apparent "
+                                                "HEIGHT in degrees. Far smaller than the pinned 55, which is "
+                                                "MAP11's: there a strike is weather filling half the sky, here it "
+                                                "is a discrete event over solid cloud, and at 55 the quad reads as "
+                                                "a lit patch of deck rather than as a channel." )
+    RT_CVAR( rt_firesky_strike_decay,   0.55f,  "rt_lightning_decay while the mode is on -- 3x the storm's 0.18. "
+                                                "THE KNOB FOR \"MAKE THE STRIKES LONGER\": the bolt is drawn only "
+                                                "while the envelope is above rt_lightning_bolt_min, so the decay "
+                                                "time is most of how long one is on screen. It lengthens the LIGHT "
+                                                "by the same amount, which is the point -- a flash you cannot trace "
+                                                "back to a bolt is what this is fixing." )
+    RT_CVAR( rt_firesky_strike_boltmin, 0.05f,  "rt_lightning_bolt_min while the mode is on. Lower than the global "
+                                                "0.12, so the bolt stays visible further down the decay." )
+    RT_CVAR( rt_firesky_strike_aim,     0.8f,   "what this mode writes into rt_lightning_aim_view -- the fraction "
+                                                "of strikes aimed into the player's view rather than at a random "
+                                                "bearing. High here and 0 globally: a strike on a hell map is a "
+                                                "scheduled event meant to be SEEN, where MAP11's storm is weather "
+                                                "and has thunder to explain an off-screen flash." )
+    // NOARCH, same reason as rt_lightning_debug: a diagnostic left on in one
+    // console session must not follow the player into every later launch.
+    RT_CVAR_NOARCH( rt_firesky_debug,       0,  "announce the mode at level load and print each scheduled strike" )
 
     RT_CVAR( rt_reflrefr_depth,         8,      "max depth of reflect/refract")
     RT_CVAR( rt_refr_glass,             1.52f,  "glass index of refraction") 
@@ -1967,12 +2590,21 @@
                                                 "if it does not, the ray is not being blocked and the cause is in the "
                                                 "geometry upload or the shadow cull mask." )
 
-    RT_CVAR_NOARCH( rt_debug_restir_m,       false,    "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
+    RT_CVAR_NOARCH( rt_debug_show,               0,    "Debug: RTGL DEBUG_SHOW_FLAG bits, the dev window's layer views as a "
+                                                "cvar. 2 = antilag gradients, 4 = UNFILTERED direct diffuse (raw, before "
+                                                "any denoiser: if an artefact is here it is upstream of A-SVGF), 8 = "
+                                                "unfiltered specular, 16 = unfiltered indirect, 32 = ONLY denoised direct "
+                                                "diffuse, 64 = only specular, 128 = only indirect diffuse, 1024 = normals. "
+                                                "Bisect a banding artefact by layer with these before touching a denoiser." )
+    RT_CVAR_NOARCH( rt_debug_restir_m,       0,        "Debug: show ReSTIR reservoir M (accumulated sample count) instead of "
                                                 "radiance, as a green ramp (M/32; black = M=1, the worst case). ReSTIR at "
                                                 "1 spp only converges because temporal reuse grows M. Stand still and "
                                                 "watch it brighten, then move: if it goes dark, history is being rejected "
                                                 "and the RAW signal really is noisier in motion ??? upstream of every "
-                                                "denoiser, so no denoiser tuning can fix it." )
+                                                "denoiser, so no denoiser tuning can fix it. 1 = the DIRECT reservoir. "
+                                                "2 = the INDIRECT reservoir, painted into the unfiltered-indirect buffer "
+                                                "(view with rt_debug_show 16): the GI-depth contract check -- M must not "
+                                                "move with rt_gi_bounces, because depth touches radiance only." )
 
     RT_CVAR_NOARCH( rt_restir_tjitter,        2.0f,   "ReSTIR temporal reuse tap jitter radius, in pixels (stock 2). The jitter "
                                                 "decorrelates the tap, but on grazing surfaces a 2px offset moves depth "
@@ -2045,6 +2677,41 @@
                                                 "The pixel-art texel edges never enter the network. Trade: diffuse and "
                                                 "specular share one combined factor, so strong highlights on metals "
                                                 "carry a small approximation (Remix ships the same one)." )
+    RT_CVAR_NOARCH( rt_svgf_fp,                1,      "the FIRST-PERSON WEAPON must not damage the SURFACE denoiser's "
+                                                "history -- docs/rt-volumetric-weapon-trails.md, the same class one "
+                                                "buffer over. THE BUG: the gun is real geometry at ~0.3 m in the shared "
+                                                "g-buffer, so every wall/floor pixel it uncovers fails A-SVGF's depth "
+                                                "test and restarts from ONE sample at the light's CURRENT level, while "
+                                                "its neighbours still carry the brighter, lagging history of a decaying "
+                                                "light (rocket flash, embers): a dark silhouette-shaped band sweeps "
+                                                "beside the weapon (screen/smearingIssueOverLingeringLight.png). Any "
+                                                "sprite silhouette does the same; the gun is only the biggest instance. "
+                                                "0 = stock, 1 = a fully rejected pixel borrows depth/normal-validated "
+                                                "history from non-weapon neighbours (radius 2, then 3; history capped "
+                                                "at 8 so it still converges fast), 2 = debug (borrowed pixels magenta)." )
+    RT_CVAR_NOARCH( rt_svgf_fp_grad,           true,   "the A-SVGF gradient (antilag) vs the weapon. Stock: each 3x3 stratum "
+                                                "measures its lighting change at ONE pixel, back-projected to the "
+                                                "PREVIOUS frame -- which beside the band IS the weapon, so the gun's "
+                                                "own delta (muzzle glow, its motion) is what gets blurred +-24 px over "
+                                                "the wall by the gradient a-trous, and the wall's real change (the "
+                                                "flash dying) is not measured there. On: first-person pixels, current "
+                                                "or previous, are never chosen as the stratum's sample. (A light that "
+                                                "vanished already reads as a full change -- checked, not a bug.)" )
+    RT_CVAR_NOARCH( rt_svgf_indir_maxhist,     16.f,   "A-SVGF INDIRECT history cap, in frames. 0 = stock (256). THE GHOST: "
+                                                "the bounce light of a rocket flash was accumulated over 256 frames, so "
+                                                "the walls stayed lit for seconds after the light itself had died -- "
+                                                "read in play as 'the light lingers' -- and the weapon's silhouette "
+                                                "restarting that history punched a dark hole in the ghost: the trail "
+                                                "(screen/smearingIssueOverLingeringLight.png). Bisected with "
+                                                "rt_debug_show: raw direct clean, denoised direct clean, the linger and "
+                                                "the band both live in indirect. 16 = fully faded in ~0.5-1 s at 60 fps; "
+                                                "the cost is noisier indirect, since fewer frames average. "
+                                                "A/B: tools/arms/lingtrail-*.cfg" )
+    RT_CVAR_NOARCH( rt_svgf_indir_antilag,     true,   "A-SVGF indirect antilag WITHOUT its brightness suppression. Stock "
+                                                "multiplies the indirect history drop by 1-smoothstep(0,0.5,indirect "
+                                                "brightness) -- 'if it's bright enough, don't drop history' -- which "
+                                                "protects exactly the brightest ghosts. On: a direct-light drop flushes "
+                                                "indirect history regardless of how bright the stale bounce is." )
     RT_CVAR_NOARCH( rt_rr_demod_filter,        1,      "DLSS-RR demodulation: how the modulation factor is re-applied at "
                                                 "output res. 0 = bilinear (softest), 1 = Catmull-Rom (sharp edges, no "
                                                 "blockiness -- default), 2 = nearest (full chunky pixel-art reapply; "
@@ -2111,6 +2778,42 @@
     RT_CVAR( rt_spp_indirect,              1,   "Indirect/GI samples per pixel [1..8]. N independent paths RIS-combined "
                                                 "into the initial reservoir. Costs ~4 extra rays per extra sample ??? the "
                                                 "expensive one. 1 = stock (bit-identical)." )
+
+    // --- GI path depth (Doom64-RT, 2026-08-24) ---------------------------------
+    // ORTHOGONAL to rt_spp_indirect: that is paths per pixel, this is vertices
+    // per path. RTGL1 shipped depth 2 hardcoded and unrolled, with the API flag
+    // that was meant to gate the second bounce sitting commented out in
+    // RtRaygenIndirect.inl ("diffuse very red") -- so the second bounce always
+    // ran, and nothing could ask for a third. docs/rt-gi-bounces.md.
+    //
+    // rt_gi_bounces and rt_gi_bounce_legacy are ARCHIVED and in the Quality
+    // menu (rt-wad-overlay/menudef.txt), like rt_shadowrays beside them: a
+    // depth is a choice, not a per-session probe, and a menu slider on a
+    // NOARCH cvar silently resets every launch. They are deliberately NOT in
+    // the rt_quality.cpp preset table yet -- with the legacy weight on, each
+    // extra bounce is ~6x too bright, so no preset may raise the depth until
+    // the energy fix has been judged. rt_gi_bounce_shadows stays NOARCH: it is
+    // the "deep but unlit" control for the ladder, not a setting.
+    RT_CVAR( rt_gi_bounces,                 2,  "GI path depth: bounce vertices after the primary hit [1..4]. 2 = stock. "
+                                                "A vertex past rt_shadowrays samples NO analytic lights (it costs a ray "
+                                                "and a full RIS pass to return emissives only), so lighting depth N needs "
+                                                "rt_shadowrays >= N+1 -- rt_gi_bounce_shadows applies that floor per frame. "
+                                                "Each extra bounce costs ~1 bounce ray + 1 shadow ray + rt_restir_initial "
+                                                "RIS evaluations per indirect sample per pixel. With rt_gi_bounce_legacy 1 "
+                                                "every extra bounce is also ~6x too bright, so judge depth 3 only after "
+                                                "the legacy weight is off." )
+    RT_CVAR( rt_gi_bounce_legacy,           1,  "1 = stock weighting on bounces >= 2: radiance * 1/pdf and nothing else, "
+                                                "which for a cosine-sampled Lambertian is pi/cos too much -- mean ~2pi, "
+                                                "with a 1/cos tail. That is why the second bounce was bright, saturated "
+                                                "and firefly-prone, and why its samples won and held the ReSTIR "
+                                                "reservoir. 0 = the correct throughput of exactly 1: expect GI-lit areas "
+                                                "to get DIMMER and less saturated. Ships 1 so the image does not move "
+                                                "until the fix has been judged with exposure pinned." )
+    RT_CVAR_NOARCH( rt_gi_bounce_shadows,   1,  "1 = when rt_gi_bounces > 2, raise the shadow-ray depth handed to RTGL1 "
+                                                "to rt_gi_bounces+1 for the frame so the deeper vertices are actually "
+                                                "lit. Never writes rt_shadowrays (it is archived and unpinned on purpose, "
+                                                "tools/d64rt-pins.cfg) and is a no-op at depth 2. 0 = the 'deep but "
+                                                "unlit' control: pays for the bounce and collects emissives only." )
 
     // --- ReSTIR quality (previously hardcoded) -------------------------------
     RT_CVAR( rt_restir_initial,           32,   "ReSTIR RIS candidate lights per pixel [1..64] (was hardcoded 8). Traces "
@@ -3522,6 +4225,82 @@
                                                 "-- exactly the mistake that made the first debris ramps read as too "
                                                 "bright. Rock and concrete sit around 0.20-0.35 in reality. Raise it if "
                                                 "chips read as silhouettes, lower it if they read as chalk." )
+    RT_CVAR( rt_liquid_nopuff,          true,   "no vanilla PUFF sprite when a hitscan lands on WATER, POISON, SLUDGE "
+                                                "or BLOOD -- the splash replaces it. Read from P_LineAttack, which is "
+                                                "why it lives here rather than beside rt_blood_repl in p_map.cpp: "
+                                                "check_pins.py only knows the cvars in this file, and a pin it cannot "
+                                                "see is reported as pinning nothing. Lava and the sky are not in the "
+                                                "set and keep their puff. 0 = puff AND splash, which is the arm "
+                                                "spark-puff, not a shipping look." )
+    RT_CVAR( rt_spark_fluid,            true,   "a hitscan into WATER, POISON, SLUDGE or BLOOD throws a coloured splash "
+                                                "instead of the vanilla PUFF sprite (rt_liquid_nopuff turns the puff half "
+                                                "off separately). The classification is by TEXTURE NAME, not by the "
+                                                "TERRAIN lump: that lump marks lava and even F_SKY1 `liquid` too, and "
+                                                "only the name can tell water from lava. This used to be impossible -- "
+                                                "P_LineAttack refused the whole impact hook on any liquid terrain, so the "
+                                                "`fluid` class could only ever fire on the three wall FALL sheets and "
+                                                "shooting a pool produced nothing at all. LAVA IS DELIBERATELY NOT IN "
+                                                "THIS SET and keeps its puff." )
+    RT_CVAR( rt_spark_fluid_color,      true,   "a liquid droplet takes the colour the liquid is PAINTED with -- "
+                                                "rt_water_crest / rt_nukage_crest / rt_sludge_crest / rt_blood_crest -- "
+                                                "rather than the average of the flat's own art. The stylized liquid "
+                                                "shader repaints the surface from tint to crest, so the source art is "
+                                                "not what the player is looking at, and a droplet coloured from it does "
+                                                "not match the pool it came out of. Taking the crest makes the two agree "
+                                                "by construction and follows any retune for free. 0 = the texture "
+                                                "average, i.e. what every other debris class does; that is the before-"
+                                                "picture, not a second look worth shipping." )
+    // LIQUID-ONLY SHAPE. Seven multipliers that ride on top of the fluid row in
+    // RT_DEBRIS_PROFILES exactly as that row rides on the rt_spark_debris_*
+    // cvars -- so the chain is: debris cvar x class row x this. All default to
+    // 1.0, which means adding them changed nothing about how a splash looks.
+    //
+    // They exist because every other axis of a droplet is SHARED: moving
+    // rt_spark_debris_size to make a splash finer also makes every concrete chip,
+    // wood splinter and dirt crumb in the game finer, and the class row can only
+    // be changed by editing the table and rebuilding. A liquid is the one class
+    // whose look is being iterated on, so it gets a private set.
+    //
+    // Scoped to SurfKind::Fluid, not to "was this a liquid hit", so the three
+    // wall FALL sheets and anything else labelled `fluid` in spark_surfaces.txt
+    // move with them. The knob is the CLASS, which is what the name says.
+    RT_CVAR( rt_spark_fluid_count,      1.0f,   "liquid splash: multiplier on how MANY droplets, on top of "
+                                                "rt_spark_debris_count and the fluid class row (6 x 2.4 = ~14 at 1.0). "
+                                                "Liquid only -- nothing else that throws debris moves with it." )
+    RT_CVAR( rt_spark_fluid_size,       0.5f,   "liquid splash: multiplier on droplet SIZE, on top of "
+                                                "rt_spark_debris_size and the class row -- 0.05 x 0.5 x 0.5 = "
+                                                "0.0125 m shipping. Liquid only. Judged in play 2026-08-25: at 1.0 a "
+                                                "droplet was chip-sized, and a splash reads as spray rather than as "
+                                                "rubble only once the individual particle stops being resolvable." )
+    RT_CVAR( rt_spark_fluid_life,       0.1f,   "liquid splash: multiplier on droplet LIFETIME, on top of "
+                                                "rt_spark_debris_life and the class row -- 20 x 0.3 x 0.1 = 0.6 s "
+                                                "shipping, against 6 s at 1.0. Liquid only. Judged in play 2026-08-25: "
+                                                "water thrown up by a bullet is gone in an instant, and droplets that "
+                                                "lie around read as debris that happens to be blue. This also takes the "
+                                                "live count down by the same factor -- live count is spawn rate x life "
+                                                "-- so the splash is now cheap as well as brief." )
+    RT_CVAR( rt_spark_fluid_speed,      1.0f,   "liquid splash: multiplier on how FAST droplets leave the surface, on "
+                                                "top of rt_spark_debris_speed and the class row (3.4 x 1.35 = 4.6 m/s "
+                                                "at 1.0). Liquid only." )
+    RT_CVAR( rt_spark_fluid_gravity,    1.0f,   "liquid splash: multiplier on GRAVITY, on top of "
+                                                "rt_spark_debris_gravity and the class row. Below 1 the droplets hang "
+                                                "and drift; 0 leaves them where they were thrown. Liquid only." )
+    RT_CVAR( rt_spark_fluid_bounce,     1.0f,   "liquid splash: multiplier on RESTITUTION, on top of "
+                                                "rt_spark_debris_bounce and the class row (0.22 x 0.08 at 1.0, i.e. "
+                                                "almost none -- a droplet splats). Liquid only." )
+    RT_CVAR( rt_spark_fluid_spread,     1.0f,   "liquid splash: multiplier on the CONE the droplets are thrown into. "
+                                                "This is the one knob with no class row behind it: rt_spark_spread is "
+                                                "read raw and shared by sparks and every debris class alike, so the "
+                                                "fluid row's own comment claiming a splash is 'thrown wide' described "
+                                                "something nothing implemented. Now it can be. Clamped to 90 degrees "
+                                                "after multiplying. Liquid only." )
+    RT_CVAR( rt_spark_fluid_albedo,     0.6f,   "how bright a liquid droplet is. Only applies when "
+                                                "rt_spark_fluid_color is on, and it REPLACES rt_spark_debris_albedo for "
+                                                "those particles rather than stacking with it: the crest is a literal "
+                                                "colour, not a whole-texture mean, so the chroma expansion "
+                                                "(rt_spark_debris_sat) and the luminance pin that exist to rescue a dull "
+                                                "average would only damage it -- water's crest is a pale 140,204,255 and "
+                                                "the pin would drag it down to a mid grey-blue." )
     RT_CVAR_NOARCH( rt_spark_surface_debug, 0,  "1 prints the TEXTURE NAME of every surface an impact lands on, and how "
                                                 "it classified. This is the tool for building "
                                                 "rt/data/spark_surfaces.txt, and it exists because there is no other way "
@@ -4036,6 +4815,196 @@
                                                 "the reason rt_spark_far is one. Its own knob so the Unmaker's reach "
                                                 "cannot be changed by tuning the arcs or the rocket." )
 
+    // -----------------------------------------------------------------------
+    // FIREBALL IMPACTS -- the four monster projectiles that are the same effect
+    // in four colours, and the last impacts in the game that left no mark.
+    //
+    //   BAL1  64DoomImpBall       orange   the imp
+    //   BAL3  64NightmareImpBall  violet   the nightmare imp
+    //   BAL7  64BaronBall         green    the HELL KNIGHT
+    //   BAL8  64BaronBall2        red      the BARON OF HELL
+    //
+    // Mechanically an ember mark whose spots wear the game's own five-frame FIRE
+    // animation as a flipbook, standing up on the surface, tinted per flavour.
+    // Every knob below is shared by all four: what separates them is COLOUR, and
+    // colour is the flavour's ramp, not a cvar.
+    // -----------------------------------------------------------------------
+    RT_CVAR( rt_fire,                   1,      "master for FIREBALL IMPACTS: a few flames actually burning on the "
+                                                "surface where a monster's fireball landed, in that projectile's own "
+                                                "colour, breathing a thread of smoke over a small scorch.\n"
+                                                "FOUR PROJECTILES, ONE EFFECT. The imp's BAL1 is orange, the nightmare "
+                                                "imp's BAL3 violet, the HELL KNIGHT's BAL7 green and the BARON OF "
+                                                "HELL's BAL8 red -- note that inversion, it is Doom 64's and the class "
+                                                "names invite getting it backwards. Each ramp was read out of that "
+                                                "sprite's own death frames, so the mark and the flash agree by "
+                                                "construction rather than by eye.\n"
+                                                "INDEPENDENT OF rt_ember. It is the rocket's ember mechanism pointed "
+                                                "at a new trigger, but the two masters are separate: switching the "
+                                                "rocket's coals off to look at something else must not take the "
+                                                "fireballs with it." )
+    RT_CVAR( rt_fire_count,             7,      "flames per fireball impact. SINGLE DIGITS, like the rocket's coals "
+                                                "and for the same reason -- what reads as fire is a few distinct "
+                                                "flames licking, not a wall of overlapping sprites.\n"
+                                                "Absolute, not a multiple of rt_ember_count: retuning the rocket must "
+                                                "not quietly add flames here." )
+    RT_CVAR( rt_fire_life,              3.5f,   "seconds a fireball's flames burn before they are out. ABSOLUTE.\n"
+                                                "SHIPPED LONG ON PURPOSE, to be settled in play rather than at design "
+                                                "time. A short flare (~0.6 s) matches the projectile's own death "
+                                                "animation and reads as one event; a longer burn reads as the wall "
+                                                "actually catching. `.\\tools\\ab.cmd fire-slow` is the long arm and "
+                                                "`fire-on` the shipping value.\n"
+                                                "NOTE THE COST. Live flames are impact rate x lifetime, and an imp is "
+                                                "the most common enemy in the game -- raising this raises how many "
+                                                "marks are alive against rt_arc_max as well as how long each lasts." )
+    RT_CVAR( rt_fire_size,              12.f,   "how tall one flame is, AS A MULTIPLE OF rt_ember_size -- the same "
+                                                "unit rt_laser_size uses, and not metres.\n"
+                                                "TWELVE, because a coal is 1 cm and a flame is not. rt_ember_size is "
+                                                "0.01, so this is a half-height of ~0.12 m before the per-flame size "
+                                                "jitter, i.e. a flame roughly a quarter of a metre tall.\n"
+                                                "THE UNIT IS WORTH STATING because getting it wrong is invisible. This "
+                                                "shipped for one session documented as metres and set to 0.09 -- which "
+                                                "multiplied out to 0.9 MILLIMETRES, and on screen that is a couple of "
+                                                "bright pixels. It read exactly like a texture that was not loading, "
+                                                "and an absurd-value run (0.6, still under a centimetre) 'confirmed' "
+                                                "it by barely changing. Sizes here are multiples of a coal." )
+    RT_CVAR( rt_fire_scatter,           0.9f,   "how far the flames spread across the mark, as a multiple of "
+                                                "rt_ember_scatter. Wider than the rocket's coals -- a fireball "
+                                                "SPLASHES, and flames clustered in the middle read as one big flame "
+                                                "with a bad silhouette." )
+    RT_CVAR( rt_fire_bright,            1.6f,   "flame brightness, as a multiple of rt_ember_bright.\n"
+                                                "THE ONLY BRIGHTNESS LEVER, and it is the vertex ALPHA. A flame is "
+                                                "an ADDITIVE quad -- it is light, not a surface -- so how bright it "
+                                                "reads is how much it adds, and that is alpha. There is no emissive "
+                                                "knob here: an emissive one would belong to traced geometry, which "
+                                                "is the construction this effect was moved OFF (a traced flame drew "
+                                                "its own dark outline as a solid occluder and the denoiser smeared "
+                                                "its core into a shapeless glow).\n"
+                                                "Not a linear gain past 1: alpha is 8-bit, so a multiplier above 1 "
+                                                "cannot raise the peak, it WIDENS it -- the flame holds full "
+                                                "brightness for more of its life instead of dimming from birth. "
+                                                "Same arithmetic as rt_spark_bright." )
+    RT_CVAR( rt_fire_rate,              9.0f,   "flipbook speed, in FRAMES PER SECOND. The sheet is the game's own "
+                                                "FIRE A-E, five drawings, so 9 runs the loop about twice a second.\n"
+                                                "Each flame gets its own PHASE into the loop, so raising this does not "
+                                                "make them step together -- ten flames on the same drawing at the same "
+                                                "moment is one flame drawn ten times and the eye catches it at once." )
+    RT_CVAR( rt_fire_flicker,           0.45f,  "how hard the flames GUTTER, as a fraction of their own brightness. "
+                                                "Drives the flame quads AND the light the mark casts, from the same "
+                                                "term -- so the glow on the wall guttering and the flame guttering are "
+                                                "one event. Two rigs would drift apart and read as a lamp standing "
+                                                "near a fire rather than as the fire's own light.\n"
+                                                "IT IS THE TORCH RIG, not the coal's. RT_UploadFlameLights' three "
+                                                "incommensurate harmonics, weights summing to 1 so this stays a true "
+                                                "fraction and the signal never audibly loops. The coal's curve "
+                                                "(rt_ember_flicker) is deliberately weighted so the BRIGHT end is "
+                                                "narrow -- right for something that mostly smoulders, and wrong for "
+                                                "fire, which is lit the whole time and jitters about that. A flame "
+                                                "given the coal's curve reads as a lamp with a fault.\n"
+                                                "0 is a steady flame; arm `fire-steady`." )
+    RT_CVAR( rt_fire_flicker_rate,      2.2f,   "how fast the flames gutter, in Hz for the rig's base harmonic (the "
+                                                "other two run at 2.37x and 4.11x it, which is what stops the pattern "
+                                                "repeating).\n"
+                                                "FASTER THAN A COAL'S 1.6 on purpose: a coal breathes and a flame "
+                                                "flickers, and the rate is most of that difference. Each flame gets "
+                                                "its own phase, so seven on one mark do not gutter in unison." )
+    RT_CVAR( rt_fire_sway,              0.35f,  "how far a flame's TIP licks sideways, as a fraction of its half-width. "
+                                                "A SHEAR, not a slide: the foot stays planted on the surface and only "
+                                                "the top two corners move, because translating the whole quad reads as "
+                                                "the sprite sliding along the wall.\n"
+                                                "On its own clock, incommensurate with the brightness pulse -- leaning "
+                                                "and brightening on the same beat reads as one sine driving both." )
+    RT_CVAR( rt_fire_tex,               1,      "flames wear the authored flame sheet at rt/mat/d64rt/fire/fire.png. "
+                                                "Off falls back to flat coloured quads, which is what the effect does "
+                                                "anyway when the sheet is missing -- and is the honest BEFORE for "
+                                                "judging whether the art is buying anything.\n"
+                                                "THE SHEET MUST BE IN BOTH rt/mat AND rt/mat_dev. developerMode reads "
+                                                "mat_dev in preference, and a file in only one tree resolves to the "
+                                                "1x1 transparent placeholder -- which an alpha-tested quad discards "
+                                                "entirely, with no error anywhere. Run "
+                                                "`py -3 tools/gen_fire_impact_art.py`, which writes all four trees." )
+    RT_CVAR( rt_fire_tint,              1,      "the flame art is TINTED to the projectile's colour by the traced "
+                                                "primitive's own colour, so one white sheet serves all four "
+                                                "fireballs.\n"
+                                                "IT WORKS BECAUSE prim.color MULTIPLIES THE TEXEL. RTGL1's "
+                                                "HitInfo.inl does `unpackUintColor( layerColors[0] ) * "
+                                                "getTextureSample(...)`, and layerColors[0] IS "
+                                                "RgMeshPrimitiveInfo::color. This file used to claim the opposite -- "
+                                                "'with an albedo texture present RTGL1 ignores the primitive colour' "
+                                                "-- and that was never tested, because the only customer passed white. "
+                                                "What is genuinely per-primitive-only is the NO-TEXTURE fallback lower "
+                                                "in that shader, which is what the debris whiteout was about.\n"
+                                                "Off draws every fireball's flames white: the arm that shows the tint "
+                                                "doing its work." )
+    RT_CVAR( rt_fire_glow,              420.f,  "how far a fireball mark's light reaches. Absolute, replacing "
+                                                "rt_ember_glow_intensity for this mark only -- the same shape as "
+                                                "rt_laser_glow, and for the same reason.\n"
+                                                "ONE LIGHT PER MARK, NOT ONE PER FLAME. A fire is one light source, "
+                                                "and an imp is the most common enemy in the game -- seven candidates "
+                                                "per mark times a corridor of imps is the density arithmetic in "
+                                                "rt-lighting-practices 20, which the Unmaker had to be cut from 26 "
+                                                "candidates to 1 to satisfy.\n"
+                                                "SO THE ONE LIGHT CARRIES ALL SEVEN FLAMES' WORTH, and getting that "
+                                                "wrong is what shipped this reading as no light at all. 55 is tuned "
+                                                "for ONE COAL OF TEN; a rocket mark puts out about 550 in total. A "
+                                                "single emitter left near the per-coal value is six times too little "
+                                                "and lights nothing you can see. rt_laser_glow already recorded this "
+                                                "-- it went 55 to 220 the moment the Unmaker became one spot -- and "
+                                                "this repeated the mistake one feature later.\n"
+                                                "420 sits between the laser's single-spot 220 and the rocket's "
+                                                "aggregate 550, which is where a seven-flame fire belongs.\n"
+                                                "INTENSITY IS THE REACH for these; the radius is the emitter's SIZE "
+                                                "-- see rt_fire_glow_radius.\n"
+                                                "Note the projectile is already lighting the wall for its first "
+                                                "third of a second: all five carry six GLDEFS flickerlights ramping "
+                                                "down across their death frames, so this should read as continuing "
+                                                "that decay rather than stacking on it." )
+    RT_CVAR( rt_fire_glow_radius,       0.22f,  "the SIZE OF THE EMITTER, in metres -- not how far the light "
+                                                "reaches, which is rt_fire_glow.\n"
+                                                "Bigger than a coal's rt_ember_glow_radius (0.10) because a fire is "
+                                                "bigger than a coal. It is the sphere the light is cast FROM, so it "
+                                                "decides how soft the shadows it throws are: a quarter-metre of "
+                                                "flame radiating from a 10 cm point throws a harder edge than it "
+                                                "should." )
+    RT_CVAR( rt_fire_far,               40.f,   "metres beyond which a fireball impact leaves no mark. A SPAWN cull, "
+                                                "for the reason rt_spark_far is one. Its own knob so the fireballs' "
+                                                "reach cannot be changed by tuning the arcs, the rocket or the laser." )
+    RT_CVAR( rt_fire_burn_scale,        1.4f,   "the scorch under the flames, as a multiple of rt_arc_burn_radius. "
+                                                "WELL UNDER the rocket's 3.4 and the barrel's 3.5: a fireball is not a "
+                                                "blast, and an imp throws a great many of them." )
+    RT_CVAR( rt_fire_burn_life,         25.f,   "seconds a fireball's scorch lasts before it fades. NON-ZERO, and it "
+                                                "is the only impact in the game that does not mark a wall "
+                                                "permanently.\n"
+                                                "Deliberate: rt_arc_burn_life 0 means FOREVER, which is right for a "
+                                                "rocket crater and wrong for the most common enemy in the game -- "
+                                                "every stray fireball leaving a forever-scorch would char whole "
+                                                "corridors and churn the 192-entry mark pool until rockets and plasma "
+                                                "started disappearing too. Carried per mark, so a rocket burning on "
+                                                "the same wall keeps its permanent one.\n"
+                                                "The scorch holds flat for 60%% of this and fades over the last 40%%." )
+    RT_CVAR( rt_fire_smoke,             1,      "flames breathe a thread of smoke while they burn. The rocket ember's "
+                                                "wisp emitter pointed at the fireballs, so it takes the whole "
+                                                "rt_ember_smoke_* group -- but NOT rt_ember or rt_ember_smoke "
+                                                "themselves, which are the rocket's masters and must not switch this "
+                                                "off.\n"
+                                                "Still needs rt_smoke: a wisp is a real parcel in the froxel volume, "
+                                                "not a private particle system." )
+    RT_CVAR( rt_fire_smoke_delay,       0.15f,  "seconds before a fireball's first wisp.\n"
+                                                "SHORT, unlike the rocket's rt_ember_smoke_delay of 0.65. That delay "
+                                                "exists to get out of the way of the rocket's own death smoke burst, "
+                                                "and a fireball has none to dodge -- none of the four is in "
+                                                "RT_PROJECTILE_SMOKE. Inheriting the rocket's value would give a fire "
+                                                "that burns for half a second before it occurs to it to smoke." )
+    RT_CVAR( rt_fire_smoke_scale,       1.6f,   "how much fatter a flame's smoke thread is than a coal's -- one "
+                                                "multiplier on both the wisp RADIUS and its DENSITY, because either "
+                                                "alone leaves the thread invisible (smoke_blendTint weights colour by "
+                                                "density, so a thin parcel loses the blend to the room's medium).\n"
+                                                "Applied at the point of use rather than by doctoring the profile, so "
+                                                "the shared rt_ember_smoke_* values stay the honest statement of what "
+                                                "a coal's wisp is." )
+    RT_CVAR_NOARCH( rt_fire_debug,      0,      "print a line per fireball impact, and name the flame sheet at load. "
+                                                "NOARCH: a debug switch left in the ini is how a session ends up "
+                                                "wondering where the console spam is coming from." )
+
     RT_CVAR( rt_barrel,                 1,      "master for EXPLODING BARREL DESTRUCTION: a scorch churned into the "
                                                 "floor where the barrel stood, and pieces of the barrel itself thrown "
                                                 "off it.\n"
@@ -4235,19 +5204,19 @@
                                                 "'detected, then culled' are identical on screen and have completely "
                                                 "different fixes." )
 
-    RT_CVAR( rt_water_r,                255,    "water color Red [0,255]" )
-    RT_CVAR( rt_water_g,                255,    "water color Green [0,255]" )
-    RT_CVAR( rt_water_b,                255,    "water color Blue [0,255]" )
-    RT_CVAR( rt_water_wavestren,        0.4f,   "normal map strength for water. Also drives the partial-invisibility warp. 3.0 was the old default: it shattered the reflected image into sparkle, which reads as no reflection at all." )
+    RT_CVAR_NOARCH( rt_water_r,         255,    "water color Red [0,255]" )
+    RT_CVAR_NOARCH( rt_water_g,         255,    "water color Green [0,255]" )
+    RT_CVAR_NOARCH( rt_water_b,         255,    "water color Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_water_wavestren, 0.4f,   "normal map strength for water. Also drives the partial-invisibility warp. 3.0 was the old default: it shattered the reflected image into sparkle, which reads as no reflection at all." )
     // These two were hardcoded (0.05 / 1.0) with the comment "for
     // partial_invisibility" -- the invisibility warp uses the same water normal
     // field. At 0.05 the waves crawl: one full cycle of the normal texture takes
     // minutes, so the stylized water's caustics would not shimmer at all. Now
     // exposed, at RTGL's own default speed and a tighter tile scale. They still
     // also drive the partial-invisibility warp, which is only cosmetic there.
-    RT_CVAR( rt_water_wavespeed,        0.2f,   "water wave scroll speed (also the partial-invisibility warp). "
+    RT_CVAR_NOARCH( rt_water_wavespeed, 0.2f,   "water wave scroll speed (also the partial-invisibility warp). "
                                                 "0.05 was the old hardcoded value ??? effectively static." )
-    RT_CVAR( rt_water_areascale,        0.35f,  "world area one tile of the water normal texture covers. Larger "
+    RT_CVAR_NOARCH( rt_water_areascale, 0.35f,  "world area one tile of the water normal texture covers. Larger "
                                                 "= broader, slower swells; smaller = tighter ripples." )
 
     // Doom64-RT stylized water.
@@ -4267,7 +5236,7 @@
     //
     // Only applies to surfaces RTGL already considers water, i.e. textures
     // tagged "isWater" in rt/data/textures.json (tools/set_water_meta.py).
-    RT_CVAR( rt_water_style,            true,   "stylized (Doom 64) water instead of physical refract+absorb. "
+    RT_CVAR_NOARCH( rt_water_style,     true,   "stylized (Doom 64) water instead of physical refract+absorb. "
                                                 "Deep blue opaque body with the flat's own caustics, plus a "
                                                 "Fresnel-weighted reflection. 0 = stock RTGL water." )
     // Doom 64 has FOUR liquids, not one: water, nukage, sludge and blood are the
@@ -4281,52 +5250,178 @@
     // never the body brightened: water's body is deep blue but its crests are
     // pale cyan, which is what the source art's brightest texels actually are.
     // Pale, not white ??? white crests read as foam or plastic.
-    RT_CVAR( rt_water_liquids,          true,   "apply the stylized water surface to nukage / sludge / blood as "
+    RT_CVAR_NOARCH( rt_water_liquids,   true,   "apply the stylized water surface to nukage / sludge / blood as "
                                                 "well as water (D64N*, D64S*, D64B*). 0 = water only, the other "
                                                 "three go back to being flat near-black floors." )
-    RT_CVAR( rt_water_tint_r,           1,      "stylized water: body colour Red [0,255]" )
-    RT_CVAR( rt_water_tint_g,           1,      "stylized water: body colour Green [0,255]" )
-    RT_CVAR( rt_water_tint_b,          15,      "stylized water: body colour Blue [0,255]" )
-    RT_CVAR( rt_water_crest_r,        140,      "stylized water: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_water_crest_g,        204,      "stylized water: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_water_crest_b,        255,      "stylized water: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_nukage_tint_r,          2,      "stylized nukage (D64N*): body colour Red [0,255]" )
-    RT_CVAR( rt_nukage_tint_g,         15,      "stylized nukage: body colour Green [0,255]" )
-    RT_CVAR( rt_nukage_tint_b,          4,      "stylized nukage: body colour Blue [0,255]" )
-    RT_CVAR( rt_nukage_crest_r,       153,      "stylized nukage: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_nukage_crest_g,       255,      "stylized nukage: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_nukage_crest_b,       115,      "stylized nukage: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_sludge_tint_r,         15,      "stylized sludge (D64S*): body colour Red [0,255]" )
-    RT_CVAR( rt_sludge_tint_g,          9,      "stylized sludge: body colour Green [0,255]" )
-    RT_CVAR( rt_sludge_tint_b,          2,      "stylized sludge: body colour Blue [0,255]" )
-    RT_CVAR( rt_sludge_crest_r,       255,      "stylized sludge: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_sludge_crest_g,       204,      "stylized sludge: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_sludge_crest_b,       115,      "stylized sludge: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_blood_tint_r,          15,      "stylized blood (D64B*): body colour Red [0,255]" )
-    RT_CVAR( rt_blood_tint_g,           2,      "stylized blood: body colour Green [0,255]" )
-    RT_CVAR( rt_blood_tint_b,           2,      "stylized blood: body colour Blue [0,255]" )
-    RT_CVAR( rt_blood_crest_r,        255,      "stylized blood: caustic vein colour Red [0,255]" )
-    RT_CVAR( rt_blood_crest_g,        115,      "stylized blood: caustic vein colour Green [0,255]" )
-    RT_CVAR( rt_blood_crest_b,        102,      "stylized blood: caustic vein colour Blue [0,255]" )
-    RT_CVAR( rt_water_caustic,          1.5f,   "stylized water: how hard the wave crests brighten the "
+    RT_CVAR_NOARCH( rt_water_tint_r,    1,      "stylized water: body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_water_tint_g,    1,      "stylized water: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_water_tint_b,   15,      "stylized water: body colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_water_crest_r, 140,      "stylized water: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_water_crest_g, 204,      "stylized water: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_water_crest_b, 255,      "stylized water: caustic vein colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_tint_r,   1,      "stylized nukage (D64N*): body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_tint_g,  5,      "stylized nukage: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_tint_b,   1,      "stylized nukage: body colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_crest_r, 50,     "stylized nukage: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_crest_g, 150,     "stylized nukage: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_nukage_crest_b, 50,     "stylized nukage: caustic vein colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_tint_r,   9,      "stylized sludge (D64S*): body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_tint_g,   3,      "stylized sludge: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_tint_b,   1,      "stylized sludge: body colour Blue [0,255]" )
+    // Retuned DOWN from 255,204,115 when the reference art landed. That value
+    // was calibrated against the old, dimmer flat; the exposed art drives the
+    // vein mask to a ~0.44 mean, so the surface sits nearly half-way to this
+    // colour EVERYWHERE and a pale tan crest made the whole bed read as light
+    // sand rather than mud. Same correction rt_nukage_crest needed, for the
+    // same reason.
+    RT_CVAR_NOARCH( rt_sludge_crest_r, 120,     "stylized sludge: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_crest_g, 78,      "stylized sludge: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_sludge_crest_b, 38,      "stylized sludge: caustic vein colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_tint_r,   20,     "stylized blood (D64B*): body colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_tint_g,    1,      "stylized blood: body colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_tint_b,    1,      "stylized blood: body colour Blue [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_crest_r, 255,      "stylized blood: caustic vein colour Red [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_crest_g, 115,      "stylized blood: caustic vein colour Green [0,255]" )
+    RT_CVAR_NOARCH( rt_blood_crest_b, 102,      "stylized blood: caustic vein colour Blue [0,255]" )
+    // Coagulated blood pools. The art is d64r-liquid-art.wad: one image for all
+    // 128 D64B1_/D64B2_ frames, plus _n/_h/_orm on every one of them. Built by
+    // tools/gen_liquid_art.py; the whole feature is docs/rt-blood-pools.md.
+    //
+    // WITHOUT THE WAD LOADED THESE DO NOTHING, and the failure is silent: the
+    // relief needs an _n to give back, and the flow needs the vein direction
+    // baked into the height map's spare channels. Check the wad before tuning.
+    RT_CVAR_NOARCH( rt_blood_relief,    1.0f,   "how much of the AUTHORED relief survives on blood, 0..1. 0 = the "
+                                                "animated water wave, which is what blood used to get and is still "
+                                                "what water/nukage/sludge get. 1 = the _n map alone: a still surface "
+                                                "with real ridges. Rides on rt_normalmap_stren, and its depth comes "
+                                                "from the _h parallax, which rt_heightmap_stren scales." )
+    RT_CVAR_NOARCH( rt_blood_flow,      1.0f,   "depth of the FLOW MAP on blood: a detail texture advected along the "
+                                                "vein direction baked into the height map, so blobs of liquid slide "
+                                                "down each channel. Texture moving, not brightness pulsing -- the "
+                                                "first version pulsed and read as flicker. 0 = still." )
+    RT_CVAR_NOARCH( rt_blood_flow_speed, 0.5f,  "detail tiles scrolled per second along the vein. Slow on purpose -- "
+                                                "this is a thick fluid, and fast reads as a scrolling texture." )
+    RT_CVAR_NOARCH( rt_blood_flow_scale, 6.0f,  "detail tiles per 64-unit blood tile, measured along the vein. "
+                                                "Higher = finer streaks." )
+    RT_CVAR_NOARCH( rt_blood_flow_aspect, 3.0f, "across-vein frequency multiplier. The noise is sampled in a "
+                                                "vein-aligned frame, and this stretches it into streaks that run "
+                                                "lengthwise -- the shape that reads as liquid moving. 1 = round "
+                                                "blobs, which read as shimmer (that was version two)." )
+    RT_CVAR_NOARCH( rt_blood_caustics,  0.0f,   "how much of rt_water_caustics a BLOOD pool projects onto the walls "
+                                                "and floor around it. 0 by default because a caustic is light "
+                                                "refracted THROUGH a fluid and focused on what is beyond it, and "
+                                                "blood is opaque -- it was casting the same rippling pool-light as "
+                                                "water, which is the loudest single thing saying 'this is water with "
+                                                "red paint on it'. 1 restores the old behaviour." )
+    RT_CVAR_NOARCH( rt_nukage_caustics, 0.0f,   "same for NUKAGE (D64N*): how much of rt_water_caustics a poison "
+                                                "pool projects. 0 by default -- it is opaque too. 1 restores the "
+                                                "old behaviour." )
+    RT_CVAR_NOARCH( rt_sludge_caustics, 0.0f,   "same for SLUDGE (D64S*): how much of rt_water_caustics a sludge "
+                                                "pool projects. 0 by default -- the coagulated crust art is as "
+                                                "opaque as blood's and poison's. 1 restores the old behaviour." )
+    RT_CVAR_NOARCH( rt_sludge_relief,   1.0f,   "SLUDGE (D64S*): how much of the authored _n relief survives "
+                                                "against the animated water wave. 1 = the mud bed alone -- lumps, "
+                                                "rims and pits that hold still, which is what mud is. 0 = the old "
+                                                "ripple. Its height comes from the art's full luminance range, not "
+                                                "from the vein mask blood uses: 90%% of sludge's texels saturate "
+                                                "that mask, so a mask-derived height would be a flat plateau." )
+    RT_CVAR_NOARCH( rt_liquid_checkerboard, true, "CONSOLE ONLY -- deliberately not in the Quality menu, because what "
+                                                "0 trades away is the reflection that sells WATER and no player "
+                                                "meeting it in a list would know that. How the stylized liquid "
+                                                "surfaces (water, nukage, sludge, blood) are drawn. 1 = the stock CHECKERBOARD: the lit surface "
+                                                "on odd screen columns, a mirror reflection on even ones, resolved "
+                                                "into F*mirror + (1-F)*surface. 0 = FULL RESOLUTION, NO MIRROR: every "
+                                                "pixel shades the surface, the sheen is the glossy specular off its "
+                                                "roughness. The trade is honest -- 0 loses water's reflection of the "
+                                                "room -- but the split is a stability problem on any liquid with an "
+                                                "authored normal: half the columns are rebuilt from their neighbours "
+                                                "and that pattern crawls with the camera under a moving light. A "
+                                                "liquid whose rt_*_refl is 0 (sludge ships so) takes the full-res "
+                                                "path whatever this says, which is why the mud bed needs nothing "
+                                                "from this cvar. Archived; deliberately NOT pinned." )
+    RT_CVAR_NOARCH( rt_sludge_refl,     0.0f,   "SLUDGE: how much of the stylized water MIRROR sludge keeps. 1 = "
+                                                "the same mirror water gets, which is the loudest single thing "
+                                                "saying 'this is water with brown paint on it'. 0 = NO MIRROR AND "
+                                                "NO CHECKERBOARD: the bed is shaded on every pixel at full "
+                                                "resolution and its wet sheen is the standard glossy specular off "
+                                                "rt_sludge_rough. Ships at 0 for two reasons: it is the lighter, "
+                                                "dedicated reflection a mud bed wants, and the checkerboard was "
+                                                "the flashlight bug -- on a high-contrast normal, half the columns "
+                                                "are rebuilt from their neighbours and the pattern crawls with the "
+                                                "camera. Any value above 0 brings the split back." )
+    RT_CVAR_NOARCH( rt_sludge_rough,    0.8f,   "SLUDGE: surface roughness. 0 or less = use rt_water_rough (0.1, a "
+                                                "near-mirror). This is what the denoiser and later bounces see; the "
+                                                "reflection ray itself is a mirror off the shaded normal either "
+                                                "way, so it is rt_sludge_relief that actually scatters it. Use the "
+                                                "two together." )
+    RT_CVAR_NOARCH( rt_nukage_refl,     0.5f,   "POISON/NUKAGE (D64N*): how much of the stylized water MIRROR it keeps, the "
+                                                "same knob as rt_sludge_refl and rt_blood_refl. 1 = the full mirror water "
+                                                "gets, which is what nukage had until 2026-08-26; 0 = no mirror and no "
+                                                "checkerboard split, the full-res path.\n"
+                                                "SHIPS AT 0.5, the highest of the three non-water liquids on purpose. Poison "
+                                                "is the one liquid here that is meant to look THIN and chemical rather than "
+                                                "congealed -- it is also the only one that KEEPS THE WATER WAVE (there is no "
+                                                "rt_nukage_relief and no authored _n for D64N*, see docs/rt-blood-pools.md), "
+                                                "so a moving surface with some room in it is the right read. Half the mirror "
+                                                "takes the swimming-pool look off it without flattening it into paint.\n"
+                                                "It has no rt_nukage_rough: with no authored relief there is nothing for a "
+                                                "separate roughness to scatter, so it stays on rt_water_rough." )
+    RT_CVAR_NOARCH( rt_blood_refl,      0.3f,   "BLOOD: how much of the stylized water MIRROR a blood pool keeps, the exact "
+                                                "counterpart of rt_sludge_refl. 1 = the same mirror water gets, which is what "
+                                                "blood has always had and is the loudest single thing left saying 'this is "
+                                                "water with red paint on it'. 0 = NO MIRROR AND NO CHECKERBOARD SPLIT: every "
+                                                "pixel shades the pool at full resolution and its wet sheen becomes the "
+                                                "ordinary glossy specular off rt_blood_rough.\n"
+                                                "IT ALSO REMOVES THE ODD/EVEN SPLIT, which matters more here than the mirror "
+                                                "does: blood carries an authored _n (rt_blood_relief 1) and the checkerboard "
+                                                "rebuilds half the columns from their neighbours, so a high-contrast normal "
+                                                "crawls with the camera under a moving light -- the flashlight bug that took "
+                                                "sludge to 0.\n"
+                                                "SHIPS AT 0.3 (2026-08-26), not at the 1.0 blood had always had: a pool of "
+                                                "congealing blood is not a mirror, and reflecting the room off it at full "
+                                                "strength was the last thing left reading as water. 0.3 keeps a wet-looking "
+                                                "hint of the room without the pool becoming a window into it. NOTE 0.3 IS "
+                                                "ABOVE ZERO, so the checkerboard split is still on -- only an exact 0 takes "
+                                                "the full-res path sludge uses. If the crawl shows up under the flashlight, "
+                                                "0 is the fix, not a smaller fraction (tools\\ab-bloodpool.cmd nomirror)." )
+    RT_CVAR_NOARCH( rt_blood_rough,     0.0f,   "BLOOD: surface roughness, the counterpart of rt_sludge_rough. 0 or less = use "
+                                                "rt_water_rough (0.1, a near-mirror), which is what blood gets today. This is "
+                                                "what the denoiser and later bounces see; the reflection ray itself is a mirror "
+                                                "off the shaded normal either way, so it is rt_blood_relief that actually "
+                                                "scatters it. Use the two together, and raise this alongside rt_blood_refl 0 -- "
+                                                "a no-mirror pool at 0.1 is still a wet plastic sheet." )
+    RT_CVAR_NOARCH( rt_sludge_autogoto, false,  "same as rt_blood_autogoto, for SLUDGE. Only MAP12 (6 sectors) and "
+                                                "MAP34 have sludge floors, so the odds of spawning in sight of one "
+                                                "are poor. The CCMD is rt_sludge_goto. Takes priority over "
+                                                "rt_blood_autogoto if both are set." )
+    RT_CVAR_NOARCH( rt_blood_autogoto,  false,  "on the first frame of a map that has a blood pool, move the player "
+                                                "onto it. A pool is a puddle in a corner and every verdict judged "
+                                                "from the spawn point is worthless -- MAP08's sit at z -256 in pits, "
+                                                "where 'broken' and 'working, 256 units below you' look identical. "
+                                                "The CCMD is rt_blood_goto; this is the hands-free form." )
+    RT_CVAR_NOARCH( rt_blood_flow_debug, false, "paint the ADVECTED flow detail instead of the surface: green blobs "
+                                                "sliding along each vein means the bake and the plumbing both work. "
+                                                "Flat blue means the detail never crossed the G-buffer, which by eye "
+                                                "is identical to 'the motion is too subtle'." )
+    RT_CVAR_NOARCH( rt_water_caustic,   1.5f,   "stylized water: how hard the wave crests brighten the "
                                                 "texture's caustic veins. 0 = static veins." )
     // Reflection strength is deliberately NOT physical. Real water has F0=0.02,
     // so a correct Schlick term is ~2% looking straight down -- the reflection
     // is there, and it reflects sprites and geometry correctly, but at a
     // strength you cannot see. The shader keeps the SHAPE of the Schlick curve
     // and remaps its range onto [reflmin, reflmax].
-    RT_CVAR( rt_water_reflmin,          0.1f,   "stylized water: reflection strength looking straight DOWN at "
+    RT_CVAR_NOARCH( rt_water_reflmin,   0.1f,   "stylized water: reflection strength looking straight DOWN at "
                                                 "the surface. Physical water is 0.02 (invisible); this is the "
                                                 "artistic floor that makes it read as a reflective pool. 0 = "
                                                 "physically correct and effectively no reflection from above." )
-    RT_CVAR( rt_water_reflmax,          0.75f,  "stylized water: reflection strength at GRAZING angles. 1 = a "
+    RT_CVAR_NOARCH( rt_water_reflmax,   0.75f,  "stylized water: reflection strength at GRAZING angles. 1 = a "
                                                 "true mirror at the horizon, lower keeps it a sheen." )
-    RT_CVAR( rt_water_rough,            0.1f,   "stylized water: roughness of the surface half (specular "
+    RT_CVAR_NOARCH( rt_water_rough,     0.1f,   "stylized water: roughness of the surface half (specular "
                                                 "highlight width from lights)" )
-    RT_CVAR( rt_water_glow,             0.15f,  "stylized water: unlit on-screen sheen on the caustic veins, "
+    RT_CVAR_NOARCH( rt_water_glow,      0.04f,  "stylized water: unlit on-screen sheen on the caustic veins, "
                                                 "so the pattern still reads in near-black rooms. Casts no "
                                                 "light. 0 = fully lighting-dependent." )
-    RT_CVAR( rt_water_veinref,          0.1f,   "stylized water: LINEAR luminance that saturates the caustic "
+    RT_CVAR_NOARCH( rt_water_veinref,   0.1f,   "stylized water: LINEAR luminance that saturates the caustic "
                                                 "vein mask. Measured on D64W2_01: median texel 0.0024, p90 "
                                                 "0.0064, p95 0.0113, p99 0.0161, max 0.0327 ??? the flat is far "
                                                 "darker in linear space than its sRGB thumbnail suggests, so a "
@@ -4340,28 +5435,28 @@
     // on water within rt_water_caustic_dist the point's DIRECT lighting is
     // modulated by an animated caustic field. Multiplicative, never additive:
     // caustics are focused light, not a light source, so a dark room stays dark.
-    RT_CVAR( rt_water_caustics,         1.2f,   "strength of the caustics the water casts onto surrounding "
+    RT_CVAR_NOARCH( rt_water_caustics,  1.2f,   "strength of the caustics the water casts onto surrounding "
                                                 "geometry. 0 = off, and no probe ray is traced at all (this is "
                                                 "the perf switch: it costs one ray per pixel)." )
-    RT_CVAR( rt_water_caustic_scale,    0.8f,   "caustic field frequency, UV per METRE (RTGL world space is "
+    RT_CVAR_NOARCH( rt_water_caustic_scale, 0.8f, "caustic field frequency, UV per METRE (RTGL world space is "
                                                 "metres; 1 map unit = 1/32 m). 0.8 tiles the field every "
                                                 "~1.25 m = 40 map units. Higher = smaller, busier "
                                                 "filaments." )
-    RT_CVAR( rt_water_caustic_speed,    0.35f,  "caustic field scroll speed" )
-    RT_CVAR( rt_water_caustic_rise,     64.f,   "how far ABOVE the water the caustics still reach, map units. "
+    RT_CVAR_NOARCH( rt_water_caustic_speed, 0.35f, "caustic field scroll speed" )
+    RT_CVAR_NOARCH( rt_water_caustic_rise, 64.f, "how far ABOVE the water the caustics still reach, map units. "
                                                 "Deliberately separate from rt_water_caustic_dist: real caustics "
                                                 "climb only a little way up a wall, while the probe has to reach "
                                                 "much further sideways to clear a pool's ledge. Sharing one "
                                                 "range ran the pattern up the full height of every wall." )
-    RT_CVAR( rt_water_caustic_wall,     4.0f,   "extra caustic gain on VERTICAL surfaces only. The same pattern "
+    RT_CVAR_NOARCH( rt_water_caustic_wall, 4.0f, "extra caustic gain on VERTICAL surfaces only. The same pattern "
                                                 "is much fainter on a wall than on the pool bottom -- grazing "
                                                 "angle, and the light has spread further -- so one gain tuned on "
                                                 "the floor leaves the walls invisible, while raising it brightens "
                                                 "the floor just as much. 1 = no boost." )
-    RT_CVAR( rt_water_caustic_slant,    0.6f,   "how far the caustic probe tilts along the surface normal. 0 = "
+    RT_CVAR_NOARCH( rt_water_caustic_slant, 0.6f, "how far the caustic probe tilts along the surface normal. 0 = "
                                                 "straight down, which only finds water for surfaces standing "
                                                 "directly in it; higher lets a wall look out over a pool ledge." )
-    RT_CVAR( rt_water_caustic_dist,     512.f,  "how far the caustic probe reaches, in map units. The probe is "
+    RT_CVAR_NOARCH( rt_water_caustic_dist, 512.f, "how far the caustic probe reaches, in map units. The probe is "
                                                 "slanted along the surface normal, so this is a slant range, not "
                                                 "a pure height: 512 lights roughly the lower 400 units of a wall "
                                                 "standing a ledge-width back from the pool. Larger reaches higher "
@@ -4404,7 +5499,7 @@
 
     RT_CVAR( hack_initialframesskip,    true,   "skip initial a couple of frames on game launch; if not skipped, there might be a distracting flashing of the main window" )
 
-    RT_CVAR( rt_verbose,                false,  "print RT/RTGL1 diagnostics to the ON-SCREEN notify area as well as the "
+    RT_CVAR_NOARCH( rt_verbose,         false,  "print RT/RTGL1 diagnostics to the ON-SCREEN notify area as well as the "
                                                 "console. Off (release default) still writes every line to the console "
                                                 "buffer and the logfile -- it only stops boot banners, the denoiser path, "
                                                 "ReSTIR settings and per-level chatter from painting over the game. "

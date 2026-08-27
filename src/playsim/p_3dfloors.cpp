@@ -547,6 +547,8 @@ void P_Recalculate3DFloors(sector_t * sector)
 	}
 
 #if HAVE_RT // force no light splitting
+	// Doom64-RT: this leaves lightlist EMPTY for a sector that has 3D floors.
+	// P_GetPlaneLight (below) carries the guard that makes that safe.
 	lightlist.Clear();
 #endif
 }
@@ -656,9 +658,35 @@ lightlist_t * P_GetPlaneLight(sector_t * sector, secplane_t * plane, bool unders
 	unsigned   i;
 	TArray<lightlist_t> &lightlist = sector->e->XFloor.lightlist;
 
+#if HAVE_RT
+	// Doom64-RT: P_Recalculate3DFloors CLEARS the lightlist under RT ("force no
+	// light splitting", above), which breaks stock's invariant that a sector with
+	// 3D floors has at least one entry. Every caller is gated on ffloors.Size()
+	// alone (hw_flats.cpp, hw_walls.cpp, am_map.cpp), so with an empty list the
+	// stock return below is &lightlist[0xFFFFFFFF] -- a wild read on the render
+	// worker thread. The worker's exception handler parks the thread and queues an
+	// APC the main thread never services (it is inside future.wait()), which is the
+	// "window stops responding, audio keeps playing, nothing in the log" freeze that
+	// made every Retribution map's Sector_Set3dFloor get stripped (209 linedefs,
+	// most of them bridges). Hand back the sector's own light instead, exactly what
+	// stock's element 0 would have been. thread_local: called from both threads.
+	if (lightlist.Size() == 0)
+	{
+		thread_local lightlist_t rt_fallback;
+		rt_fallback.plane = sector->ceilingplane;
+		rt_fallback.p_lightlevel = &sector->lightlevel;
+		rt_fallback.caster = nullptr;
+		rt_fallback.lightsource = nullptr;
+		rt_fallback.extra_colormap = sector->Colormap;
+		rt_fallback.blend = 0;
+		rt_fallback.flags = 0;
+		return &rt_fallback;
+	}
+#endif
+
 	double planeheight=plane->ZatPoint(sector->centerspot);
 	if(underside) planeheight-= EQUAL_EPSILON;
-	
+
 	for(i = 1; i < lightlist.Size(); i++)
 		if (lightlist[i].plane.ZatPoint(sector->centerspot) <= planeheight) 
 			return &lightlist[i - 1];

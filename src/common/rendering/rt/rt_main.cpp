@@ -236,6 +236,9 @@ void RT_SkyPrimsEndFrame()
     g_skyprims.clear();
 }
 
+// Defined below (global namespace); RT_Print in the anonymous namespace needs it.
+extern std::atomic< HWND > g_msgbox_parent;
+
 namespace
 {
 
@@ -295,7 +298,11 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
 
     if( flags & RG_MESSAGE_SEVERITY_ERROR )
     {
-        DPrintf( DMSG_ERROR, "%s\n", pMessage );
+        // Doom64-RT: Printf, not DPrintf. DPrintf(DMSG_ERROR) is silent unless
+        // `developer` >= 1, so a renderer error used to leave rt-console.log clean
+        // while the (owner-less) box below sat behind the game window -- which
+        // reads as a freeze. A renderer error must be visible in the log.
+        Printf( PRINT_HIGH, TEXTCOLOR_RED "RTGL1 error: %s\n", pMessage );
 
 #ifdef WIN32
         static bool g_breakOnError = true;
@@ -309,7 +316,9 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
                                     msg,
                                     msg.ends_with( '.' ) ? "" : "." );
 
-            int ok = MessageBoxA( nullptr,
+            // Owned by the game window like every other box in this file, so it
+            // comes up in front of the game instead of behind it.
+            int ok = MessageBoxA( g_msgbox_parent.load(),
                                   str.c_str(), // null-terminated
                                   "Renderer Error",
                                   MB_ABORTRETRYIGNORE | MB_DEFBUTTON2 | MB_ICONERROR );
@@ -341,7 +350,49 @@ void RT_Print( const char* pMessage, RgMessageSeverityFlags flags, void* pUserDa
         // "Denoiser path: ...", "ReSTIR: initialSamples=..." and friends across
         // the picture on every level load. One line, and it covers every
         // message RTGL1 emits.
-        Printf( RT_DiagPrintLevel(), "%s\n", pMessage );
+        //
+        // De-duplicate identical CONSECUTIVE warnings. RTGL1 has no per-frame
+        // "say this once" concept of its own -- "No camera provided via API,
+        // nor through .gltf" is emitted from inside rgStartFrame/rgDrawFrame
+        // every single frame the engine fails to upload one, and the failure
+        // mode that hits that (I_Error unwinding out of a level -- see
+        // p_saveg.cpp's savegame-checksum check) does not resolve itself for
+        // many frames, so the naive Printf above turned into an unbounded
+        // flood: one line per frame, forever (measured ~10/sec), into both
+        // the console buffer and rt-console.log. This does not fix why the
+        // camera stopped coming in -- it only stops one warning from
+        // drowning the log while that happens.
+        //
+        // A pure "print once, then go silent until the text changes" would
+        // go silent FOREVER on a genuinely stuck repeat -- the text never
+        // changes, so the closing summary line never fires and a log tail
+        // reads as if nothing is happening. Cap the silence instead, but at a
+        // deliberately long interval -- this is "print once", not a
+        // heartbeat; the re-announce only exists so a session left running
+        // for a very long time still leaves a trail, not to remind you every
+        // few seconds that it's still stuck.
+        static std::string s_lastWarning;
+        static int         s_repeatCount     = 0;
+        constexpr int      s_reannounceEvery = 18000; // ~10 min of "No camera" at ~30fps
+        if( pMessage == s_lastWarning )
+        {
+            if( ++s_repeatCount % s_reannounceEvery == 0 )
+            {
+                Printf( RT_DiagPrintLevel(), "(still repeating -- %d time%s so far) %s\n",
+                       s_repeatCount, s_repeatCount == 1 ? "" : "s", pMessage );
+            }
+        }
+        else
+        {
+            if( s_repeatCount > 0 )
+            {
+                Printf( RT_DiagPrintLevel(), "(previous message repeated %d more time%s)\n",
+                       s_repeatCount, s_repeatCount == 1 ? "" : "s" );
+            }
+            s_lastWarning = pMessage;
+            s_repeatCount = 0;
+            Printf( RT_DiagPrintLevel(), "%s\n", pMessage );
+        }
     }
     else if( flags & RG_MESSAGE_SEVERITY_INFO )
     {
@@ -418,6 +469,14 @@ std::atomic< HWND > g_msgbox_parent{};
 //
 
 
+
+namespace
+{
+int    g_rt_precache_count   = 0;
+double g_rt_precache_ms      = 0.0;
+bool   g_rt_precache_pending = false;
+bool   g_rt_precache_capped  = false;
+} // namespace
 
 RG_D3D12CORE_HELPER( "rt/" )
 
@@ -1284,6 +1343,172 @@ IHardwareTexture* rtx::RTFrameBuffer::CreateHardwareTexture( int numchannels )
 {
     return new RTHardwareTexture{};
 }
+
+// Doom64-RT: THE RT PATH NEVER PRECACHED ANYTHING, and that was the stutter.
+//
+// p_setup.cpp's PrecacheLevel does all the work already -- it walks every actor
+// class the level spawns, marks every sprite frame and all 16 rotations, folds in
+// animations and switch pairs -- and hands each result to screen->PrecacheMaterial.
+// GL, GLES and Vulkan all override that. RTFrameBuffer overrode only
+// CreateHardwareTexture, so it inherited the empty base (v_video.h:226) and threw
+// the entire computed list away.
+//
+// The consequence was that EVERY texture in the game uploaded on the frame it was
+// first drawn, in the middle of play. Measured on 2026-08-20: an imp turning to
+// face the player cost 20-44 ms, a lost soul 60 ms, one sprite frame at a time,
+// scattered through the session -- because a sprite frame and rotation is its own
+// texture and is not touched until that exact pose is first visible.
+//
+// The same uploads at level load measured 0.2-0.6 ms each. It is not merely moving
+// the cost, it is removing about 100x of it; a mid-frame upload lands on a GPU that
+// is already busy, a load-time one does not.
+//
+// WHAT IS SAFE TO ASSUME HERE. CreateIfWasnt takes two arguments the precacher
+// cannot know, and neither is a problem:
+//   clampmode  -- unused. Both address modes are hardcoded to REPEAT and the
+//                 rtclamp_x/y helpers are commented out at the call (rt_buffers.h).
+//   renderStyle -- read only for STYLEF_RedIsAlpha. It IS baked in, because
+//                 CreateIfWasnt is idempotent. But the lazy path bakes it too, from
+//                 whichever draw happened to be first -- so this does not introduce
+//                 order-dependence, it removes it. STYLE_Normal is the answer for
+//                 every world surface and sprite; a Shaded-only texture would have
+//                 been a coin toss before and is now consistently normal.
+void rtx::RTFrameBuffer::PrecacheMaterial( FMaterial* mat, int translation )
+{
+    if( !cvar::rt_precache || mat == nullptr )
+    {
+        return;
+    }
+
+    // THE 4096 CEILING. RTGL1's texture array is TEXTURE_COUNT_MAX = 4096
+    // entries (Const.h:35) and a single material claims up to FIVE of them --
+    // albedo, ORM, normal, emissive, height. So the budget is not "how many
+    // textures", it is "how many slots", and the engine side cannot see the
+    // difference. Nothing frees them either: the destructor's
+    // rgMarkOriginalTextureAsDeleted is #if 0'd in rt_buffers.h, so the array
+    // only ever grows within a session.
+    //
+    // Precaching every actor class produced 2094 provides, blew past 4096
+    // slots, and RTGL1 dropped 487 textures with "Reached texture limit"
+    // (TextureManager.cpp:738) -- which is a Warning, not an error, so the game
+    // carried on and rendered the HUD and the status bar as white and pink
+    // blocks (screen/precacheIssue.png, 2026-08-21).
+    //
+    // 1600 is empirical, from the only two data points there are: 1526 provides
+    // precached cleanly, 2094 overflowed. It is deliberately nearer the known
+    // good one. This is a guard against corruption, NOT the fix -- the fix is a
+    // larger TEXTURE_COUNT_MAX, which lives in the RTGL1 repo.
+    if( g_rt_precache_count >= int{ cvar::rt_precache_budget } )
+    {
+        if( !g_rt_precache_capped )
+        {
+            g_rt_precache_capped = true;
+            Printf( RT_DiagPrintLevel(),
+                    "RT precache: stopped at the %d-texture budget (rt_precache_budget). "
+                    "Anything past this uploads on first draw, as before.\n",
+                    int{ cvar::rt_precache_budget } );
+        }
+        return;
+    }
+
+    FGameTexture* gametex = mat->Source();
+    if( gametex == nullptr || gametex->GetUseType() == ETextureType::SWCanvas )
+    {
+        return;
+    }
+
+    FTexture* base = gametex->GetTexture();
+    if( base == nullptr )
+    {
+        return;
+    }
+
+    auto* hwtex = static_cast< RTHardwareTexture* >(
+        base->GetHardwareTexture( translation, mat->GetScaleFlags() ) );
+    if( hwtex == nullptr )
+    {
+        return;
+    }
+
+    const uint64_t t0 = I_nsTime();
+
+    hwtex->CreateIfWasnt( *gametex,
+                          CLAMP_NONE,
+                          translation,
+                          mat->GetScaleFlags(),
+                          LegacyRenderStyles[ STYLE_Normal ] );
+
+    g_rt_precache_ms += double( I_nsTime() - t0 ) / 1e6;
+    g_rt_precache_count++;
+    g_rt_precache_pending = true;
+}
+
+// Reported from the first frame after the precache pass, because there is no hook
+// at the end of it. Without a number this change is unfalsifiable: "the stutter
+// went away" and "the precache silently did nothing" look identical in play.
+void rtx::RT_ReportPrecache()
+{
+    if( !g_rt_precache_pending )
+    {
+        return;
+    }
+    g_rt_precache_pending = false;
+
+    Printf( RT_DiagPrintLevel(),
+            "RT precache: %d texture(s) uploaded in %.1f ms at level load\n",
+            g_rt_precache_count,
+            g_rt_precache_ms );
+
+    g_rt_precache_count = 0;
+    g_rt_precache_ms    = 0.0;
+}
+
+// Doom64-RT: one line per level naming the LIQUID state the shader is actually
+// getting. It exists because the failure it diagnoses is silent from both ends.
+//
+// The animated water wave is GLOBAL -- getNormal() swaps it in for any
+// water-flagged primitive -- and the only thing that takes it back off a blood
+// or sludge bed is the per-liquid relief mix. So "the ripple is back on the
+// blood" has three causes that look identical in play and identical in the map:
+// the relief cvar is 0, the engine is older than the cvar (the launcher's pin
+// is then an orphan -- one "Unknown command" buried in the boot spam, and the
+// uniform reads whatever RTGL left there), or the authored _n never shipped.
+//
+// The release launcher already passes +logfile, so this line is in every
+// player's rt-console.log and a bug report answers the question by itself.
+// It reads the same cvars RT_DrawFrame uploads, so it cannot drift from them.
+void rtx::RT_ReportLiquidConfig()
+{
+    static FString s_reported;
+
+    const char* mapname = RT_GetMapName();
+    if( !mapname || s_reported.Compare( mapname ) == 0 )
+    {
+        return;
+    }
+    s_reported = mapname;
+
+    // Same order the uniform is packed in: water / nukage / sludge / blood.
+    // Water and nukage are literals there, not cvars, and are printed as such.
+    Printf( RT_DiagPrintLevel(),
+            "RT liquid: style=%d liquids=%d split=%d wave=%.2f@%.2f | "
+            "relief w/n/s/b %.2f/%.2f/%.2f/%.2f  refl %.2f/%.2f/%.2f/%.2f  "
+            "flow(blood) %.2f\n",
+            bool{ cvar::rt_water_style } ? 1 : 0,
+            bool{ cvar::rt_water_liquids } ? 1 : 0,
+            bool{ cvar::rt_liquid_checkerboard } ? 1 : 0,
+            float{ cvar::rt_water_wavestren },
+            float{ cvar::rt_water_wavespeed },
+            0.f,
+            0.f,
+            float{ cvar::rt_sludge_relief },
+            float{ cvar::rt_blood_relief },
+            1.f,
+            float{ cvar::rt_nukage_refl },
+            float{ cvar::rt_sludge_refl },
+            float{ cvar::rt_blood_refl },
+            float{ cvar::rt_blood_flow } );
+}
 void rtx::RTFrameBuffer::Draw2D()
 {
     ::Draw2D( twod, *m_state );
@@ -1412,6 +1637,126 @@ CCMD( rt_lava_goto )
     }
 }
 
+// Walk to the blood, without walking to the blood.
+//
+// The same instrument as rt_lava_goto, for the same reason and after the same
+// mistake: a blood pool is a puddle in a corner of a map, and every judgement
+// of "is the relief showing / is the pulse moving" is worthless from wherever
+// the player happened to spawn. MAP08's nine pools sit at z -256 in pits, where
+// "it does not work" and "it works and you cannot see it" are the same picture
+// -- which is exactly what cost the poison bubbles a round.
+//
+// Prints every pool it found either way, so "there is no blood here" stays
+// distinguishable from "the blood is not doing anything".
+// Doom64-RT: put the player on a liquid pool.
+//
+// A pool is a puddle in a corner, and every verdict judged from the spawn point
+// is worthless -- MAP08's nine blood pools sit at z -256 in PITS, where "broken"
+// and "working, 256 units below you" are the same screenshot. Shared by
+// rt_blood_goto and rt_sludge_goto; the only thing that differs is the pair of
+// floor-texture prefixes and what to print.
+static void l_liquidGoto( const char* cmd,
+                          const char* prefix1,
+                          const char* prefix2,
+                          const char* hint,
+                          const char* whereToLook )
+{
+    if( !primaryLevel )
+    {
+        Printf( "%s: no level\n", cmd );
+        return;
+    }
+
+    AActor* pmo = players[ consoleplayer ].mo;
+    if( !pmo )
+    {
+        Printf( "%s: no player\n", cmd );
+        return;
+    }
+
+    int  found = 0;
+    // The FIRST POOL WE CAN ACTUALLY STAND IN, not "the first pool, if we can".
+    // rt_lava_goto keys its move off `found == 1`, so a concave first sector --
+    // whose bounding-box centre falls outside itself -- makes it print its
+    // findings and move nobody. On MAP17 the first blood sector is exactly that,
+    // so the lava version's shape would have left the player at the spawn point
+    // and reported success.
+    bool moved = false;
+    for( unsigned i = 0; i < primaryLevel->sectors.Size(); i++ )
+    {
+        const sector_t& sec  = primaryLevel->sectors[ i ];
+        auto*           gtex = TexMan.GetGameTexture( sec.GetTexture( sector_t::floor ), true );
+        if( !gtex )
+        {
+            continue;
+        }
+        // PREFIX, not an exact name: D64B2_01 is frame 1 of a 64-frame ANIMDEFS
+        // sequence and GetTexture() returns whichever frame is showing this tic,
+        // so an exact match succeeds on one tic in 64. Same trap as the poison
+        // bubbles' sector scan.
+        const char* fl = gtex->GetName().GetChars();
+        if( strncmp( fl, prefix1, 6 ) != 0 && strncmp( fl, prefix2, 6 ) != 0 )
+        {
+            continue;
+        }
+        found++;
+
+        const DVector2 c{ double( sec.centerspot.X ), double( sec.centerspot.Y ) };
+        // centerspot is the bounding-box centre and a concave sector's can lie
+        // outside it, so only move if it really is in this sector.
+        const bool   inside = ( primaryLevel->PointInSector( c.X, c.Y ) == &sec );
+        const double z      = sec.floorplane.ZatPoint( c );
+
+        Printf( "%s: sector %u floor \"%s\" at (%.0f %.0f %.0f)%s\n",
+                cmd,
+                i,
+                fl,
+                c.X,
+                c.Y,
+                z,
+                inside ? "" : "  [centre is outside the sector, not moving there]" );
+
+        if( !moved && inside )
+        {
+            moved = true;
+            pmo->SetOrigin( DVector3{ c.X, c.Y, z + 8.0 }, false );
+            Printf( "%s: moved you there. %s\n", cmd, hint );
+        }
+    }
+
+    if( found == 0 )
+    {
+        Printf( "%s: no matching liquid floor in this map. %s\n", cmd, whereToLook );
+    }
+    else if( !moved )
+    {
+        Printf( "%s: found %d pool(s) but every centre lies outside its "
+                "own sector, so you were not moved.\n",
+                cmd,
+                found );
+    }
+}
+
+CCMD( rt_blood_goto )
+{
+    l_liquidGoto( "rt_blood_goto",
+                  "D64B1_",
+                  "D64B2_",
+                  "rt_blood_relief 0/1 flips the relief, rt_blood_refl 0/1 flips "
+                  "the water reflection, rt_blood_flow_debug 1 paints the flow phase.",
+                  "MAP17 (39 pools), MAP32 (12) and MAP08 (9, in pits) have one." );
+}
+
+CCMD( rt_sludge_goto )
+{
+    l_liquidGoto( "rt_sludge_goto",
+                  "D64S1_",
+                  "D64S2_",
+                  "rt_sludge_relief 0/1 flips the mud relief, rt_sludge_refl 0/1 "
+                  "flips the water reflection.",
+                  "only MAP12 (6 sectors) and MAP34 (the fluid sampler) have sludge floors." );
+}
+
 CCMD( rt_sky_here )
 {
     if( !bool{ cvar::rt_sky_log } )
@@ -1454,6 +1799,11 @@ CCMD( rt_sky_here )
 void RT_OnLevelLoad( const char* mapname )
 {
     RT_OnLevelLoadPresets( mapname );
+    // AFTER the preset tables, never before. RT_CloudApplyPresets writes
+    // rt_clouds unconditionally when rt_clouds_presets is on, so a fire sky
+    // that set up its deck first would have it overwritten and would look like
+    // the cvar does nothing.
+    RT_FireSkyOnLevelLoad( mapname );
 
     g_resetposteffects = true;
     g_resetfluid       = true;
@@ -1653,6 +2003,27 @@ namespace classic_toggle
                 g_sectorEmisThreshold,
                 float( ll ) > g_sectorEmisThreshold ? "ABOVE: this surface SELF-EMITS"
                                                     : "below: not self-emitting" );
+        {
+            // rt_sector_emis_saturation's gate, computed the SAME way l_worldemissive()
+            // computes it (rt_draw.cpp) -- off sector_t::Colormap.LightColor directly,
+            // since that field is what push_sectorlight() feeds in during the real draw
+            // (see hw_flats.cpp/hw_walls.cpp: Colormap = frontsector->Colormap in the
+            // common case). Answers the question the lightlevel line above cannot:
+            // whether the colour gate is what is actually keeping this surface dark or
+            // lit, not just whether it crossed the lightlevel threshold.
+            const PalEntry lc    = d.HitSector->Colormap.LightColor;
+            const float    r     = lc.r / 255.f;
+            const float    g     = lc.g / 255.f;
+            const float    b     = lc.b / 255.f;
+            const float    maxc  = std::max( { r, g, b } );
+            const float    minc  = std::min( { r, g, b } );
+            const float    satur = maxc > 1.e-4f ? ( maxc - minc ) / maxc : 0.f;
+            const float    gate  = float{ cvar::rt_sector_emis_saturation };
+            Printf( "           colormap tint %d,%d,%d  saturation %.3f  (rt_sector_emis_saturation "
+                    "%.2f -> %s)\n",
+                    lc.r, lc.g, lc.b, satur, gate,
+                    satur >= gate ? "PASSES the colour gate" : "GATED OUT by colour" );
+        }
         {
             // The frame test, printed: what does this element sit inside?
             int hi = -1, hiIdx = -1;
@@ -2006,6 +2377,8 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
     // rgStartFrame, because rgStartFrame is itself one of the four phases.
     RT_StatsNewFrame();
     RT_ApplyQualityPresetOnce();
+    RT_ReportPrecache();
+    RT_ReportLiquidConfig();
 
     RTStartFrame.Clock();
     RgResult r = rt.rgStartFrame( &info );
@@ -2085,13 +2458,18 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
 
         float ltngI   = 0.f;
         float ltngAzi = 0.f, ltngAlt = 0.f;
-        if( const float flash = RT_LightningFlashLevel(); flash > 0.002f )
+        // The LIGHT's envelope, which carries the afterglow tail the visible
+        // flash does not (rt_lightning_afterglow).
+        if( const float flash = RT_LightningLightLevel(); flash > 0.002f )
         {
             RT_LightningAim( &ltngAzi, &ltngAlt, nullptr );
             ltngI = std::max( 0.f, float{ cvar::rt_lightning_intensity } ) * flash;
         }
 
         const bool useLightning = ltngI > sunI;
+        // Read by RT_VCloudsParams (built further down this function): the
+        // clouds must not occlude a strike, which is inside the deck.
+        g_rtSunIsLightning = useLightning;
 
         if( useLightning || sunI > 0.f )
         {
@@ -2188,7 +2566,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         }
     }
 
-    // Unattended capture -- see rt_autoshot.
+    // The renderer never writes the player (pitch, position, flags) -- AGENTS.md.
     if( primaryLevel && ( int{ cvar::rt_autoshot } > 0 || int{ cvar::rt_autoquit } > 0 ) )
     {
         const int t = primaryLevel->maptime;
@@ -2238,6 +2616,38 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UploadFlameLights();
     RT_UploadUnseenEvilProjectileLights();
     RT_UploadLavaLights();
+    // Doom64-RT: put the player on a blood pool on the first frame of a map that
+    // has one. It has to be here rather than a "+rt_blood_goto" on the command
+    // line: those run before the level exists, so the CCMD would report "no
+    // level" and the launcher would look like it had worked. Same reason
+    // rt_lava_autogoto lives inside RT_UploadLavaLights.
+    // Doom64-RT: put the player on a blood pool, hands-free. FIRED FOUR TIMES
+    // across the first ~3.5 seconds, and that is the fix for a bug that cost a
+    // day of measurements: a single teleport on an early frame runs, SetOrigin
+    // is called, "moved you there" prints -- and Retribution's map-start intro
+    // (the act title window) re-places the player afterwards, so every capture
+    // "from the pool" was actually from the spawn. The CCMD is idempotent, so
+    // repeating it is free; the last shot lands after the intro is done.
+    // Fires FOUR times over the first ~3.5s of maptime, not once: Retribution's
+    // act title card re-positions the player after spawn, so a single early
+    // move is silently undone and looks exactly like the CCMD not working.
+    if( ( cvar::rt_blood_autogoto || cvar::rt_sludge_autogoto ) && primaryLevel )
+    {
+        const int          t     = primaryLevel->maptime;
+        static const void* s_lvl = nullptr;
+        static int         s_fired;
+        if( s_lvl != primaryLevel )
+        {
+            s_lvl   = primaryLevel;
+            s_fired = 0;
+        }
+        if( s_fired < 4 && t >= 10 + s_fired * 35 )
+        {
+            s_fired++;
+            AddCommandString( cvar::rt_sludge_autogoto ? "rt_sludge_goto"
+                                                       : "rt_blood_goto" );
+        }
+    }
     RT_UploadSwitchLights();
     RT_UpdateSectorEmisThreshold();
     RT_WatchLightlevels();
@@ -2267,6 +2677,12 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // Dust motes. After the sparks so both batches are built in one place, and
     // stateless -- there is nothing to step, so there is no Update half.
     RT_DrawDust();
+    // The fire sky's meteor pool and its two schedulers. Stepped HERE and not
+    // in the sky draw: a sealed room submits no sky portal, and scheduling
+    // strikes there would stop the storm exactly while the player is indoors,
+    // which is where a flash through a doorway is worth most. The meteor QUADS
+    // are drawn from hw_skyportal.cpp, which owns the sky vertex buffer.
+    RT_FireSkyTick();
     RT_UploadSparkLights();
     RT_SparkDebugTick();
     RT_DebugNearbyWallTextures();
@@ -2349,6 +2765,42 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
                                     l_col255( cvar::rt_blood_crest_r,
                                               cvar::rt_blood_crest_g,
                                               cvar::rt_blood_crest_b ) },
+        // Same 0..3 order. Blood and sludge have authored relief
+        // (d64r-liquid-art.wad + tools/gen_liquid_art.py); only blood has a
+        // flow map. Water and nukage keep the water wave and are unchanged.
+        .stylizedLiquidRelief   = { 0.f, 0.f, cvar::rt_sludge_relief, cvar::rt_blood_relief },
+        .stylizedLiquidFlow     = { 0.f, 0.f, 0.f, cvar::rt_blood_flow },
+        // Per-liquid reflection. 1 and 0 are "unchanged": 1 keeps the whole
+        // stylized Fresnel curve, and a roughness of 0 falls back to
+        // rt_water_rough. Only WATER is still a literal 1: it is the liquid the
+        // stylized Fresnel curve was authored for, and the one thing in the game
+        // that should reflect a room. The other three each pull their own value
+        // down (sludge 0, blood 0.3, nukage 0.5) because a mirror is what sells
+        // WATER, and wearing it is what made mud, gore and poison read as water
+        // with paint in it. A refl of exactly 0 also takes that liquid off the
+        // checkerboard split -- see rt_liquid_checkerboard; a fraction does not.
+        // Roughness stays paired with an AUTHORED normal: only sludge and blood
+        // have one, so nukage has no rt_nukage_rough to give it.
+        .stylizedLiquidRefl     = { 1.f,
+                                    cvar::rt_nukage_refl,
+                                    cvar::rt_sludge_refl,
+                                    cvar::rt_blood_refl },
+        .stylizedLiquidRough    = { 0.f, 0.f, cvar::rt_sludge_rough, cvar::rt_blood_rough },
+        // Options > Quality "Liquid surfaces": 0 = full-res, no mirror, for ALL
+        // four liquids. A liquid whose refl is 0 takes that path regardless.
+        .liquidNoSplit          = cvar::rt_liquid_checkerboard ? 0.f : 1.f,
+        // Only water projects caustics now. Nukage, sludge and blood all wear
+        // opaque reference art, and a caustic is light refracted THROUGH a
+        // fluid onto what is beyond it. Scales rt_water_caustics, does not
+        // replace it.
+        .stylizedLiquidCaustics = { 1.f,
+                                    cvar::rt_nukage_caustics,
+                                    cvar::rt_sludge_caustics,
+                                    cvar::rt_blood_caustics },
+        .liquidFlowSpeed        = cvar::rt_blood_flow_speed,
+        .liquidFlowScale        = cvar::rt_blood_flow_scale,
+        .liquidFlowAspect       = cvar::rt_blood_flow_aspect,
+        .liquidFlowDebug        = cvar::rt_blood_flow_debug ? 1.f : 0.f,
         .lavaEmisBoost          = std::max( 0.f, float{ cvar::rt_lava_emis } ),
         .lavaFlowStrength       = std::clamp( float{ cvar::rt_lava_flow }, 0.f, 1.f ),
         .lavaFlowSpeed          = cvar::rt_lava_flow_speed,
@@ -2358,6 +2810,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .lavaPulseSpeed         = cvar::rt_lava_pulse_speed,
         .lavaGiBoost            = std::max( 0.f, float{ cvar::rt_lava_gi } ),
         .lavaDebug              = cvar::rt_lava_debug ? 1.f : 0.f,
+
         .lavaTint               = l_col255( cvar::rt_lava_tint_r,
                                             cvar::rt_lava_tint_g,
                                             cvar::rt_lava_tint_b ),
@@ -2474,8 +2927,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // ab-smoke.cmd fogsafe asserts it did not.
     constexpr float RT_VOLUME_REF_FAR = 30.f;
 
-    const float volume_dens = float{ cvar::rt_volume_scatter } *
-                              ( std::max( 0.001f, smoke_far ) / RT_VOLUME_REF_FAR );
+    // NO GLOBAL HAZE UNDER A FIRE SKY. On the five fire maps (and wherever
+    // rt_fireskies_new is on) the medium is cut to zero: a grey scattering
+    // haze lit by the overhead light reads as fog over the sky, which is the
+    // opposite of a burning one (MAP23, 2026-08-23). The cvar itself is not
+    // written -- it is CVAR_ARCHIVE and every other map wants it -- this is
+    // the effective value only. Fog presets and smoke are untouched.
+    const bool  fire_sky    = RT_FireSkyMap() || RT_FireSkyActive();
+    const float volume_dens = fire_sky ? 0.f
+                                       : float{ cvar::rt_volume_scatter } *
+                                             ( std::max( 0.001f, smoke_far ) / RT_VOLUME_REF_FAR );
 
     if( smoke_live )
     {
@@ -2722,9 +3183,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     // a struct that does not change size cannot break it.
     const std::vector< uint64_t >& shaft_ids = RT_ShaftLightsSelect();
 
+    // Doom64-RT: VOLUMETRIC CLOUDS (rt_vclouds.cpp). Always linked; enabled=0
+    // when the mode is off, which leaves RTGL1's sky passes exactly as they
+    // were.
+    RgDrawFrameVolumetricCloudParams vcloud_params{};
+    RT_VCloudsParams( &vcloud_params );
+    vcloud_params.pNext = &smoke_params;
+
     auto shaft_params = RgDrawFrameLightShaftParams{
         .sType           = RG_STRUCTURE_TYPE_DRAW_FRAME_LIGHT_SHAFT_PARAMS,
-        .pNext           = &smoke_params,
+        .pNext           = &vcloud_params,
         .count           = uint32_t( shaft_ids.size() ),
         .pLightUniqueIds = shaft_ids.empty() ? nullptr : shaft_ids.data(),
         .multiplier      = std::max( 0.f, float{ cvar::rt_volume_shaft_mult } ),
@@ -2814,8 +3282,16 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .useIlluminationVolume   = cvar::rt_illum_volume && cvar::rt_volume_type != 0,
         .fallbackSourceColor     = { 0, 0, 0 },
         .fallbackSourceDirection = { 0, -1, 0 },
+        // On a CLOUD map (rt_clouds is off globally and the per-map presets
+        // turn it on), the moon's shafts take rt_clouds_volume_lintensity
+        // instead of the global: under a deck the haze scattered off the moon
+        // otherwise competes with the deck for the sky (asked for 2026-08-23).
+        // Not on a fire map, whose medium is already zero above.
         .lightMultiplier         = fog.on ? std::max( 0.f, float{ cvar::rt_fog_lightmult } )
-                                          : float{ cvar::rt_volume_lintensity },
+                                   : ( bool{ cvar::rt_clouds } && !fire_sky &&
+                                       float{ cvar::rt_clouds_volume_lintensity } >= 0.f )
+                                       ? float{ cvar::rt_clouds_volume_lintensity }
+                                       : float{ cvar::rt_volume_lintensity },
         .allowTintUnderwater     = false,
         .underwaterColor         = {},
         // The two RTGL1 additions this feature is built on. Both are no-ops off
@@ -2926,11 +3402,31 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .lensDirtIntensity = cvar::rt_bloom_dirt ? dirtscale : 0.f,
     };
 
+    // GI path depth, and the shadow-ray depth it needs. A bounce vertex at
+    // index >= maxBounceShadows samples NO analytic lights (RaygenCommon.h
+    // isDirectIlluminationValid), so past rt_shadowrays a deeper bounce costs
+    // a ray and a full RIS pass to return emissives only. Indices are 0
+    // (primary) and 1..N (indirect vertices): lighting depth N needs N+1.
+    //
+    // This is a per-frame PARAM value. The cvar itself is never written --
+    // rt_shadowrays is archived and deliberately unpinned, and a startup
+    // re-apply of it once cost a day (rt_quality.cpp, tools/d64rt-pins.cfg).
+    // 0 is NOT a low value -- it means "light every vertex, cast no shadow
+    // rays" -- so it is preserved, never floored. And the floor is a no-op at
+    // depth 2, so the shipped configuration is untouched.
+    const uint32_t giDepth  = uint32_t( std::clamp( int( cvar::rt_gi_bounces ), 1, 4 ) );
+    uint32_t       shadowsN = safe_uint( *cvar::rt_shadowrays );
+    if( cvar::rt_gi_bounce_shadows && giDepth > 2u && shadowsN != 0u )
+    {
+        shadowsN = std::max( shadowsN, giDepth + 1u );
+    }
+
     auto illum_params = RgDrawFrameIlluminationParams{
         .sType                              = RG_STRUCTURE_TYPE_DRAW_FRAME_ILLUMINATION_PARAMS,
         .pNext                              = &bloom_params,
-        .maxBounceShadows                   = safe_uint( *cvar::rt_shadowrays ),
-        .enableSecondBounceForIndirect      = true,
+        .maxBounceShadows                   = shadowsN,
+        .indirectBounces                    = giDepth,
+        .indirectLegacyBounceWeight         = static_cast< RgBool32 >( bool( cvar::rt_gi_bounce_legacy ) ),
         .cellWorldSize                      = 2.0f,
         .directDiffuseSensitivityToChange   = std::clamp( float( cvar::rt_illum_sens_direct ), 0.f, 1.f ),
         .indirectDiffuseSensitivityToChange = std::clamp( float( cvar::rt_illum_sens_indirect ), 0.f, 1.f ),
@@ -2946,8 +3442,9 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .rrFireflyMinLum                    = std::max( float( cvar::rt_rr_firefly_minlum ), 0.0f ),
         .restirBlueNoise                    = static_cast< RgBool32 >( bool( cvar::rt_restir_bluenoise ) ),
         .shadowSamples                      = uint32_t( std::clamp( int( cvar::rt_shadow_samples ), 1, 8 ) ),
-        .debugRestirM                       = static_cast< RgBool32 >( bool( cvar::rt_debug_restir_m ) ),
+        .debugRestirM                       = uint32_t( std::clamp( int( cvar::rt_debug_restir_m ), 0, 2 ) ),
         .debugVisibility                    = uint32_t( std::clamp( int( cvar::rt_debug_visibility ), 0, 2 ) ),
+        .debugShowFlags                     = uint32_t( std::max( 0, int( cvar::rt_debug_show ) ) ),
         .restirTemporalJitter               = std::clamp( float( cvar::rt_restir_tjitter ), 0.0f, 8.0f ),
         .rrSpecularHitDistance              = static_cast< RgBool32 >( bool( cvar::rt_rr_spechitdist ) ),
         .directSamples                      = uint32_t( std::clamp( int( cvar::rt_spp_direct ), 1, 8 ) ),
@@ -2991,6 +3488,10 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .nrdPhiLuminance                    = std::max( 0.0f, float( cvar::rt_nrd_philum ) ),
         .nrdMinHitDistWeight                = std::max( 0.0f, float( cvar::rt_nrd_minhitdist ) ),
         .nrdAntiFirefly                     = static_cast< RgBool32 >( bool( cvar::rt_nrd_antifirefly ) ),
+        .svgfFp                             = uint32_t( std::clamp( int( cvar::rt_svgf_fp ), 0, 2 ) ),
+        .svgfFpGrad                         = static_cast< RgBool32 >( bool( cvar::rt_svgf_fp_grad ) ),
+        .svgfIndirMaxHist                   = std::clamp( float( cvar::rt_svgf_indir_maxhist ), 0.f, 256.f ),
+        .svgfIndirAntilag                   = static_cast< RgBool32 >( bool( cvar::rt_svgf_indir_antilag ) ),
     };
 
     auto ef_wipe = RgPostEffectWipe{
@@ -3234,6 +3735,21 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
         .resetHistory     = static_cast< RgBool32 >( wantResetHistory ),
         .currentTime      = curtime,
     };
+
+    // Time probe, behind the flow debug cvar: the flow-map investigation found
+    // globalUniform.time FROZEN in the raygen shaders while everything RTGL
+    // does between info.currentTime and gu->time reads clean. This prints what
+    // gzdoom actually hands over, once a second, so "gzdoom sends a constant"
+    // and "RTGL loses it" stop being the same symptom.
+    if( bool{ cvar::rt_blood_flow_debug } )
+    {
+        static double s_lastTimeProbe = -1.0;
+        if( curtime - s_lastTimeProbe >= 1.0 || curtime < s_lastTimeProbe )
+        {
+            s_lastTimeProbe = curtime;
+            Printf( "RT time probe: curtime %.3f\n", curtime );
+        }
+    }
 
     RTDrawFrame.Clock();
     RgResult r = rt.rgDrawFrame( &info );

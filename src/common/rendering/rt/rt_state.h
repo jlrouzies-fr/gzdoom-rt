@@ -73,6 +73,21 @@ enum class RtPrim : uint32_t
     // strips in MAP02's bloom room. This flag is what lets rt_draw suppress the glow on
     // the planes that now have real lights, and leave the wall strips glowing.
     LatticeLitFlat      = 1 << 13,
+    // Sky draws only, for the volumetric clouds (rt_vclouds.cpp). SkyClouds:
+    // this is the BACKDROP and the cloud map is composited over it. SkyBehind-
+    // Clouds: drawn after the backdrop but sits behind the cloud (the moon
+    // disc), so it is occluded by transmittance only. Neither: in front of
+    // the clouds (a lightning bolt), untouched. Inert while the mode is off.
+    SkyClouds           = 1 << 14,
+    SkyBehindClouds     = 1 << 15,
+    // "this wall is a bulb panel on a chase pillar, and the crest is somewhere".
+    // Pushed by HWWall::DrawWall, the only place that knows which sidedef is being
+    // drawn. The analytic lights on those panels already sweep (rt_pillar_chase);
+    // without this the PAINTED bulbs stay lit at full strength the whole time and
+    // the fixture reads as four permanently-on lamps with a light moving somewhere
+    // behind them. The strength itself travels beside the flag, in
+    // RT_ChasePanelEmisCurrent(), because a bitflag cannot carry a float.
+    ChasedPanel         = 1 << 16,
 };
 
 enum class RtManyPrimsPerId : uint32_t

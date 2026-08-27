@@ -226,6 +226,42 @@ public:
             return {};
         }
 
+        // Doom64-RT: never format past the end of the source buffer. The index
+        // path derives `first`/`count` from whatever indices it read; a bad index
+        // (see DrawIndexed) used to send MakeFormatted on a reserve()+loop to
+        // 0xFFFFFFFF on the main thread -- a freeze, not a crash. Clamp here, and
+        // return an empty span for anything that does not fit, so the caller draws
+        // nothing instead of hanging.
+        {
+            const size_t stride = std::visit(
+                []< typename T >( const T& ) -> size_t {
+                    if constexpr( std::is_same_v< T, std::monostate > )
+                    {
+                        return 0;
+                    }
+                    else
+                    {
+                        return sizeof( T );
+                    }
+                },
+                m_vertextype );
+            const size_t available = stride ? AccessBuffer().size_bytes() / stride : 0;
+            if( size_t( first ) + size_t( count ) > available )
+            {
+                static bool warned = false;
+                if( !warned )
+                {
+                    warned = true;
+                    Printf( PRINT_HIGH,
+                            "RT: vertex range [%u, +%u) exceeds buffer (%zu), draw skipped\n",
+                            first,
+                            count,
+                            available );
+                }
+                return {};
+            }
+        }
+
         if( first + count > m_formatted.size() )
         {
             MakeFormatted( m_formatted, first + count, AccessBuffer(), m_vertextype );

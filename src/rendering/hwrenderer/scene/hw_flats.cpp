@@ -694,6 +694,12 @@ void HWFlat::ProcessSector(HWDrawInfo *di, sector_t * frontsector, int which)
 			if ((rover->flags&(FF_EXISTS | FF_RENDERPLANES | FF_THISINSIDE)) == (FF_EXISTS | FF_RENDERPLANES))
 			{
 				if (rover->flags&FF_FOG && di->isFullbrightScene()) continue;
+#if HAVE_RT
+				// Doom64-RT: the sector's own planes skip skyflatnum (above); a rover
+				// never did, and the RT scene has no sky-portal state for a flat, so a
+				// sky-flatted 3D floor would upload as an opaque slab. Skip it.
+				if (*rover->top.texture == skyflatnum || *rover->bottom.texture == skyflatnum) continue;
+#endif
 				if (!rover->top.copied && rover->flags&(FF_INVERTPLANES | FF_BOTHPLANES))
 				{
 					double ff_top = rover->top.plane->ZatPoint(sector->centerspot);
@@ -742,6 +748,12 @@ void HWFlat::ProcessSector(HWDrawInfo *di, sector_t * frontsector, int which)
 			if ((rover->flags&(FF_EXISTS | FF_RENDERPLANES | FF_THISINSIDE)) == (FF_EXISTS | FF_RENDERPLANES))
 			{
 				if (rover->flags&FF_FOG && di->isFullbrightScene()) continue;
+#if HAVE_RT
+				// Doom64-RT: the sector's own planes skip skyflatnum (above); a rover
+				// never did, and the RT scene has no sky-portal state for a flat, so a
+				// sky-flatted 3D floor would upload as an opaque slab. Skip it.
+				if (*rover->top.texture == skyflatnum || *rover->bottom.texture == skyflatnum) continue;
+#endif
 				if (!rover->bottom.copied && rover->flags&(FF_INVERTPLANES | FF_BOTHPLANES))
 				{
 					double ff_bottom = rover->bottom.plane->ZatPoint(sector->centerspot);

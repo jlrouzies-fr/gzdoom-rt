@@ -124,6 +124,7 @@
 
 #if HAVE_RT
 #include "rt/rt_state.h"
+#include "rt/rt_stats.h"
 #include "rt/rt_cvars.h"
 void        RT_FirstStartDone();
 extern bool g_noinput_onstart;
@@ -1345,12 +1346,34 @@ void D_DoomLoop ()
 			}
 			else
 			{
+				// RTPlaysim: see rt_stats.h. The RT phase counters could not
+				// name the 30-78% of a spiking frame that lay outside them, and
+				// this is the largest candidate -- the tic itself plus the GC
+				// step TryRunTics runs inside it. glcycle_t is a no-op unless a
+				// stat is active, so this costs nothing in play.
+				RTPlaysim.Clock();
 				TryRunTics (); // will run at least one tic
+				RTPlaysim.Unclock();
 			}
 			// Update display, next frame, with current state.
 			I_StartTic ();
 			D_ProcessEvents();
+			// RTDisplay: see rt_stats.h. Splits "not the renderer and not the
+			// playsim" into "gzdoom's own draw" and "not even in D_Display".
+			// Reset HERE, not in RT_StatsNewFrame: that function runs inside
+			// D_Display, so resetting there zeroes this accumulator while its
+			// own clock is still running and the result comes out negative.
+			RTDisplay.Reset();
+			// glcycle_t is gated on a global that RT_StatsNewFrame flips -- and
+			// that runs INSIDE D_Display. So on the frame the counters turn on,
+			// Clock() did nothing and Unclock() subtracted from a start stamp
+			// that was never taken, which printed display=65058299.724 ms. Only
+			// keep the value when the bracket was live at both ends.
+			const bool rtdisp_live = glcycle_t::active;
+			RTDisplay.Clock();
 			D_Display ();
+			RTDisplay.Unclock();
+			rt_display_ms = ( rtdisp_live && glcycle_t::active ) ? RTDisplay.TimeMS() : 0.0;
 			// RT_BOOT: closes the black gap. Everything between V_Init2 and this
 			// first present is a dead window with nothing on screen.
 			if (g_rtboot_vinit2_end != 0)

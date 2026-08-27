@@ -1589,10 +1589,15 @@ static auto RT_GetDescription( std::string_view rtkey, bool forFirstStartMenu = 
             "Technique to apply to upscale from",
             "a render resolution to a window / display resolution.",
             "",
-            "NVIDIA DLSS 2 -- Super Resolution.",
+            // No version number in either line, on purpose: upstream's "DLSS 2" /
+            // "AMD FSR 2" named a marketing tier rather than the installed
+            // runtime, and rt/bin ships DLSS 310.7 -- a DLSS 4 runtime. The
+            // labels in the Mode row (rt_cutscene.cpp l_getmode, and
+            // listmenuitems_rt.zs in rt-wad-overlay) were changed to match.
+            "NVIDIA DLSS -- Super Resolution.",
             "Uses AI for upscaling. Exclusive to NVIDIA RTX graphics cards.",
             "",
-            "AMD FSR 2 -- Super Resolution.",
+            "AMD FSR -- Super Resolution.",
             "Uses heuristics for upscaling. Available on most graphics cards.",
             "",
 			"Vintage techniques render at 90s displays' resolution.",

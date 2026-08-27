@@ -65,7 +65,14 @@ QuadBatch s_batchSpark;
 // minimum: four pieces of art is four primitives however few shards are alive.
 QuadBatch s_batchShard[ RT_BARREL_ART_SLOTS ];
 
-// The coals, when they wear the authored ember sheet.
+// A MARK'S SPOTS WHEN THEY WEAR ART -- barrel coals off the ember sheet, or a
+// fireball's flames off the flame sheet. ONE batch rather than two because a
+// mark's fx decides which sheet it wears, so the two can never be accumulating
+// at the same moment; the texture name and the tint are chosen at upload.
+//
+// (It was `s_batchEmberArt` while coals were the only customer. Renamed when the
+// flames arrived: a name that says "ember" for a batch full of fire is exactly
+// the kind of drift this file spends its comments undoing.)
 //
 // OPAQUE AND ALPHA-TESTED, NOT ADDITIVE, and that is not a style choice -- it is
 // the only path where the art exists at all.
@@ -96,7 +103,30 @@ QuadBatch s_batchShard[ RT_BARREL_ART_SLOTS ];
 // owns its colour: the primitive colour is ignored when an albedo texture is
 // present (HitInfo.inl), so a per-mark emissive scaled by the mark's fade is
 // what makes the bed dim as it dies.
-QuadBatch s_batchEmberArt;
+QuadBatch s_batchSpotArt;
+
+// THE FLAMES, and they are a separate batch from the coals above for one reason
+// that is not about tidiness: they are ADDITIVE.
+//
+// A coal is a hot dot and survives being opaque traced geometry. A flame does
+// not, and the first version proved it -- the FIRE sprite's near-black outline
+// became a solid dark occluder and drew a BLACK BLOB on the wall with a faint
+// smear inside, and the denoiser answered the small bright emissive core by
+// smearing that too. Both are properties of the PRIMITIVE, not of any value.
+//
+// Additive fixes both at once: a dark texel adds nothing, a transparent one adds
+// nothing, and a rasterized overlay never reaches the denoiser -- so the flame
+// keeps its silhouette, which is the whole effect.
+//
+// The cost of the additive path is the one this file already documents for
+// sparks: no reflection, no GI. A fire's cast light is the analytic one, exactly
+// as a spark's is.
+//
+// ONE BATCH FOR THE WHOLE WORLD, unlike s_batchSpotArt's one-primitive-per-mark.
+// The rasterized path reads the PER-VERTEX colour (RsWorld.inl), so four
+// differently coloured fireballs coexist inside a single primitive -- the
+// constraint that forces the traced coals apart simply is not there.
+QuadBatch s_batchFireArt;
 
 // DEBRIS IS BATCHED BY COLOUR, and that is forced by how RTGL1 shades traced
 // geometry rather than by anything about the effect.
@@ -361,7 +391,19 @@ void UploadSparkGlowLights()
 
     const float gi = std::max( 0.f, float{ cvar::rt_spark_glow_intensity } );
     const int   gmax = std::max( 0, int{ cvar::rt_spark_glow_max } );
-    if( gi <= 0.f || gmax == 0 || g_sparkCount == 0 )
+    // THE FIRE SKY'S EMBERS HAVE THEIR OWN BUDGET. A tinted Spark (baseRgb
+    // set -- the discriminator the draw and the sim use) is a sky ember, and
+    // there are ~80 of those in the air at once, so they would otherwise fill
+    // the global cap and the shower off a weapon impact stays dark -- or the
+    // cap is raised for them and every other effect's cost moves with it.
+    // Two lists, two caps, two intensities; the weapon sparks see no change.
+    const float ei   = std::max( 0.f, float{ cvar::rt_firesky_ember_glow_intensity } );
+    const int   emax = std::max( 0, int{ cvar::rt_firesky_ember_glow_max } );
+    if( ( gi <= 0.f || gmax == 0 ) && ( ei <= 0.f || emax == 0 ) )
+    {
+        return;
+    }
+    if( g_sparkCount == 0 )
     {
         return;
     }
@@ -377,8 +419,11 @@ void UploadSparkGlowLights()
         uint32_t idx;
     };
     static std::vector< GCand > cand;
+    static std::vector< GCand > ecand;
     cand.clear();
+    ecand.clear();
     cand.reserve( g_sparkCount );
+    ecand.reserve( g_sparkCount );
 
     for( uint32_t i = 0; i < g_sparkCount; i++ )
     {
@@ -388,26 +433,44 @@ void UploadSparkGlowLights()
             continue;
         }
         const float t = std::clamp( sp.age / std::max( 1e-4f, sp.life ), 0.f, 1.f );
+        const float d2 = ( sp.pos - eye ).LengthSquared();
+        if( sp.baseRgb != 0u )
+        {
+            // Sky embers: by distance alone. The ones that matter are the ones
+            // lying on the floor beside the player, which are the OLD ones.
+            ecand.push_back( GCand{ d2, i } );
+            continue;
+        }
         // Rank by distance, biased by age: a young spark is both brighter and
         // more interesting than an old one at the same range, and without the
         // bias the cap fills with settled embers while the shower you just made
         // stays dark.
-        const float d2 = ( sp.pos - eye ).LengthSquared();
         cand.push_back( GCand{ d2 * ( 1.f + 4.f * t * t ), i } );
     }
 
-    if( cand.size() > size_t( gmax ) )
-    {
-        std::partial_sort( cand.begin(),
-                           cand.begin() + gmax,
-                           cand.end(),
-                           []( const GCand& a, const GCand& b ) { return a.key < b.key; } );
-        cand.resize( size_t( gmax ) );
-    }
+    auto l_cap = []( std::vector< GCand >& v, int cap ) {
+        if( v.size() > size_t( cap ) )
+        {
+            std::partial_sort( v.begin(),
+                               v.begin() + cap,
+                               v.end(),
+                               []( const GCand& a, const GCand& b ) { return a.key < b.key; } );
+            v.resize( size_t( cap ) );
+        }
+    };
+    l_cap( cand, ( gi > 0.f ) ? gmax : 0 );
+    l_cap( ecand, ( ei > 0.f ) ? emax : 0 );
 
-    for( const GCand& c : cand )
+    // The ember list rides after the spark list; each carries its own
+    // intensity through the loop.
+    const size_t nSpark = cand.size();
+    cand.insert( cand.end(), ecand.begin(), ecand.end() );
+
+    for( size_t n = 0; n < cand.size(); n++ )
     {
-        const Spark& sp = s_sparks[ c.idx ];
+        const GCand& c     = cand[ n ];
+        const float  inten = ( n < nSpark ) ? gi : ei;
+        const Spark& sp    = s_sparks[ c.idx ];
 
         const float t = std::clamp( sp.age / std::max( 1e-4f, sp.life ), 0.f, 1.f );
         const float k = ( 1.f - t ) * ( 1.f - t );
@@ -424,14 +487,24 @@ void UploadSparkGlowLights()
                                        int( t * float( RT_SPARK_RAMP_N ) ) );
         const uint32_t rgb = RT_SPARK_RAMP[ ci ];
 
+        float lr = ( ( rgb >> 16 ) & 0xFF ) / 255.f;
+        float lg = ( ( rgb >> 8 ) & 0xFF ) / 255.f;
+        float lb = ( rgb & 0xFF ) / 255.f;
+        // A tinted spark (the fire sky's embers, rt_firesky_ember_color)
+        // throws its tint: the same multiply the draw applies, so a green
+        // ember lights the floor green and not the palette's yellow.
+        if( sp.baseRgb != 0u )
+        {
+            lr *= ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f;
+            lg *= ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f;
+            lb *= ( sp.baseRgb & 0xFF ) / 255.f;
+        }
+
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
-            .color     = rt.rgUtilPackColorFloat4D( ( ( rgb >> 16 ) & 0xFF ) / 255.f,
-                                                    ( ( rgb >> 8 ) & 0xFF ) / 255.f,
-                                                    ( rgb & 0xFF ) / 255.f,
-                                                    1.0f ),
-            .intensity = gi * k,
+            .color     = rt.rgUtilPackColorFloat4D( lr, lg, lb, 1.0f ),
+            .intensity = inten * k,
             .position  = { sp.pos.X, sp.pos.Y, sp.pos.Z },
             .radius    = 0.03f,
         };
@@ -618,6 +691,10 @@ void RT_DrawSparks()
 
     s_batchSpark.verts.clear();
     s_batchSpark.idx.clear();
+    // Cleared per FRAME, not per mark, because it is one primitive for the
+    // whole world -- see the note on the batch.
+    s_batchFireArt.verts.clear();
+    s_batchFireArt.idx.clear();
     for( QuadBatch& sb : s_batchShard )
     {
         sb.verts.clear();
@@ -737,6 +814,17 @@ void RT_DrawSparks()
             g = std::min( 1.f, tg * k * curve );
             b = std::min( 1.f, tb * k * curve );
         }
+        else if( sp.kind == SparkKind::Spark && sp.baseRgb != 0u )
+        {
+            // A TINTED SPARK: the fire sky's embers (rt_firesky_ember_color).
+            // The ramp stays the age curve -- hot, cooling, out -- and the
+            // tint is multiplied over it, so a green fire sky drops green
+            // embers that still dim the way the palette's do. Ordinary sparks
+            // carry baseRgb 0 and never enter here.
+            r = std::min( 1.f, r * ( ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f ) );
+            g = std::min( 1.f, g * ( ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f ) );
+            b = std::min( 1.f, b * ( ( sp.baseRgb & 0xFF ) / 255.f ) );
+        }
         else if( isDbr && sp.baseRgb != 0u )
         {
             // The class scales both, and fluid pushes tint past 1 so it CLAMPS at
@@ -748,6 +836,28 @@ void RT_DrawSparks()
                 float tr = ( ( sp.baseRgb >> 16 ) & 0xFF ) / 255.f;
                 float tg = ( ( sp.baseRgb >> 8 ) & 0xFF ) / 255.f;
                 float tb = ( sp.baseRgb & 0xFF ) / 255.f;
+
+                // A LITERAL COLOUR SKIPS BOTH CORRECTIONS BELOW, and that is the
+                // whole reason the flag exists. The chroma expansion and the
+                // luminance pin are there to rescue a WHOLE-TEXTURE MEAN, which
+                // is dull and sits at an arbitrary brightness. A liquid droplet
+                // is handed the exact colour its pool is painted with
+                // (rt_*_crest_*), so expanding its chroma would push water's pale
+                // 140,204,255 into raw cyan and the pin would then drag it down
+                // to a mid grey-blue -- two fixes for a problem this input does
+                // not have. It gets one honest scale, rt_spark_fluid_albedo, and
+                // still takes the age curve below so it fades like everything
+                // else.
+                if( sp.litRgb )
+                {
+                    const float k =
+                        std::clamp( float{ cvar::rt_spark_fluid_albedo }, 0.f, 4.f );
+                    tr = std::min( 1.f, tr * k );
+                    tg = std::min( 1.f, tg * k );
+                    tb = std::min( 1.f, tb * k );
+                }
+                else
+                {
 
                 // A WHOLE-TEXTURE MEAN IS A CHROMA KILLER, and this is the step
                 // that makes the tint visible at all.
@@ -786,6 +896,8 @@ void RT_DrawSparks()
                     tg = std::min( 1.f, tg * k );
                     tb = std::min( 1.f, tb * k );
                 }
+
+                } // !sp.litRgb
 
                 // The ramp's own darkening, as a fraction of its first entry, so
                 // a chip still fades with age whatever colour it took.
@@ -1371,7 +1483,12 @@ void RT_DrawSparks()
         const float wander = std::max( 0.f, float{ cvar::rt_arc_wander } );
         const bool  wantGlow = cvar::rt_arc_glow;
 
+        // TWO MASTERS, ONE MECHANISM. A fireball's flames must not disappear
+        // because someone switched the ROCKET's coals off to look at something
+        // else -- and vice versa. Resolved per mark below; the shared constants
+        // are still pulled once here.
         const bool  wantEmber   = cvar::rt_ember;
+        const bool  wantFire    = cvar::rt_fire;
         // NOTE: the ember COUNT is resolved per mark inside the loop, not here.
         // A barrel's scorch carries more coals than a rocket's and the two can
         // be alive at once, so it rides the mark. EmberCountFor is the one place
@@ -1389,6 +1506,23 @@ void RT_DrawSparks()
         const float emberGlowRad = std::max( 0.005f, float{ cvar::rt_ember_glow_radius } );
         const float emberFlicker = std::clamp( float{ cvar::rt_ember_flicker }, 0.f, 1.f );
         const float emberRate    = std::max( 0.f, float{ cvar::rt_ember_flicker_rate } );
+
+        // THE FLAME SHEET'S OWN THREE. Global rather than per mark, unlike almost
+        // everything else here, and deliberately: how fast fire flickers and how
+        // far it leans are facts about fire, not about which monster threw the
+        // ball. Two fire marks of different colours should animate alike.
+        //
+        // The frame count comes off the IMAGE (FireArtFrames), so re-cutting the
+        // strip with more drawings needs no code change and cannot disagree with
+        // what is on disk.
+        const float fireSway   = std::max( 0.f, float{ cvar::rt_fire_sway } );
+        const float fireFps    = std::max( 0.f, float{ cvar::rt_fire_rate } );
+        // The GUTTER, and it is a fraction of the flame's own brightness rather
+        // than an absolute -- weights inside the rig sum to 1 so that stays true.
+        const float fireFlicker = std::max( 0.f, float{ cvar::rt_fire_flicker } );
+        const float fireRate    = std::max( 0.f, float{ cvar::rt_fire_flicker_rate } );
+        const float fireGlowRad = std::max( 0.005f, float{ cvar::rt_fire_glow_radius } );
+        const int   fireFrames = FireArtFrames();
 
         for( uint32_t ai = 0; ai < s_arcCount; ai++ )
         {
@@ -1961,17 +2095,35 @@ void RT_DrawSparks()
             // Small, few, and stationary. The count is single digits by design.
             const int emberN = EmberCountFor( m );
 
-            if( FxHasEmbers( m.fx ) && wantEmber && emberN > 0 )
+            const bool wantSpots = ( m.fx == ImpactFx::Fire ) ? wantFire : wantEmber;
+
+            if( FxHasEmbers( m.fx ) && wantSpots && emberN > 0 )
             {
                 // THE PALETTE IS THE MARK'S, NOT THE SYSTEM'S. A rocket coal
                 // cools through MISL's orange into soot; the Unmaker's burn
                 // cools through LPUF's pure reds and never passes through
                 // yellow or brown. Same mechanism, different art -- which is
                 // the whole difference between the two effects.
-                const uint32_t* eramp =
-                    ( m.fx == ImpactFx::Laser ) ? RT_LASER_RAMP : RT_EMBER_RAMP;
-                const int erampN =
-                    ( m.fx == ImpactFx::Laser ) ? RT_LASER_RAMP_N : RT_EMBER_RAMP_N;
+                //
+                // A FIREBALL TAKES ITS FLAVOUR'S OWN RAMP, which is the whole
+                // reason the four fireballs are four flavours: an imp's fire is
+                // orange, a nightmare imp's is violet, a hell knight's green and
+                // a baron's red, and each was read out of that projectile's own
+                // death sprite. ArcStyleFor already holds exactly that, so this
+                // asks the style table rather than growing a third arm on the
+                // ternary -- a fifth fx would otherwise need a fourth.
+                const uint32_t* eramp = RT_EMBER_RAMP;
+                int             erampN = RT_EMBER_RAMP_N;
+                if( m.fx == ImpactFx::Laser )
+                {
+                    eramp  = RT_LASER_RAMP;
+                    erampN = RT_LASER_RAMP_N;
+                }
+                else if( m.fx == ImpactFx::Fire )
+                {
+                    eramp  = ArcStyleFor( m.flavor ).ramp;
+                    erampN = ArcStyleFor( m.flavor ).rampN;
+                }
 
                 const float emberLife =
                     m.emberLife > 0.f ? m.emberLife : emberLifeBase;
@@ -2019,8 +2171,8 @@ void RT_DrawSparks()
                     // The textured coals accumulate here and are uploaded as ONE
                     // traced primitive once this mark's loop is done. Cleared
                     // per mark, not per frame -- see the note on the batch.
-                    s_batchEmberArt.verts.clear();
-                    s_batchEmberArt.idx.clear();
+                    s_batchSpotArt.verts.clear();
+                    s_batchSpotArt.idx.clear();
 
                     for( int e = 0; e < emberN; e++ )
                     {
@@ -2029,6 +2181,27 @@ void RT_DrawSparks()
                         // a handful of spots fading in perfect unison is the
                         // tell that they are one object rather than several.
                         const uint32_t eh = m.seed + 0x9E3779B9u + uint32_t( e ) * 40503u;
+
+                        // ART OR A FLAT QUAD, decided per MARK. A barrel's coals
+                        // wear the authored ember sheet; a rocket's five stay the
+                        // flat quad they were accepted as. One switch for both
+                        // would be the coupling this file keeps having to undo.
+                        //
+                        // A FIREBALL'S SPOTS ARE ART BY DEFAULT and the flame
+                        // sheet is the point of the whole flavour -- but the flat
+                        // quad stays reachable through rt_fire_tex, because a
+                        // coloured quad is what the effect falls back to when the
+                        // sheet is missing and it is the honest "before" for
+                        // judging whether the art is buying anything.
+                        //
+                        // Resolved up here rather than beside the geometry it
+                        // shapes, because the COLOUR below needs it too: the
+                        // flames tint per vertex and the coals do not.
+                        const bool useFireArt = ( m.fx == ImpactFx::Fire ) &&
+                                                bool( cvar::rt_fire_tex ) &&
+                                                FireArtName() != nullptr;
+                        const bool useEmberArt = ( m.fx != ImpactFx::Fire ) && m.emberArt &&
+                                                 EmberArtName() != nullptr;
                         // PER MARK, like the count: a coal sized for a rocket's
                         // mark is a speck in a scorch several times as wide.
                         const float sz = emberSize * m.emberSize * ( 0.6f + 0.8f * hash01( eh ) );
@@ -2048,8 +2221,42 @@ void RT_DrawSparks()
                         // Driven off the mark's AGE, not the frame clock: an
                         // ember is a fixed thing and its glow must not depend on
                         // frame rate the way a per-frame random would.
+                        //
+                        // A FLAME DOES NOT BREATHE LIKE A COAL, so a fire mark
+                        // runs its own rig rather than the one below.
+                        //
+                        // The coal's curve is deliberately weighted so the bright
+                        // end is NARROW -- a coal spends most of its time dull and
+                        // occasionally glows. Fire is the other way round: it is
+                        // lit the whole time and the flicker is a jitter about
+                        // that, not an occasional flare. Handing a flame the
+                        // coal's curve gives something that reads as a lamp with
+                        // a fault.
+                        //
+                        // So this is RT_UploadFlameLights' rig, verbatim in shape:
+                        // THREE incommensurate harmonics, weights summing to 1 so
+                        // `flicker` stays a true fraction, giving a signal that
+                        // never audibly loops. That rig already answers "what does
+                        // a torch look like" for all 84 flames in the game, and
+                        // this is the same question.
                         float pulse = 1.f;
-                        if( emberFlicker > 0.f )
+                        if( m.fx == ImpactFx::Fire )
+                        {
+                            if( fireFlicker > 0.f )
+                            {
+                                // PER FLAME, so seven flames on one mark do not
+                                // gutter in unison -- the same reason the coals
+                                // hash their phase, and the same reason
+                                // RT_UploadFlameLights hashes off the actor.
+                                const float ph = hash01( eh * 22695477u ) * 2.f * rt_pi();
+                                const float t  = m.age * fireRate * 2.f * rt_pi();
+                                const float f  = 0.55f * std::sin( t + ph ) +
+                                                0.30f * std::sin( t * 2.37f + ph * 1.7f ) +
+                                                0.15f * std::sin( t * 4.11f + ph * 2.9f );
+                                pulse = std::max( 0.f, 1.f + fireFlicker * f );
+                            }
+                        }
+                        else if( emberFlicker > 0.f )
                         {
                             const float ph = hash01( eh * 22695477u ) * 2.f * rt_pi();
                             const float s1 =
@@ -2068,8 +2275,51 @@ void RT_DrawSparks()
                         // once outside the loop is what made them all breathe
                         // in lockstep, which is the one thing a set of coals
                         // must not do.
+                        //
+                        // THE FLAME'S COLOUR IS PER VERTEX, and that is what
+                        // lets one white sheet serve four differently coloured
+                        // fireballs out of a SINGLE primitive. The rasterized
+                        // path multiplies the sampled texel by the vertex colour
+                        // (RsWorld.inl), so the sheet supplies the shape and the
+                        // ramp supplies the hue -- and because the blend is
+                        // additive, the alpha is the brightness.
+                        //
+                        // rt_fire_tint 0 draws them all white: the before-picture
+                        // for the one thing this flavour's colour rests on.
+                        const bool tintThis = !useFireArt || bool( cvar::rt_fire_tint );
+
+                        //
+                        // THE FLICKER HAS TO SURVIVE THE CLAMP, and for a coal it
+                        // does not have to -- which is why the two orders differ.
+                        //
+                        // Brightness here is the vertex ALPHA and alpha is 8-bit,
+                        // so a multiplier above 1 cannot raise the peak: it WIDENS
+                        // the plateau (the rt_spark_bright arithmetic). A coal's
+                        // rt_ember_bright is 2.0 and it wants exactly that.
+                        //
+                        // A flame's works out at 2.0 x 1.6 = 3.2, and folding the
+                        // pulse in BEFORE the clamp then pins the result at 1 for
+                        // the first half of the mark's life -- so the flicker is
+                        // real, arrives at the shader, and is invisible precisely
+                        // while the fire is being looked at. That is the "a knob
+                        // that does nothing" shape, and it is worth stating rather
+                        // than leaving as an ordering accident.
+                        //
+                        // So the plateau is clamped FIRST and the pulse modulates
+                        // what comes out. rt_fire_bright still widens; the flicker
+                        // still shows, at every point in the life.
+                        const float alpha =
+                            ( m.fx == ImpactFx::Fire )
+                                ? std::clamp( std::clamp( emberBright * efade, 0.f, 1.f ) * pulse,
+                                              0.f,
+                                              1.f )
+                                : std::clamp( emberBright * efade * pulse, 0.f, 1.f );
+
                         const RgColor4DPacked32 ec = rt.rgUtilPackColorFloat4D(
-                            er, eg, eb, std::clamp( emberBright * efade * pulse, 0.f, 1.f ) );
+                            tintThis ? er : 1.f,
+                            tintThis ? eg : 1.f,
+                            tintThis ? eb : 1.f,
+                            alpha );
 
                         // The pulse SIZE as well as its brightness, gently. A
                         // coal that only changes brightness reads as a light
@@ -2085,23 +2335,22 @@ void RT_DrawSparks()
                         // surface.
                         const float szp = sz * ( 0.92f + 0.08f * pulse );
 
-                        // ART OR A FLAT QUAD, decided per MARK. A barrel's coals
-                        // wear the authored ember sheet; a rocket's five stay the
-                        // flat quad they were accepted as. One switch for both
-                        // would be the coupling this file keeps having to undo.
-                        //
-                        // Both go into an ADDITIVE batch, so nothing here needs
-                        // an alpha test: transparent texels multiply the
-                        // contribution to zero and add nothing. That is the one
-                        // real difference from the plate, which is opaque and
-                        // does need ALPHA_TESTED to get a shape at all.
-                        const bool  useArt = m.emberArt && EmberArtName() != nullptr;
-                        QuadBatch&  eb_    = useArt ? s_batchEmberArt : s_batchSpark;
+                        const bool  useArt = useFireArt || useEmberArt;
+                        // THREE DESTINATIONS, and which one is not a style
+                        // choice -- see the note on each batch. Flames are
+                        // additive-textured, coals are traced-textured, and
+                        // everything untextured joins the shared additive batch.
+                        QuadBatch& eb_ = useFireArt    ? s_batchFireArt
+                                         : useEmberArt ? s_batchSpotArt
+                                                       : s_batchSpark;
 
                         // The sheet is taller than it is wide, and squashing it
                         // into a square would be the one thing that makes hand-
-                        // drawn art look procedural again.
-                        const float ea = useArt ? EmberArtAspect() : 1.f;
+                        // drawn art look procedural again. For the flame strip
+                        // this is the aspect of ONE CELL, not of the whole sheet.
+                        const float ea = useFireArt    ? FireArtAspect()
+                                         : useEmberArt ? EmberArtAspect()
+                                                       : 1.f;
 
                         FVector3 ex, ey, cc = c;
 
@@ -2145,9 +2394,31 @@ void RT_DrawSparks()
                             ey = m.bit * ( ea >= 1.f ? szp / ea : szp );
                         }
 
-                        const FVector3 cr[ 4 ] = {
-                            cc - ex - ey, cc + ex - ey, cc + ex + ey, cc - ex + ey
-                        };
+                        // THE LEAN, and it is a SHEAR rather than a slide.
+                        //
+                        // Translating the whole quad sideways moves the flame off
+                        // its own foot, which reads as the sprite sliding along
+                        // the wall -- the exact artefact the foot-on-the-surface
+                        // rule above exists to prevent. Leaning only the TOP two
+                        // corners keeps the base planted and licks the tip over,
+                        // which is what a flame in a draught actually does.
+                        //
+                        // Its own clock, incommensurate with the pulse's: a flame
+                        // that leans and brightens on the same beat reads as one
+                        // sine driving everything, which is precisely the failure
+                        // the two-sine pulse above was written to avoid.
+                        FVector3 lean{ 0, 0, 0 };
+                        if( useFireArt && fireSway > 0.f )
+                        {
+                            const float lp = hash01( eh * 2246822519u ) * 2.f * rt_pi();
+                            lean = ex * ( fireSway *
+                                          std::sin( m.age * emberRate * 1.37f * rt_pi() + lp ) );
+                        }
+
+                        const FVector3 cr[ 4 ] = { cc - ex - ey,
+                                                   cc + ex - ey,
+                                                   cc + ex + ey + lean,
+                                                   cc - ex + ey + lean };
 
                         // FLIPPED PER COAL. Fifty coals off one sheet would
                         // otherwise be fifty copies of one shape lying in the
@@ -2161,6 +2432,38 @@ void RT_DrawSparks()
                         {
                             if( fu ) uv[ k ][ 0 ] = 1.f - uv[ k ][ 0 ];
                             if( fv ) uv[ k ][ 1 ] = 1.f - uv[ k ][ 1 ];
+                        }
+
+                        // THE FLIPBOOK. The ember sheet is one image and takes
+                        // the whole 0..1; the flame sheet is a STRIP of cells and
+                        // each flame shows one at a time.
+                        //
+                        // RTGL1 has no engine-side frame animation to use here --
+                        // RgMeshPrimitiveInfo::textureFrame exists in the header
+                        // and nothing in this fork ever reads it -- so the frame
+                        // is a UV rect, which is free: this block already rewrites
+                        // every texCoord from scratch each frame.
+                        //
+                        // The mirror bits above compose with it untouched, because
+                        // the remap below is affine in u: whichever end of the
+                        // cell each corner landed on, it stays that end.
+                        //
+                        // PER-FLAME PHASE IS NOT OPTIONAL. Ten flames stepping
+                        // through the same five drawings on the same tic is one
+                        // flame drawn ten times, and the eye catches that
+                        // instantly -- the same failure the pulse's per-ember
+                        // phase exists to prevent.
+                        if( useFireArt && fireFrames > 1 )
+                        {
+                            const float phase = hash01( eh * 668265263u ) * float( fireFrames );
+                            const int   fi    = int( std::floor( m.age * fireFps + phase ) ) %
+                                           fireFrames;
+                            const float u0 = float( fi ) / float( fireFrames );
+                            const float du = 1.f / float( fireFrames );
+                            for( int k = 0; k < 4; k++ )
+                            {
+                                uv[ k ][ 0 ] = u0 + uv[ k ][ 0 ] * du;
+                            }
                         }
 
                         // THE SPOT ITSELF IS OPTIONAL, and the Unmaker ships
@@ -2217,7 +2520,14 @@ void RT_DrawSparks()
                         // sign: the shard path reached the same conclusion for
                         // the same reason, and a coal seen from its back should
                         // be a coal either way.
-                        if( useArt )
+                        //
+                        // THE FLAMES DO NOT NEED IT, and that is not an oversight
+                        // -- it is the sentence above read the other way round. A
+                        // flame is ADDITIVE, so it is a rasterized overlay, and
+                        // the overlay does not cull. Emitting the second winding
+                        // there would double the triangle count to draw the same
+                        // pixels twice, at twice the brightness.
+                        if( useEmberArt )
                         {
                             eb_.idx.push_back( base );
                             eb_.idx.push_back( base + 2 );
@@ -2298,7 +2608,37 @@ void RT_DrawSparks()
                         // overlay and lights nothing by itself. Linear fade for
                         // the same reason -- what has to agree is when the two
                         // reach zero, not the shape in between.
-                        if( wantGlow )
+                        //
+                        // A FIREBALL MARK CASTS ONE LIGHT, NOT ONE PER FLAME.
+                        // A fire is one light source, and an imp is the most
+                        // common enemy in the game -- seven candidates per mark
+                        // times a corridor of imps is the light-density
+                        // arithmetic of rt-lighting-practices 20, and the
+                        // Unmaker had to be cut from 26 candidates to 1 for
+                        // exactly that.
+                        //
+                        // AND THE ONE LIGHT MUST THEN CARRY ALL SEVEN FLAMES'
+                        // WORTH, which is the half that was got wrong first and
+                        // reported from play as the fire casting no light at all.
+                        //
+                        // rt_ember_glow_intensity is 55 and it is tuned for ONE
+                        // COAL OF TEN: a rocket's mark puts out about 550 in
+                        // total, spread over its bed. Dropping to a single
+                        // emitter and leaving it near the per-coal value is six
+                        // times too little, and it lights nothing you can see.
+                        //
+                        // rt_laser_glow had already written this down -- it went
+                        // 55 -> 220 the moment the Unmaker became a single spot,
+                        // for the same reason and in the same words. Repeating
+                        // the mistake one feature later is why the arithmetic is
+                        // spelled out here rather than left in a cvar's help.
+                        //
+                        // rt_fire_glow is that flux; intensity IS the reach for
+                        // these, the radius is the emitter's SIZE.
+                        const bool glowThisSpot =
+                            ( m.fx != ImpactFx::Fire ) || ( e == 0 );
+
+                        if( wantGlow && glowThisSpot )
                         {
                             s_arcLights.push_back( ArcLightCand{
                                 c + m.nrm * 0.05f,
@@ -2309,9 +2649,37 @@ void RT_DrawSparks()
                                 // the wall breathes with the ember casting it.
                                 // Linear fade for the reason the arcs' is --
                                 // what has to agree is when the two reach zero.
-                                std::clamp( emberBright * ( 1.f - et ) * 0.7f * pulse, 0.f, 1.f ),
+                                //
+                                // A FIRE'S TERM DROPS THE BRIGHTNESS MULTIPLIER,
+                                // and this is the same clamp problem as the quad
+                                // alpha above. emberBright works out at 3.2 for a
+                                // flame, so this expression sat pinned at 1 for
+                                // the first half of the life and the flicker --
+                                // the whole point of a cast FIRE light -- reached
+                                // the shader and did nothing. It has no business
+                                // here anyway: how bright the quad draws and how
+                                // far the light reaches are different questions,
+                                // and the second one is rt_fire_glow.
+                                //
+                                // It is the SAME `pulse` the flame is drawn with,
+                                // not a second rig, so the light on the wall
+                                // guttering and the flame guttering are one event.
+                                // Two rigs would drift apart and read as a lamp
+                                // near a fire rather than as the fire's own light.
+                                ( m.fx == ImpactFx::Fire )
+                                    ? std::clamp( ( 1.f - et ) * pulse, 0.f, 1.f )
+                                    : std::clamp( emberBright * ( 1.f - et ) * 0.7f * pulse,
+                                                  0.f,
+                                                  1.f ),
                                 emberGlowInt,
-                                emberGlowRad,
+                                // THE EMITTER'S SIZE, and a fire is not a coal.
+                                // This is the sphere the light is cast FROM, so
+                                // it sets how soft the shadows it throws are --
+                                // not how far it reaches, which is the intensity
+                                // above. A quarter-metre of flame radiating from
+                                // a 10 cm point throws a harder edge than it
+                                // should.
+                                ( m.fx == ImpactFx::Fire ) ? fireGlowRad : emberGlowRad,
                                 // The creepers' upper half is already taken, so
                                 // embers ride the branch half -- an ember mark
                                 // never draws branches, so the two can never be
@@ -2339,11 +2707,14 @@ void RT_DrawSparks()
 
                     // THE TEXTURED COALS, one traced primitive for this mark.
                     // The emissive term carries the whole bed's cooling, because
-                    // with an albedo texture present RTGL1 ignores the primitive
-                    // colour and there is nowhere else for a fade to live.
-                    if( !s_batchEmberArt.verts.empty() )
+                    // the traced albedo path takes its colour PER PRIMITIVE and
+                    // there is nowhere else for a per-mark fade to live.
+                    //
+                    // The FLAMES are not here: they are additive and go out with
+                    // the shared batches at the end of the frame.
+                    if( !s_batchSpotArt.verts.empty() )
                     {
-                        UploadBatch( s_batchEmberArt,
+                        UploadBatch( s_batchSpotArt,
                                      RT_EMBER_ART_MESH_ID + uint64_t( ai ),
                                      /*additive=*/false,
                                      EmberArtName(),
@@ -2779,6 +3150,25 @@ void RT_DrawSparks()
     }
 
     UploadBatch( s_batchSpark, RT_SPARK_MESH_ID, true, nullptr, RG_PACKED_COLOR_WHITE );
+
+    // THE FLAMES. Additive like the batch above and for the same reasons a
+    // spark is -- a flame is light, not a surface -- but it carries a texture,
+    // and a primitive holds exactly one, so it cannot share that upload.
+    //
+    // NO ALPHA TEST. The plate needs one because it is opaque and its shape
+    // lives in its alpha channel; here a transparent texel simply adds zero,
+    // which is the same answer for free.
+    //
+    // WHITE as the primitive colour, and this is the one place the difference
+    // matters: the tint is PER VERTEX, so it must not be applied twice.
+    if( !s_batchFireArt.verts.empty() )
+    {
+        UploadBatch( s_batchFireArt,
+                     RT_FIRE_ART_MESH_ID,
+                     /*additive=*/true,
+                     FireArtName(),
+                     RG_PACKED_COLOR_WHITE );
+    }
 
     // THE BARREL PLATE. ALPHA_TESTED is what makes the cut-out a shape rather
     // than the rectangle its art sits in; WHITE because with an albedo texture

@@ -42,6 +42,10 @@
 #include <cstring>
 #include <fstream>
 
+// THE FLAME SHEET IS DECODED HERE, not left to RTGL1's material system, and
+// that is the whole reason this include exists. See RegisterTextureFromFile.
+#include <stb/stb_image.h>
+
 // NOTE: no `using namespace rtsp;` up here -- this file DEFINES things in that
 // namespace, and a using-directive in scope while doing so makes every
 // unqualified name findable twice. It goes after the closing brace, for the
@@ -111,6 +115,12 @@ bool                    g_shardArtScanned = false;
 FString g_emberArt;
 float   g_emberArtAspect = 1.f;
 
+// The FLAME sheet, likewise. A horizontal STRIP of cells rather than one image:
+// a fireball's spots are animated and a coal's are not.
+FString g_fireArt;
+float   g_fireArtAspect = 1.f; // of ONE CELL
+int     g_fireArtFrames = 1;
+
 // PNG dimensions straight out of the IHDR. Twenty lines against pulling in an
 // image decoder, and it cannot go wrong quietly: the signature and the chunk
 // name are both checked, so a file that is not a PNG is rejected rather than
@@ -170,6 +180,78 @@ void RegisterShardTexture( const char* name )
 
     RgResult r = rt.rgProvideOriginalTexture( &info );
     RG_CHECK( r );
+}
+
+// THE OTHER KIND OF REGISTRATION, and which one a piece of art needs is decided
+// by WHICH RENDER PATH will draw it. This is the single most expensive thing on
+// this page to get wrong, so it is written out.
+//
+// RegisterShardTexture above hands RTGL1 a 1x1 TRANSPARENT placeholder. That is
+// correct for the plate and the coals because they are OPAQUE, hence traced,
+// hence shaded through the MATERIAL system -- which is what finds the real PNG
+// under rt/mat and substitutes it. The placeholder is only a hook to hang a name
+// on.
+//
+// A FLAME IS NOT OPAQUE GEOMETRY. It is light, and it has to be ADDITIVE:
+//
+//   * dark texels must add NOTHING. The FIRE sprite has a near-black outline,
+//     and as alpha-tested traced geometry that outline is a solid dark occluder
+//     -- so the first version drew a BLACK BLOB on the wall with a faint orange
+//     smear inside it. That is not a value that can be tuned; it is the wrong
+//     primitive.
+//   * it must not go through the DENOISER. A small, very bright emissive surface
+//     is a firefly source, and A-SVGF answers by smearing it into a soft glow
+//     with no silhouette at all. The flame's SHAPE is the entire effect.
+//
+// But an additive primitive is TRANSLUCENT, i.e. rasterized -- and the
+// rasterized path samples the texture that was PROVIDED, never the rt/mat
+// override. A placeholder there means transparent times additive, which is
+// nothing at all: that failure is already written up on s_batchSpotArt in
+// rt_spark_draw.cpp, where it cost an afternoon.
+//
+// So the way to have art on the additive path is to stop asking the material
+// system for it and PROVIDE THE REAL PIXELS. stbi_load is already used in this
+// directory (remix_launcher.cpp) and HAVE_RT compiles stb's stdio half in, so
+// this costs one decode at first draw and nothing thereafter.
+bool RegisterTextureFromFile( const char* name, const char* path, int* outW, int* outH )
+{
+    int w = 0, h = 0, ch = 0;
+    // 4 forces RGBA whatever the file carries, which is what RTGL1 wants and
+    // what makes the alpha channel's presence not a question about the PNG.
+    stbi_uc* px = stbi_load( path, &w, &h, &ch, 4 );
+    if( px == nullptr || w <= 0 || h <= 0 )
+    {
+        if( px != nullptr )
+        {
+            stbi_image_free( px );
+        }
+        return false;
+    }
+
+    auto info = RgOriginalTextureInfo{
+        .sType        = RG_STRUCTURE_TYPE_ORIGINAL_TEXTURE_INFO,
+        .pNext        = nullptr,
+        .pTextureName = name,
+        .pPixels      = px,
+        .size         = { uint32_t( w ), uint32_t( h ) },
+        // NEAREST, like everything else in this game: rt_smoothtextures ships
+        // false, and a smoothed flame would be the one soft-edged object on
+        // screen. It also means the flipbook's cells need no padding -- there is
+        // no bleed across a cell boundary to guard against.
+        .filter       = RG_SAMPLER_FILTER_NEAREST,
+        .addressModeU = RG_SAMPLER_ADDRESS_MODE_CLAMP,
+        .addressModeV = RG_SAMPLER_ADDRESS_MODE_CLAMP,
+    };
+
+    RgResult r = rt.rgProvideOriginalTexture( &info );
+    // FREED IMMEDIATELY. rgProvideOriginalTexture copies into its own staging
+    // buffer; holding the decode would be leaking a megabyte for the session.
+    stbi_image_free( px );
+    RG_CHECK( r );
+
+    if( outW ) *outW = w;
+    if( outH ) *outH = h;
+    return true;
 }
 
 // Called from the DRAW, not from startup: rgProvideOriginalTexture wants a live
@@ -247,6 +329,80 @@ void ScanShardArt()
         }
     }
 
+    // THE FLAME STRIP, for the fireball impacts. Probed in the same two trees as
+    // everything else here -- but DECODED AND PROVIDED, not placeholdered, for
+    // the reason RegisterTextureFromFile spells out: a flame is additive, an
+    // additive primitive is rasterized, and the rasterized path never consults
+    // the rt/mat override.
+    //
+    // mat_dev first, so that under developerMode the pixels read here are the
+    // ones a traced material would also have picked.
+    {
+        const char* rel = "d64rt/fire/fire";
+        FString     devPath, matPath;
+        devPath.Format( "rt/mat_dev/%s.png", rel );
+        matPath.Format( "rt/mat/%s.png", rel );
+
+        int w = 0, h = 0;
+        if( RegisterTextureFromFile( rel, devPath.GetChars(), &w, &h ) ||
+            RegisterTextureFromFile( rel, matPath.GetChars(), &w, &h ) )
+        {
+            g_fireArt = rel;
+            // THE FRAME COUNT IS INFERRED FROM THE IMAGE, not compiled in. The
+            // cells are as tall as the sheet, so the strip's width is an exact
+            // multiple of its height and rounding recovers the count. Stating it
+            // in code as well would be two places to keep in step, and the one
+            // that is wrong would show up as a flame animating through a
+            // half-drawn neighbour -- which reads as bad art, not as a mismatch.
+            g_fireArtFrames  = std::max( 1, int( float( w ) / float( h ) + 0.5f ) );
+            g_fireArtAspect  = ( float( w ) / float( g_fireArtFrames ) ) / float( h );
+
+            // AND IT SAYS SO WHEN THE ARITHMETIC DOES NOT COME OUT EXACT, because
+            // the failure is silent and looks like bad art. The generator packs
+            // SQUARE cells precisely so the division is exact; a hand-cut sheet
+            // that is not a whole number of square cells animates through
+            // fragments of its neighbours, and nothing else anywhere would say
+            // why. This cost one run: the first strip was cut at the art's own
+            // 32x52 and five frames measured 160/52 = 3.08, so the game
+            // confidently animated three.
+            if( w % h != 0 )
+            {
+                Printf( TEXTCOLOR_ORANGE
+                        "rt_fire: flame sheet '%s' is %dx%d -- NOT a whole number of "
+                        "square cells (%d frames assumed, %.2f measured).\n"
+                        "  Frames will step through fragments of their neighbours. "
+                        "Re-cut it, or run: py -3 tools/gen_fire_impact_art.py\n" TEXTCOLOR_NORMAL,
+                        rel,
+                        w,
+                        h,
+                        g_fireArtFrames,
+                        float( w ) / float( h ) );
+            }
+
+            if( cvar::rt_fire_debug )
+            {
+                Printf( "rt_fire: flame art %s -- %dx%d, %d frames, cell aspect %.2f\n",
+                        rel,
+                        w,
+                        h,
+                        g_fireArtFrames,
+                        g_fireArtAspect );
+            }
+        }
+        else if( cvar::rt_fire && cvar::rt_fire_tex )
+        {
+            // LOUD, because this one ships ON. A missing sheet and a working one
+            // that simply does not show up look identical on screen, and only the
+            // first is fixed by running the generator.
+            Printf( TEXTCOLOR_ORANGE
+                    "rt_fire: NO flame art -- tried '%s' and '%s' (cwd-relative).\n"
+                    "  Fireball impacts fall back to flat coloured quads.\n"
+                    "  Run: py -3 tools/gen_fire_impact_art.py\n" TEXTCOLOR_NORMAL,
+                    devPath.GetChars(),
+                    matPath.GetChars() );
+        }
+    }
+
     // ALWAYS SAYS SOMETHING, and the zero case is the loud one. With no art the
     // shards fall back to generated geometry, which looks like a feature that
     // was never changed rather than like a missing file -- the single most
@@ -290,6 +446,21 @@ const char* EmberArtName()
 float EmberArtAspect()
 {
     return g_emberArtAspect;
+}
+
+const char* FireArtName()
+{
+    return g_fireArt.IsEmpty() ? nullptr : g_fireArt.GetChars();
+}
+
+float FireArtAspect()
+{
+    return g_fireArtAspect;
+}
+
+int FireArtFrames()
+{
+    return g_fireArtFrames;
 }
 
 const char* ShardArtName( int i )

@@ -140,6 +140,53 @@ constexpr uint32_t RT_LASER_RAMP[] = {
 };
 constexpr int RT_LASER_RAMP_N = int( std::size( RT_LASER_RAMP ) );
 
+// THE FOUR FIREBALL RAMPS, and they are GENERATED rather than typed:
+// `py -3 tools/gen_fire_impact_art.py --ramps` prints exactly the four blocks
+// below, read off each projectile's OWN death frames in D64RTR_v15.WAD. Re-run
+// it if the sprite art ever changes; do not hand-edit the numbers.
+//
+// Read off the PIXELS rather than straight off the PLTE. A palette can carry
+// entries the art never paints, and an unused near-black would push the whole
+// ladder up and end the ramp brighter than the sprite ever gets.
+//
+// Ten entries, like the ember and laser ramps and for the same reason: a mark
+// held on a wall for seconds bands where a five-frame spark cannot.
+//
+// NOTE WHICH MONSTER FIRES WHICH. The HELL KNIGHT throws the green ball and the
+// BARON OF HELL throws the red one -- the inversion that has already been got
+// backwards once in this project (docs/sprite-illumination.md).
+
+// BAL1 D0-I0 -- 64DoomImpBall, the imp's fireball. Pale-yellow flash, then
+// orange, then brown: the artist's ramp IS the physics here, same as MISL's.
+constexpr uint32_t RT_FIRE_ORANGE_RAMP[] = {
+    0xF8F8E8, 0xF8F078, 0xF8B050, 0xF89838, 0xD87028,
+    0xB06020, 0x904818, 0x784018, 0x482008, 0x381808,
+};
+constexpr int RT_FIRE_ORANGE_RAMP_N = int( std::size( RT_FIRE_ORANGE_RAMP ) );
+
+// BAL3 D0-I0 -- 64NightmareImpBall. Never leaves the blue-violet family and has
+// no warm entry at all, which is the whole reason it is a separate ramp rather
+// than the orange one dimmed.
+constexpr uint32_t RT_FIRE_VIOLET_RAMP[] = {
+    0x7880D0, 0x7868D8, 0x6838D0, 0x5830D0, 0x4820B8,
+    0x401898, 0x281080, 0x281068, 0x100040, 0x100038,
+};
+constexpr int RT_FIRE_VIOLET_RAMP_N = int( std::size( RT_FIRE_VIOLET_RAMP ) );
+
+// BAL7 C0-H0 -- 64BaronBall, THE HELL KNIGHT'S. Zero red, zero blue.
+constexpr uint32_t RT_FIRE_GREEN_RAMP[] = {
+    0x78F800, 0x58F800, 0x08C800, 0x08B800, 0x08A000,
+    0x089000, 0x086000, 0x005000, 0x002800, 0x001800,
+};
+constexpr int RT_FIRE_GREEN_RAMP_N = int( std::size( RT_FIRE_GREEN_RAMP ) );
+
+// BAL8 C0-H0 -- 64BaronBall2, THE BARON OF HELL'S. Zero blue.
+constexpr uint32_t RT_FIRE_RED_RAMP[] = {
+    0xF83000, 0xF82800, 0xC82800, 0xB82000, 0xA02000,
+    0x901800, 0x601000, 0x500800, 0x280800, 0x180000,
+};
+constexpr int RT_FIRE_RED_RAMP_N = int( std::size( RT_FIRE_RED_RAMP ) );
+
 // ---------------------------------------------------------------------------
 // THE BARREL, and the first thing to say about it is that the obvious guess was
 // wrong. An exploding-barrel chunk was designed as "green metal with a rust
@@ -270,8 +317,36 @@ enum class ArcFlavor : uint8_t
     // The Unmaker's laser. Its own palette, sampled from LPUFA0-C0, and unlike
     // every other flavour here it never draws filigree -- see ImpactFx::Laser.
     Unmaker,
+    // THE FOUR FIREBALLS, and they are four flavours rather than one because
+    // the ONLY thing separating them is colour -- which is precisely what a
+    // flavour is for. Every other axis (size, life, count, smoke) is shared and
+    // lives on the rt_fire_* cvars, so all four move together when tuned.
+    //
+    // Order matters only in that RT_ARC_STYLES is indexed by this; the source
+    // table's own order is what decides which actor gets which, and there the
+    // BaronBall2 row must come FIRST -- see RT_ARC_SOURCES.
+    FireOrange, // BAL1, 64DoomImpBall      -- the imp
+    FireViolet, // BAL3, 64NightmareImpBall -- the nightmare imp
+    FireGreen,  // BAL7, 64BaronBall        -- the HELL KNIGHT
+    // BAL8 64BaronBall2 (the BARON OF HELL) and BAL2 64CacodemonBall (the
+    // CACODEMON). Two actors on one flavour, which is what a flavour being
+    // a COLOUR rather than a weapon buys -- and the game agrees: CACOBALL
+    // and BARONBALL2 carry the same GLDEFS colour, 1.0 0.0 0.0. See the
+    // note on the caco's row in RT_ARC_SOURCES for why it does not take its
+    // own sprite's ramp, which is the rule everywhere else here.
+    FireRed,
     COUNT,
 };
+
+// Is this flavour one of the four fireballs? Written out rather than spelled as
+// a range test at each site, because "which flavours are fire" is a fact about
+// the table and a range test silently stops being true the moment a row is
+// inserted above FireOrange.
+inline bool IsFireFlavor( ArcFlavor f )
+{
+    return f == ArcFlavor::FireOrange || f == ArcFlavor::FireViolet ||
+           f == ArcFlavor::FireGreen || f == ArcFlavor::FireRed;
+}
 
 // What an impact PRODUCES. The projectile walk is shared -- same MF_MISSILE
 // edge, same surface probe -- and only the spawn differs.
@@ -288,6 +363,19 @@ enum class ImpactFx : uint8_t
     // physical thing at different scales. What differs is the PALETTE it cools
     // through and how long it takes, and both of those are carried per mark.
     Laser,
+    // A FIREBALL SPLASH: a few flames actually burning on the surface, in the
+    // projectile's own colour, breathing a thread of smoke, over a small scorch.
+    //
+    // Mechanically it is a THIRD member of the ember family -- same hot spots on
+    // the same mark, same cooling ramp, same wisp emitter, same scorch. What
+    // makes it read as fire rather than as coals is entirely in the DRAW: the
+    // spots wear the authored flame sheet as a flipbook, standing up on the
+    // surface, instead of being flat quads lying in it.
+    //
+    // That is deliberate reuse and not a shortcut. A coal and a flame are the
+    // same thing at different sizes, and every axis these share (count, scatter,
+    // life, glow, smoke) had already been argued out once for the rocket.
+    Fire,
 };
 
 // Does this kind of mark carry glowing spots at all? Written out because the
@@ -295,7 +383,7 @@ enum class ImpactFx : uint8_t
 // one of them is how an effect ends up half-built with no error anywhere.
 inline bool FxHasEmbers( ImpactFx f )
 {
-    return f == ImpactFx::Ember || f == ImpactFx::Laser;
+    return f == ImpactFx::Ember || f == ImpactFx::Laser || f == ImpactFx::Fire;
 }
 
 struct ArcStyle
@@ -367,6 +455,12 @@ struct Spark
     float     spin;
     float     aspect;
     uint32_t  baseRgb; // debris: the hit texture's average colour
+    // baseRgb is a LITERAL colour, not a sample to be corrected. The debris
+    // colour path expands chroma by rt_spark_debris_sat and then pins luminance
+    // to rt_spark_debris_albedo -- both right for a chip whose colour came from
+    // a whole-texture mean, and both wrong for a droplet handed the exact colour
+    // the liquid is painted with. Set by the liquid splash; see rt_spark_draw.cpp.
+    bool      litRgb;
     FVector3  nrm;     // the surface it came off; debris shades with it
     uint32_t  sid;     // IDENTITY, and the only thing a glow light's id may use
 };
@@ -486,6 +580,9 @@ struct ArcMark
     // scale at draw time, because two marks of different weapons can be alive
     // at once and the style table is not per mark.
     float     arcScale;
+    // SECONDS the scorch lasts; 0 means "use rt_arc_burn_life", which is itself
+    // 0 for FOREVER. Only the fireballs set it -- see SpawnArcMark's parameter.
+    float     burnLife;
 };
 
 extern std::array< ArcMark, RT_ARC_MARK_MAX > s_arcs;
@@ -511,7 +608,18 @@ void SpawnArcMark( const FVector3& at,
                    float           emberBright  = 1.f,
                    float           emberScatter = 1.f,
                    float           emberLife    = 0.f,
-                   float           emberGlow    = 0.f );
+                   float           emberGlow    = 0.f,
+                   // SECONDS the scorch lasts, absolute; 0 means "use
+                   // rt_arc_burn_life", which is itself 0 for FOREVER.
+                   //
+                   // Here because the fireballs are the first impact in the game
+                   // that must NOT mark a wall permanently: an imp is the most
+                   // common enemy there is, and every stray fireball leaving a
+                   // forever-scorch would char whole corridors and churn the
+                   // mark pool. Per mark rather than a global, for the same
+                   // reason burnScale is: a rocket and a fireball can be in the
+                   // air at the same time and they answer this differently.
+                   float           burnLife     = 0.f );
 
 // HOW MANY COALS THIS MARK HAS. Shared by the draw and the smoke so the two
 // agree BY CONSTRUCTION rather than by both being handed the same expression --
@@ -569,6 +677,20 @@ float       ShardArtAspect( int i ); // width / height of the source image
 // case a coal falls back to the flat quad it has always been.
 const char* EmberArtName();
 float       EmberArtAspect();
+
+// THE FLAME SHEET, found and registered by the same scan. A horizontal STRIP of
+// square-ish cells at rt/mat/d64rt/fire/fire.png -- the game's own five-frame
+// FIRE animation, desaturated to white so the renderer's per-mark tint supplies
+// the colour. nullptr when it is not installed, in which case a fire mark falls
+// back to the flat coloured quads the rocket's embers use.
+//
+// The FRAME COUNT is derived from the image, not compiled in: the cells are
+// taken to be as tall as the sheet, so `frames = round( width / height )`.
+// Re-cutting the sheet with more frames therefore needs no code change, which
+// is the whole reason to infer it rather than state it twice.
+const char* FireArtName();
+float       FireArtAspect(); // width / height of ONE CELL, not of the sheet
+int         FireArtFrames();
 
 // One primitive per piece of art, so the ids must not tread on the debris
 // buckets (which run from RT_DEBRIS_MESH_ID + 0..31).
@@ -633,6 +755,13 @@ constexpr uint64_t RT_SHARD_MESH_ID     = 0x1000000000002000ull;
 // The textured ember batch: additive like the untextured one, but a primitive
 // carries one texture so it cannot share the spark batch's id.
 constexpr uint64_t RT_EMBER_ART_MESH_ID = 0x1000000000003000ull;
+// THE FLAME SHEET, and it is ONE id for every fireball mark in the world rather
+// than one per mark like the coals above. It can be, because it is ADDITIVE and
+// therefore RASTERIZED, and the rasterized path reads the PER-VERTEX colour --
+// so four differently coloured fireballs coexist in a single primitive. The
+// traced coals cannot do that: HitInfo.inl's albedo is per-primitive, which is
+// the whole reason they upload one primitive each.
+constexpr uint64_t RT_FIRE_ART_MESH_ID  = 0x1000000000004000ull;
 
 // The shared additive batch. Sparks, arc filigree and embers all land here:
 // same blend, same untextured white material, same mesh id, so a second batch
