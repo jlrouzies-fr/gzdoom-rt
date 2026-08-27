@@ -45,6 +45,7 @@
 #include "rt_hand_lights.h"
 // Generated lit-switch-face table for RT_UploadSwitchLights.
 #include "rt_switch_lights.h"
+#include "rt_ue_fixture_lights.h"
 
 #include "palentry.h"
 #include "vectors.h"
@@ -648,6 +649,13 @@ void RT_UpdateSectorEmisThreshold();
 void RT_UpdateAnimatedSectorLights();
 
 // rt_lights_fixtures.cpp
+//
+// Is the running content Doom 64: Unseen Evil? `rt_mod_compat 0` alone is not an
+// identity -- other mods need it for their own runtime texture replacement -- so
+// this asks for the combination only Unseen Evil's launcher sets. Lives here
+// because two translation units gate on it: the SFLATAP grille pane in
+// rt_lights_fixtures.cpp and the fixture table in rt_lights_fx.cpp.
+bool RT_IsUnseenEvil();
 void RT_UploadSpinPanelLights();
 void RT_UploadCeilingInsetLamps();
 void RT_UploadWallStripLights();

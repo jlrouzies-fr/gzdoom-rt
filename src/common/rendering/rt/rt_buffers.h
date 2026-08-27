@@ -625,6 +625,46 @@ private:
             return name;
         }
 
+        // Doom64-RT: a NAMELESS texture is addressed by the file it came from.
+        //
+        // GZDoom fills FGameTexture::Name only for a pk3 texture whose basename
+        // fits the classic 8 characters. Doom 64: Unseen Evil's art mostly does
+        // not -- textures/pepy/d64_brown1.png, d64_talldoor_2 -- so it reached
+        // here with an empty name and fell through to the runtime image ID
+        // below, which no rt/mat file and no textures.json row can ever match:
+        // 362 of the mod's 442 wall targets had no material at all, not because
+        // none was authored but because nothing could be. RTGL1's
+        // TextureOverrides::GetTexturePath accepts '/' in a name, so the path
+        // minus its extension becomes the material key and rt/mat gets
+        // subfolders: rt/mat/textures/pepy/d64_brown1_e.png. Its TEXTURES
+        // composites already arrive named by their declared path, so this makes
+        // the two forms consistent. tools/gen_unseenevil_materials.py writes
+        // to exactly this name.
+        //
+        // Retribution is untouched by construction: every texture it ships is a
+        // WAD lump with a name, so this branch never runs for it.
+        if( FTexture* ftex = fgametex.GetTexture() )
+        {
+            const int lump = ftex->GetSourceLump();
+            if( lump >= 0 )
+            {
+                if( const char* full = fileSystem.GetFileFullName( lump, false ) )
+                {
+                    std::string name = full;
+                    const size_t dot = name.rfind( '.' );
+                    const size_t slash = name.rfind( '/' );
+                    if( dot != std::string::npos && ( slash == std::string::npos || dot > slash ) )
+                    {
+                        name.erase( dot );
+                    }
+                    if( !name.empty() )
+                    {
+                        return name + suffix;
+                    }
+                }
+            }
+        }
+
         // if no lump name, stringify the image ID;
         // this is undesirable for textures that require a replacement
         // (which are found by texname; and because ID is assigned at runtime,

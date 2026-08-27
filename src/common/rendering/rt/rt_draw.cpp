@@ -474,6 +474,16 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                          strlen( "textures/pepy/keytrims/d64_keytrim_" ) ) == 0;
     };
 
+    // The SFLATAP grille pane, Unseen Evil only. Its brightmap is not the mod's:
+    // d64ue-grille-emis.pk3 supplies one cut from the mod's own art, so this path
+    // lights it exactly the way it lights the key trims -- a UE-supplied mask
+    // times a UE-only multiplier -- and Retribution, where the same flat is a
+    // grille the base game never lights, sees none of it. See rt_ue_grille_emis.
+    auto l_isUnseenGrille = [ & ]() {
+        return unseenEvilBrightmapFallback && bool{ cvar::rt_ue_grille_lamps } && texname &&
+               stricmp( texname, "SFLATAP" ) == 0;
+    };
+
     // Masked world geometry — fences, grates, the MAP01 cage — is alpha-TESTED,
     // not translucent: the texture's alpha cuts the holes, and the surface between
     // the holes is fully solid. But it arrives carrying a vertex alpha below 1, and
@@ -1153,6 +1163,8 @@ void RTRenderState::InternalDraw( std::span< const RgPrimitiveVertex > verts,
                 // still selects every emitting texel.
                 const float ueEmis = l_isUnseenKeyTrim()
                                          ? std::max( 0.f, float{ cvar::rt_ue_keytrim_emis } )
+                                     : l_isUnseenGrille()
+                                         ? std::max( 0.f, float{ cvar::rt_ue_grille_emis } )
                                          : we;
                 return { RG_MESH_PRIMITIVE_EMISSIVE_OVERRIDE, ueEmis };
             }

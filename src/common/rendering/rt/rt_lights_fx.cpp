@@ -10,6 +10,8 @@
 
 #include "rt_internal.h"
 
+#include <array>
+
 // The shared internals (RG_CHECK, ONEGAMEUNIT_IN_METERS, RT_SectorHue, the
 // light-ID bases) come in unqualified, exactly as when this code lived inside
 // rt_main.cpp's anonymous namespace.
@@ -143,6 +145,25 @@ static const RtSwitchLight* RT_SwitchLightFor( FGameTexture* gtex )
     const char* nm = gtex->GetName().GetChars();
     if( !nm || !*nm )
     {
+        // A texture with NO name is not a non-event, and treating it as one is
+        // what hid this for a whole round of testing: Unseen Evil's plain pk3
+        // art (textures/pepy/..., textures/cage/...) reaches the renderer
+        // nameless, so a table keyed on names can never match it and a census
+        // that skips nameless textures reports the map as empty. Under
+        // rt_switch_light_debug, say so and name the FILE instead.
+        if( bool{ cvar::rt_switch_light_debug } )
+        {
+            static std::unordered_set< int > s_noname;
+            const int lump = gtex->GetSourceLump();
+            if( s_noname.insert( lump ).second )
+            {
+                const char* file = fileSystem.GetFileFullName( lump, false );
+                Printf( RT_DiagPrintLevel(),
+                        "RT UE fixture: <unnamed> lump %d = %s\n",
+                        lump,
+                        file ? file : "?" );
+            }
+        }
         return nullptr;
     }
     std::string key = nm;
@@ -154,14 +175,183 @@ static const RtSwitchLight* RT_SwitchLightFor( FGameTexture* gtex )
     return it == lookup.end() ? nullptr : it->second;
 }
 
+// The same question for Doom 64: Unseen Evil, against its own generated table.
+//
+// A SEPARATE TABLE, not extra rows in RT_SWITCH_LIGHTS, and that is deliberate:
+// tools/gen_switch_lights.py rewrites rt_switch_lights.h wholesale from
+// Retribution's rt/mat masks, so any Unseen Evil row parked there would be
+// silently destroyed the next time anyone ran it.
+//
+// It also covers more than switches. Unseen Evil paints three kinds of lit wall
+// face -- a door indicator that pulses on a 4-frame ANIMDEFS ping-pong, a switch
+// lamp that comes on when thrown, and a steady light strip -- and none of them
+// needs its mechanism modelled here, because the caller asks TexMan for the
+// texture being drawn RIGHT NOW. A frame with no row emits nothing, so the blink,
+// the throw and the steady burn all fall out of this one lookup.
+//
+// `scaleOut` is the part RtSwitchLight cannot express: a door's mid frame is the
+// same lamp at part brightness, and without it a three-step pulse would collapse
+// to on/off.
+// One lit band of one Unseen Evil fixture.
+struct UeHit
+{
+    const RtSwitchLight* row;
+    float                scale; // this frame's share of the fixture's full brightness
+    bool                 band;  // tiling wall strip: light it as a CHAIN, not one sphere
+    int                  x0, x1, y0, y1; // lit extent in texels -- a strip's long axis
+};
+
+static const std::vector< UeHit >* RT_UeFixtureLightFor( FGameTexture* gtex )
+{
+    static const std::vector< UeHit > none;
+    if( !gtex || !bool{ cvar::rt_ue_fixture_lights } || !RT_IsUnseenEvil() )
+    {
+        return &none;
+    }
+    // Built once, and the RtSwitchLight views are built once WITH it: the walk
+    // stores a pointer into `cand` that outlives this call, so these have to have
+    // static storage duration and a stable address. A vector never touched after
+    // construction gives both.
+    struct UeTable
+    {
+        std::vector< RtSwitchLight >                            rows;
+        std::vector< float >                                    scale;
+        std::vector< bool >                                     band;
+        std::vector< std::array< int, 4 > >                     ext;
+        // A VECTOR PER KEY, not one entry. Twelve of these fixtures carry TWO lit
+        // bands -- d64_widedoor's gem AND the bar below it, d64_silver2's two rows
+        // of rectangles, d64_d1liteblu1's two lines -- and an unordered_map::emplace
+        // per row silently keeps only the first. That is not a missing feature, it
+        // is half of a dozen fixtures going dark with no error anywhere: "some door
+        // green lights are ok, some not".
+        std::unordered_map< std::string, std::vector< size_t > > lookup;
+    };
+    static const UeTable table = [] {
+        UeTable t;
+        t.rows.reserve( RT_UE_FIXTURE_LIGHT_COUNT );
+        for( const RtUeFixtureLight& f : RT_UE_FIXTURE_LIGHTS )
+        {
+            t.rows.push_back( RtSwitchLight{ f.tex, f.tw, f.th, f.cx, f.cy, f.lit, f.rgb } );
+            t.scale.push_back( f.scale );
+            t.band.push_back( f.band );
+            t.ext.push_back( { f.x0, f.x1, f.y0, f.y1 } );
+            t.lookup[ f.tex ].push_back( t.rows.size() - 1 );
+        }
+        return t;
+    }();
+
+    // MOST OF THIS MOD'S ART HAS NO TEXTURE NAME AT ALL, and that is the whole
+    // reason this function does not simply mirror RT_SwitchLightFor.
+    //
+    // GZDoom only fills FGameTexture::Name for a pk3 texture whose basename fits
+    // the classic 8 characters. Unseen Evil's own art does not: `C201` and
+    // `SPACEAU` out of textures/d64/ arrive named, but d64_metal7,
+    // d64_talldoor_2 and d64_greydoor_0 arrive with an EMPTY name and are
+    // reachable only through the file they came from. Keying on the name alone
+    // matched exactly the TEXTURES composites and silently missed every plain
+    // PNG -- which is most of the doors and every light strip. The generated
+    // table carries both forms per fixture for this reason.
+    //
+    // Cached per FGameTexture, misses included: GetFileFullName is a filesystem
+    // call and this runs three times per sidedef per frame.
+    static std::unordered_map< const FGameTexture*, std::vector< UeHit > > s_cache;
+    auto cached = s_cache.find( gtex );
+    if( cached != s_cache.end() )
+    {
+        return &cached->second;
+    }
+
+    auto upper = []( const char* p ) {
+        std::string k = p ? p : "";
+        for( char& c : k )
+        {
+            c = char( toupper( (unsigned char)c ) );
+        }
+        return k;
+    };
+
+    std::vector< UeHit > found;
+    std::string          shown;
+
+    auto collect = [ & ]( const std::string& key ) {
+        auto it = table.lookup.find( key );
+        if( it == table.lookup.end() )
+        {
+            return;
+        }
+        for( size_t idx : it->second )
+        {
+            found.push_back( UeHit{ &table.rows[ idx ],
+                                    table.scale[ idx ],
+                                    table.band[ idx ],
+                                    table.ext[ idx ][ 0 ],
+                                    table.ext[ idx ][ 1 ],
+                                    table.ext[ idx ][ 2 ],
+                                    table.ext[ idx ][ 3 ] } );
+        }
+    };
+
+    const char* nm = gtex->GetName().GetChars();
+    if( nm && *nm )
+    {
+        shown = upper( nm );
+        collect( shown );
+    }
+    if( found.empty() )
+    {
+        const int   lump = gtex->GetSourceLump();
+        const char* file = lump >= 0 ? fileSystem.GetFileFullName( lump, false ) : nullptr;
+        if( file && *file )
+        {
+            const std::string key = upper( file );
+            if( shown.empty() )
+            {
+                shown = key;
+            }
+            collect( key );
+        }
+    }
+
+    // One line per distinct texture per session, hit OR miss, like the key-trim
+    // tagging in rt_lights_fixtures.cpp and for the same reason: without it "this
+    // map has no fixtures" and "the fixtures are there and every lookup missed"
+    // produce identical output, and that ambiguity has already cost this feature
+    // one full round of testing. Misses are limited to names that look like this
+    // mod's art so a Retribution log cannot be spammed -- unless
+    // rt_switch_light_debug is on, which lists every wall texture in the level
+    // and is the only view that can answer "what does this arrive as".
+    static std::unordered_set< std::string > s_seen;
+    const bool looksUe = shown.rfind( "D64_", 0 ) == 0 || shown.find( "/D64_" ) != std::string::npos;
+    if( ( !found.empty() || looksUe || bool{ cvar::rt_switch_light_debug } ) && !shown.empty() &&
+        s_seen.insert( shown ).second )
+    {
+        Printf( RT_DiagPrintLevel(),
+                "RT UE fixture: %s %s\n",
+                shown.c_str(),
+                found.empty() ? "no row (not a fixture)"
+                              : ( found.size() > 1 ? "LIT (multi-band)" : "LIT" ) );
+    }
+
+    return &s_cache.emplace( gtex, std::move( found ) ).first->second;
+}
+
 void RT_UploadSwitchLights()
 {
-    if( !cvar::rt_switch_lights || !primaryLevel )
+    // Either family keeps the walk alive: Unseen Evil's fixture table rides this
+    // same walk (see RT_UeFixtureLightFor), and gating the whole thing on
+    // rt_switch_lights alone would make rt_ue_fixture_lights silently do nothing
+    // for anyone who turned Retribution's switches off.
+    const bool wantSwitches = bool{ cvar::rt_switch_lights };
+    const bool wantUe       = bool{ cvar::rt_ue_fixture_lights } && RT_IsUnseenEvil();
+    if( ( !wantSwitches && !wantUe ) || !primaryLevel )
     {
         return;
     }
     const float baseI = std::max( 0.f, float{ cvar::rt_switch_light_intensity } );
-    const int   budget = std::max( 0, int{ cvar::rt_switch_light_max } );
+    // Unseen Evil's fixtures bring their own slots. See rt_ue_fixture_max: a strip
+    // is a chain, so one corridor can want more lights than the whole switch budget.
+    const int   budget = std::max( 0, int{ cvar::rt_switch_light_max } ) +
+                       ( wantUe ? std::max( 0, int{ cvar::rt_ue_fixture_max } ) : 0 );
     if( baseI <= 0.01f || budget == 0 )
     {
         return;
@@ -180,7 +370,10 @@ void RT_UploadSwitchLights()
         double              x, y, z;
         const RtSwitchLight* sw;
         uint64_t            id;
-        const char*         why; // debug only: which pegging branch placed it
+        const char*         why;   // debug only: which pegging branch placed it
+        float               scale; // this frame's share of the fixture's full brightness
+        bool                ue;    // from the Unseen Evil table, which is sized differently
+        bool                band;  // one link of a strip chain, not a lone fixture
     };
     std::vector< SwCand > cand;
 
@@ -214,12 +407,38 @@ void RT_UploadSwitchLights()
 
             for( int part = 0; part < 3; part++ )
             {
-                const RtSwitchLight* sw =
-                    RT_SwitchLightFor( TexMan.GetGameTexture( side->GetTexture( part ), true ) );
-                if( !sw )
+                // ANIMATED, and that is load-bearing for both tables: this is the
+                // frame on the wall this instant, so a door's indicator, a thrown
+                // switch and a steady strip all resolve without any state here.
+                FGameTexture* gtex = TexMan.GetGameTexture( side->GetTexture( part ), true );
+
+                // One texture can carry SEVERAL lit bands, so this is a list, not a
+                // hit: d64_widedoor has a gem near the top and a bar near the floor,
+                // and lighting only the first of them is what "some door green lights
+                // are ok, some not" looks like from inside the game.
+                std::vector< UeHit > hits;
+                bool                 fromUe = false;
+                if( const RtSwitchLight* d64 = wantSwitches ? RT_SwitchLightFor( gtex ) : nullptr )
+                {
+                    hits.push_back( UeHit{ d64, 1.0f, false, 0, 0, 0, 0 } );
+                }
+                else
+                {
+                    hits   = *RT_UeFixtureLightFor( gtex );
+                    fromUe = !hits.empty();
+                }
+                if( hits.empty() )
                 {
                     continue;
                 }
+
+                for( size_t hi = 0; hi < hits.size(); hi++ )
+                {
+                const RtSwitchLight* sw       = hits[ hi ].row;
+                const float          rowScale = hits[ hi ].scale;
+                const bool           isBand   = hits[ hi ].band;
+                const bool           isUe     = fromUe;
+                const UeHit&         hit      = hits[ hi ];
 
                 // Vertical band this part covers, same derivation as the wall strips.
                 const DVector2 mid{ ( x1 + x2 ) * 0.5, ( y1 + y2 ) * 0.5 };
@@ -328,12 +547,91 @@ void RT_UploadSwitchLights()
                 const double towardY = double( thisSec->centerspot.Y ) - ( y1 + y2 ) * 0.5;
                 const double ofs = ( nx * towardX + ny * towardY ) >= 0.0 ? wallOfs : -wallOfs;
 
-                int rep = 0;
-                for( double d = d0; d <= lineLen && rep < 4; d += texW, rep++ )
+                // A STRIP IS LIT ALONG ITS LONG AXIS, AND NEVER WITH NOTHING.
+                //
+                // A door or a switch is ONE object on one sidedef: it goes where the
+                // texture puts it and repeats only where the texture repeats. A strip
+                // is wall art with an EXTENT, and the extent says how to light it.
+                //
+                //   d64_metal7      a 64x7 bar along the bottom  -> a row along the wall
+                //   d64_lite_thin   a 16x128 tube                 -> a column UP the wall
+                //
+                // The first chain ran along the line for every strip, and on MAP01's
+                // two lite_thin sidedefs -- both 16 units long, both one-sided -- it
+                // began half a segment in (24 units) and so placed NOTHING on a line
+                // shorter than that. The strips that had one light each before the
+                // chain had zero after it; "nothing shows up" was exact.
+                //
+                // So: rows up the wall = the band's height over the segment length,
+                // at least one. Along the wall, a band that spans the texture's width
+                // is a continuous chain spread evenly over the line, at least one; a
+                // narrower band sits at its own column once per texture repeat.
+                //
+                // RTGL1 offers nothing better than a chain of overlapping spheres. An
+                // emissive surface casts no light at all -- rt_wall_strips says so in
+                // as many words -- and RgLightPolygonalEXT is compiled out behind
+                // #if TRIANGLE_LIGHTS and hard-errors on upload.
+                const double step = isBand
+                                        ? std::max( 8.0, double( float{ cvar::rt_ue_strip_seglen } ) )
+                                        : texW;
+
+                double along[ 64 ];
+                double zrow[ 16 ];
+                int    nH = 0, nV = 0;
+                if( !isBand )
                 {
+                    for( double d = d0; d <= lineLen && nH < 4; d += texW )
+                    {
+                        along[ nH++ ] = d;
+                    }
+                    zrow[ nV++ ] = z;
+                }
+                else
+                {
+                    const double extW = double( hit.x1 - hit.x0 + 1 );
+                    const double extH = double( hit.y1 - hit.y0 + 1 );
+                    nV = std::clamp( int( std::lround( extH * wptY / step ) ), 1, 16 );
+                    for( int r = 0; r < nV; r++ )
+                    {
+                        const double ty = double( hit.y0 ) + extH * ( double( r ) + 0.5 ) / double( nV );
+                        zrow[ r ]       = zTexTop - ty * wptY + zNudge;
+                    }
+                    // Both counts are bounded so their product stays inside the 128 id
+                    // slots a lamp owns per sidedef -- an id that wraps onto another
+                    // light's is an id that moves, and RTGL1 answers that by throwing
+                    // its temporal history away.
+                    const int hMax = std::max( 1, 128 / nV );
+                    if( extW * wptX >= 0.75 * texW )
+                    {
+                        nH = std::clamp( int( std::lround( lineLen / step ) ), 1, std::min( 64, hMax ) );
+                        for( int k = 0; k < nH; k++ )
+                        {
+                            along[ k ] = lineLen * ( double( k ) + 0.5 ) / double( nH );
+                        }
+                    }
+                    else
+                    {
+                        for( double d = d0; d <= lineLen && nH < std::min( 64, hMax ); d += texW )
+                        {
+                            along[ nH++ ] = d;
+                        }
+                    }
+                }
+
+                int rep = 0;
+                for( int hI = 0; hI < nH; hI++ )
+                {
+                for( int vI = 0; vI < nV; vI++, rep++ )
+                {
+                    const double d  = along[ hI ];
+                    const double zz = zrow[ vI ];
+                    if( zz < zLow - 8.0 || zz > zHigh + 8.0 )
+                    {
+                        continue;
+                    }
                     const double px = x1 + ux * d + nx * ofs;
                     const double py = y1 + uy * d + ny * ofs;
-                    const double dx = px - vpos.X, dy = py - vpos.Y, dz = z - vpos.Z;
+                    const double dx = px - vpos.X, dy = py - vpos.Y, dz = zz - vpos.Z;
                     const double d2 = dx * dx + dy * dy + dz * dz;
                     if( d2 > maxDist2 )
                     {
@@ -343,16 +641,32 @@ void RT_UploadSwitchLights()
                         d2,
                         px,
                         py,
-                        z,
+                        zz,
                         sw,
-                        // sidedef index, part and repeat all fold in, so two switches on
-                        // one line never collide and the id never moves between frames.
-                        SwitchLightId_Base +
-                            ( uint64_t( side->Index() ) * 16ull ) + uint64_t( part ) * 4ull +
-                            uint64_t( rep ),
+                        // Sidedef, part, WHICH LAMP and repeat all fold in, so two
+                        // switches on one line never collide, a fixture with several
+                        // lamps cannot overwrite itself, and the id never moves between
+                        // frames -- a moving id makes RTGL1 throw away its temporal
+                        // reservoirs, which is the whole reason this is packed at all.
+                        //
+                        // 4096 slots per sidedef: part (3) x lamp (8) x repeat (128).
+                        // Widened twice, and the second time was a NEAR MISS worth
+                        // recording -- when lamps began splitting horizontally a lever
+                        // grew to three, and the previous `hi & 3` would have wrapped a
+                        // fifth lamp onto the first one's id. SwitchLightId_Base has
+                        // 2^46 of room under LavaLightId_Base at 2^47 and the widest
+                        // level here uses about 2^28 of it, so the space is free.
+                        SwitchLightId_Base + ( uint64_t( side->Index() ) * 4096ull ) +
+                            uint64_t( part ) * 1024ull + uint64_t( hi & 7 ) * 128ull +
+                            uint64_t( rep & 127 ),
                         why,
+                        rowScale,
+                        isUe,
+                        isBand,
                     } );
                 }
+                }
+                } // per lit band
             }
         }
     }
@@ -371,12 +685,65 @@ void RT_UploadSwitchLights()
     {
         // sqrt, not linear: the SWXSG gem is 46 lit texels against the SWXC eyes' 7, and
         // a linear scale would hand it 6.5x the intensity and turn a gem into a spotlight.
-        const float scale = std::sqrt( float( std::max( 1, c.sw->lit ) ) / 7.0f );
-        const float I     = baseI * scale;
+        //
+        // UNSEEN EVIL'S FIXTURES ARE NORMALISED AGAINST A DIFFERENT REFERENCE, and
+        // they have to be. Retribution's rows run 7 to 70 lit texels because every
+        // one is a switch face; Unseen Evil's run 17 to 3328, because a full-height
+        // light strip is a fixture too. Through the /7 rule d64_lite_wide comes out
+        // at 21.8x baseI -- a corridor lamp brighter than the sun. So its family is
+        // measured against a door indicator's ~64 texels and CAPPED at 3x: past a
+        // point a longer strip is a WIDER emitter, not a fiercer one, and the sphere
+        // standing in for it should not pretend otherwise.
+        // A BAND SEGMENT DOES NOT GET THE AREA SCALE, and must not: on a chain the
+        // fixture's size is already expressed by HOW MANY segments it emits. Scaling
+        // each one by the strip's total lit area as well counts the same length of
+        // tube twice and turns a corridor into a searchlight -- the same reasoning
+        // rt_wall_strip_intensity encodes by being a flat per-segment number.
+        const float areaScale =
+            c.band ? 1.0f
+                   : c.ue ? std::clamp( std::sqrt( float( std::max( 1, c.sw->lit ) ) / 64.0f ),
+                                        0.5f,
+                                        3.0f )
+                          : std::sqrt( float( std::max( 1, c.sw->lit ) ) / 7.0f );
+        // c.scale is the frame's own brightness: a door's mid frame is the same lamp
+        // turned down, and without it the three-step pulse the art paints would
+        // arrive as a two-step on/off.
+        const float I = ( c.band ? std::max( 0.f, float{ cvar::rt_ue_strip_intensity } )
+                          : c.ue ? std::max( 0.f, float{ cvar::rt_ue_fixture_intensity } )
+                                 : baseI ) *
+                        areaScale * c.scale;
+        // A wide soft source is what makes discrete spheres read as one band instead
+        // of a row of dots -- the same 0.35 m rt_wall_strip_radius settled on, against
+        // the 0.06 m a switch gem wants.
+        const float radius = c.band ? std::max( 0.01f, float{ cvar::rt_ue_strip_radius } )
+                             : c.ue ? std::max( 0.01f, float{ cvar::rt_ue_fixture_radius } )
+                                    : srcRadius;
 
-        const float kR = ( ( c.sw->rgb >> 16 ) & 0xFF ) / 255.0f;
-        const float kG = ( ( c.sw->rgb >> 8 ) & 0xFF ) / 255.0f;
-        const float kB = ( c.sw->rgb & 0xFF ) / 255.0f;
+        float kR = ( ( c.sw->rgb >> 16 ) & 0xFF ) / 255.0f;
+        float kG = ( ( c.sw->rgb >> 8 ) & 0xFF ) / 255.0f;
+        float kB = ( c.sw->rgb & 0xFF ) / 255.0f;
+
+        // Optional extra saturation on an Unseen Evil fixture, in HSV so the hue
+        // cannot move -- pulling the two lesser channels toward the dominant one
+        // is exactly S scaling, without the trig. See rt_ue_fixture_sat for why a
+        // measured-correct lamp colour can still read wrong in the room.
+        if( c.ue )
+        {
+            const float sat = std::max( 0.f, float{ cvar::rt_ue_fixture_sat } );
+            if( std::abs( sat - 1.0f ) > 0.001f )
+            {
+                const float mx = std::max( { kR, kG, kB } );
+                if( mx > 0.001f )
+                {
+                    auto pull = [ & ]( float v ) {
+                        return std::clamp( mx - ( mx - v ) * sat, 0.f, mx );
+                    };
+                    kR = pull( kR );
+                    kG = pull( kG );
+                    kB = pull( kB );
+                }
+            }
+        }
 
         auto sph = RgLightSphericalEXT{
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
@@ -386,7 +753,7 @@ void RT_UploadSwitchLights()
             .position  = { float( c.x ) * ONEGAMEUNIT_IN_METERS,
                            float( c.y ) * ONEGAMEUNIT_IN_METERS,
                            float( c.z ) * ONEGAMEUNIT_IN_METERS },
-            .radius    = srcRadius,
+            .radius    = radius,
         };
         auto info = RgLightInfo{
             .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
@@ -430,13 +797,15 @@ void RT_UploadSwitchLights()
                     maxDist );
             for( size_t k = 0; k < cand.size() && k < 6; k++ )
             {
-                Printf( "    %-10s %-12s (%.0f, %.0f, %.0f)  lit=%d\n",
+                Printf( "    %-28s %-12s (%.0f, %.0f, %.0f)  lit=%d %s x%.2f\n",
                         cand[ k ].sw->tex,
                         cand[ k ].why,
                         cand[ k ].x,
                         cand[ k ].y,
                         cand[ k ].z,
-                        cand[ k ].sw->lit );
+                        cand[ k ].sw->lit,
+                        cand[ k ].ue ? "UE" : "d64",
+                        cand[ k ].scale );
             }
         }
     }

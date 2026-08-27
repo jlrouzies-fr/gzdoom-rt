@@ -40,6 +40,18 @@ bool RT_IsLatticeLitPlane( unsigned secIndex, bool ceiling )
            g_latticeLitPlanes.end();
 }
 
+// Is the running content Doom 64: Unseen Evil?
+//
+// `rt_mod_compat 0` alone is not an identity -- other mods need it for their own
+// runtime texture replacement. Unseen Evil's launcher also opts into
+// rt_world_white (see docs/unseenevil-retribution-compatibility.md), so this asks
+// for that dedicated combination. Declared in rt_internal.h because the fixture
+// table in rt_lights_fx.cpp gates on it too.
+bool RT_IsUnseenEvil()
+{
+    return !rt_mod_compat && bool{ cvar::rt_world_white };
+}
+
 static bool RT_IsCeilingInsetLampTexture( const char* name )
 {
     if( !name || !*name )
@@ -143,6 +155,10 @@ struct SoloBulbTex
 {
     const char* name;
     double      ox, oy;
+    // Unseen Evil only. A texture Retribution also uses, but that only Unseen
+    // Evil's content turns into a fixture -- see the SFLATAP row below for why
+    // the same flat can honestly be a lamp in one game and not the other.
+    bool        ueOnly;
     // VERY SMALL solo bulbs get their own intensity and radius. SFLATDE's bulb is a
     // fraction of SFLATAS's, and before this split they shared rt_solo_lamp_*: tuning
     // the ceiling PANE up to carry a room dragged the little recessed bulb up with it,
@@ -156,8 +172,8 @@ struct SoloBulbTex
     bool        verySmall;
 };
 static constexpr SoloBulbTex SoloBulbTextures[] = {
-    { "SFLATDE", 31.5, 30.5, /*verySmall*/ true },
-    { "SFLATCH", 32.0, 32.0, /*verySmall*/ false },
+    { "SFLATDE", 31.5, 30.5, /*verySmall*/ true, /*ueOnly*/ false },
+    { "SFLATCH", 32.0, 32.0, /*verySmall*/ false, /*ueOnly*/ false },
     // SFLATAS, the ceiling lamp pane, joined this list on 2026-08-14. It is NOT a solo
     // bulb in the original game -- it paints 2x2 -- so the table entry and the texture
     // override (tools/gen_broken_bulb_flat.py -> d64r-sflatas-broken.wad) have to ship
@@ -192,7 +208,32 @@ static constexpr SoloBulbTex SoloBulbTextures[] = {
     // D64RTR_v15.WAD and no ANIMDEFS entry, so there is no sibling to fall through to
     // the prefix-matching lattice below and flicker against it. Check that again
     // before adding a texture here that does animate.
-    { "SFLATAS", 16.0, 16.0, /*verySmall*/ false },
+    { "SFLATAS", 16.0, 16.0, /*verySmall*/ false, /*ueOnly*/ false },
+    // SFLATAP, and ONLY under Unseen Evil.
+    //
+    // RT_IsCeilingInsetLampTexture above refuses this name, and that refusal
+    // still stands for Retribution: SFLATAP is a recessed grille, the base game
+    // does not light it, and Retribution's own maps use it 33 times across 7
+    // levels. What differs is the CONTENT around it. Unseen Evil's Terraformer
+    // sends CEIL3_4, CEIL1_2, CEIL1_3, TLITE6_1 and TLITE6_4 onto SFLATAP -- and
+    // FLAT2 too, once d64ue-texfix.pk3 is loaded -- so one flat covers 445
+    // ceiling and floor placements across 37 DOOM and DOOM II maps. 121 of those
+    // are stock DOOM's TLITE6_* ceiling LIGHT panels, which arrive here dark.
+    // (Counts from tools/export_unseenevil_textures_gallery.py, which replays the
+    // Terraformer over both IWADs.)
+    //
+    // This is the solo-bulb doctrine, not an rt_faux_lamps invention: the art
+    // paints a bright white slatted panel inside a diamond housing, one per
+    // 64-unit tile, and the base game simply never wired a light to it.
+    //
+    // The offset is measured, not centred by assumption -- it only looks like a
+    // round number. Flood the panel at 72% of the texture's peak luminance and
+    // its 248 texels give a centroid of (31.84, 31.87) in image space, bbox
+    // 18..45 on both axes. A FLAT'S Y IS FLIPPED against the image (world y =
+    // TileSize - img y), which for a centroid this close to 32 is a no-op; that
+    // is luck, not licence, and the next texture added here needs the flip
+    // applied for real. See SFLATAS above.
+    { "SFLATAP", 32.0, 32.0, /*verySmall*/ false, /*ueOnly*/ true },
 };
 
 static bool RT_FindSoloBulbOffset( const char* name, double& ox, double& oy, bool& verySmall )
@@ -203,6 +244,10 @@ static bool RT_FindSoloBulbOffset( const char* name, double& ox, double& oy, boo
     }
     for( const SoloBulbTex& t : SoloBulbTextures )
     {
+        if( t.ueOnly && !( bool{ cvar::rt_ue_grille_lamps } && RT_IsUnseenEvil() ) )
+        {
+            continue;
+        }
         if( strcmp( name, t.name ) == 0 )
         {
             ox    = t.ox;
@@ -724,11 +769,7 @@ static bool RT_IsWallStripLampTexture( const char* name )
 // otherwise its authored Retribution lights would be doubled.
 static bool RT_UnseenEvilMonitorHue( const char* name, FVector3& out )
 {
-    // `rt_mod_compat 0` alone is not an Unseen Evil identity -- other mods need
-    // it for their own runtime texture replacement.  Its launcher also opts into
-    // rt_world_white, so require that dedicated compatibility combination.
-    if( rt_mod_compat || !cvar::rt_world_white || !name ||
-        strncmp( name, "SMOND", 5 ) != 0 )
+    if( !RT_IsUnseenEvil() || !name || strncmp( name, "SMOND", 5 ) != 0 )
     {
         return false;
     }
