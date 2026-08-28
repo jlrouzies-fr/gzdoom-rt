@@ -907,6 +907,21 @@
                                                 "WITH the radius." )
     RT_CVAR( rt_revenant_light_radius,   0.12f,  "RT source radius in meters per Revenant red point. Brightness "
                                                 "falls with the SQUARE of this." )
+    // EYES, SHARED BY EVERY MONSTER THAT HAS THEM. An eye is a different ORDER of
+    // light from a fist or a muzzle: it should tint the face and the wall an inch
+    // behind it, not light a room. 25/(PI*0.10^2) = 796 radiance -- 0.40x a
+    // Revenant LED (1989) and 0.14x a Baron fist (5748).
+    //
+    // Positions come from each monster's OWN _e mask (gen_hand_light_offsets.py,
+    // EYE_MONSTERS), so the light sits exactly under the glow. This is NOT the
+    // textures.json lightIntensity route, which gen_enemy_eye_emissives keeps at
+    // zero on purpose: RTGL1 pins an attached sprite light to the CENTRE of the
+    // billboard quad, so that route turns a zombie into a lantern instead of
+    // lighting its eyes.
+    RT_CVAR( rt_eye_light_intensity,    25.f,   "RT intensity per lit monster eye. Radiance is intensity/(PI*r^2) -- "
+                                                "move this WITH the radius. 0 disables every eye light." )
+    RT_CVAR( rt_eye_light_radius,       0.10f,  "RT source radius in meters per monster eye. Brightness falls with "
+                                                "the SQUARE of this." )
     RT_CVAR( rt_mastermind_light_radius,  0.20f,  "RT source radius in meters for the Mastermind's gun flash. "
                                                 "Brightness falls with the SQUARE of this." )
     RT_CVAR( rt_gunner_light_radius,    0.10f,  "RT source radius in meters per Chaingunner barrel. Small: a barrel "

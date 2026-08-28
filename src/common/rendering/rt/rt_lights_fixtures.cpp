@@ -2619,6 +2619,30 @@ static int RT_HandGlowMonster( AActor* mo )
         {
             return RT_HAND_REVENANT;
         }
+        // EYE-ONLY MONSTERS. Their table rows carry nothing but the two eyes, at
+        // positions read out of the very _e masks that make them glow, so the cast
+        // light cannot drift off the glow. Matched in full for the same reason
+        // BOS2/BOSS are: TROO/TRO2 and SARG/SAR2 differ only in the 4th character
+        // and one of each pair is a different COLOUR.
+        //
+        // POSS, SPOS, SSWV, HEAD and PAIN are absent because they have no eye _e
+        // at all -- there is no glow for a light to sit under.
+        static const struct { const char* spr; int monster; } kEyeSprites[] = {
+            { "TROO", RT_HAND_IMP },
+            { "TRO2", RT_HAND_NIGHTMAREIMP },
+            { "SARG", RT_HAND_PINKY },
+            { "SAR2", RT_HAND_SPECTRE },
+            { "FATT", RT_HAND_MANCUBUS },
+            { "BSPI", RT_HAND_ARACHNOTRON },
+            { "CYBR", RT_HAND_CYBERDEMON },
+        };
+        for( const auto& e : kEyeSprites )
+        {
+            if( sn && strnicmp( sn, e.spr, 4 ) == 0 )
+            {
+                return e.monster;
+            }
+        }
     }
     if( mo->GetClass() && mo->GetClass()->TypeName.IsValidName() )
     {
@@ -2670,7 +2694,8 @@ void RT_UploadHandGlowLights()
     // fist. See the rt_vile_light_* cvar block.
     const float vileIntensity = std::max( 0.f, float{ cvar::rt_vile_light_intensity } );
     if( intensity <= 0.01f && vileIntensity <= 0.01f &&
-        float{ cvar::rt_gunner_light_intensity } <= 0.01f )
+        float{ cvar::rt_gunner_light_intensity } <= 0.01f &&
+        float{ cvar::rt_eye_light_intensity } <= 0.01f )
     {
         return;
     }
@@ -2682,6 +2707,12 @@ void RT_UploadHandGlowLights()
     const float mmRadius     = std::max( 0.01f, float{ cvar::rt_mastermind_light_radius } );
     const float revIntensity = std::max( 0.f, float{ cvar::rt_revenant_light_intensity } );
     const float revRadius    = std::max( 0.01f, float{ cvar::rt_revenant_light_radius } );
+    // Eyes are their own ORDER of light and share one pair across every monster
+    // that has them. A hint on the face is not a source that lights a room, and
+    // hanging them off each monster's own cvar would make one of the two wrong
+    // every time either was retuned.
+    const float eyeIntensity = std::max( 0.f, float{ cvar::rt_eye_light_intensity } );
+    const float eyeRadius    = std::max( 0.01f, float{ cvar::rt_eye_light_radius } );
 
     // Per-monster intensity/radius. A fist, a flame and a muzzle flash are three
     // different sources and sharing one pair of numbers makes two of them wrong.
@@ -2718,8 +2749,10 @@ void RT_UploadHandGlowLights()
         float    px, py, pz;
         uint64_t id;
         int      frame;   // sprite frame, for the debug dump
-        float    scale;   // per-frame intensity multiplier (eyes vs a gun flash)
+        float    scale;   // per-HAND intensity multiplier (eyes vs a gun flash)
         int      monster; // index into RT_HAND_COLOR — green knight vs red baron
+        unsigned colour;  // 0 = inherit the monster's colour
+        bool     isEye;   // draws from rt_eye_light_* instead of the monster's
     };
     std::vector< HandCand > cand;
 
@@ -2794,8 +2827,10 @@ void RT_UploadHandGlowLights()
                 float( wz ) * ONEGAMEUNIT_IN_METERS,
                 id,
                 frame,
-                hk.scale,
+                hand.lightScale,
                 monster,
+                hand.colour,
+                hand.isEye,
             } );
         }
     }
@@ -2815,7 +2850,7 @@ void RT_UploadHandGlowLights()
         // Colour comes from the generated table, never a literal here: it is the same
         // value the mask generator tints with, and a hardcoded copy would drift the cast
         // light away from the glow the moment either was retuned.
-        const unsigned rgb = RT_HAND_COLOR[ c.monster ];
+        const unsigned rgb = c.colour ? c.colour : RT_HAND_COLOR[ c.monster ];
         const float    kR  = ( ( rgb >> 16 ) & 0xFF ) / 255.0f;
         const float    kG  = ( ( rgb >> 8 ) & 0xFF ) / 255.0f;
         const float    kB  = ( rgb & 0xFF ) / 255.0f;
@@ -2827,9 +2862,9 @@ void RT_UploadHandGlowLights()
             // hk.scale carries the eyes-vs-flash ratio: one cvar per monster, and
             // the table says how much of it each frame gets. Without it the
             // Mastermind's eyes would burn at gun-flash strength.
-            .intensity = intensityFor( c.monster ) * c.scale,
+            .intensity = ( c.isEye ? eyeIntensity : intensityFor( c.monster ) ) * c.scale,
             .position  = { c.px, c.py, c.pz },
-            .radius    = radiusFor( c.monster ),
+            .radius    = c.isEye ? eyeRadius : radiusFor( c.monster ),
         };
         auto info = RgLightInfo{
             .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
@@ -2849,8 +2884,8 @@ void RT_UploadHandGlowLights()
             // was invisible. A dim light must look dim in debug too, or the
             // marker signs off on the bug.
             constexpr float markR   = 0.05f;
-            const float     litR    = radiusFor( c.monster );
-            const float     litI    = intensityFor( c.monster ) * c.scale;
+            const float     litR    = c.isEye ? eyeRadius : radiusFor( c.monster );
+            const float     litI    = ( c.isEye ? eyeIntensity : intensityFor( c.monster ) ) * c.scale;
             const float     markI   = litI * ( markR * markR ) / ( litR * litR );
             auto markSph = RgLightSphericalEXT{
                 .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
