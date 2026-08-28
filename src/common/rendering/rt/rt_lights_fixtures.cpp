@@ -2602,6 +2602,23 @@ static int RT_HandGlowMonster( AActor* mo )
         {
             return RT_HAND_ARCHVILE;
         }
+        // The Unseen Evil Chaingunner. Only frame F has a table entry -- that is
+        // the firing frame, and the muzzle flash is painted on it alone.
+        if( sn && strnicmp( sn, "CPOS", 4 ) == 0 )
+        {
+            return RT_HAND_CHAINGUNNER;
+        }
+        // Only frame H has a table entry -- the eyes carry the same red on every
+        // other frame and must not become lights.
+        if( sn && strnicmp( sn, "SPID", 4 ) == 0 )
+        {
+            return RT_HAND_MASTERMIND;
+        }
+        // Eyes and both shoulder launchers, all four lit at their own points.
+        if( sn && strnicmp( sn, "SKEL", 4 ) == 0 )
+        {
+            return RT_HAND_REVENANT;
+        }
     }
     if( mo->GetClass() && mo->GetClass()->TypeName.IsValidName() )
     {
@@ -2618,6 +2635,18 @@ static int RT_HandGlowMonster( AActor* mo )
         if( cn && strnicmp( cn, "D64R_Archvile", 13 ) == 0 )
         {
             return RT_HAND_ARCHVILE;
+        }
+        if( cn && strnicmp( cn, "D64R_ChaingunGuy", 16 ) == 0 )
+        {
+            return RT_HAND_CHAINGUNNER;
+        }
+        if( cn && strnicmp( cn, "D64R_SpiderMastermind", 21 ) == 0 )
+        {
+            return RT_HAND_MASTERMIND;
+        }
+        if( cn && strnicmp( cn, "D64R_Revenant", 13 ) == 0 )
+        {
+            return RT_HAND_REVENANT;
         }
     }
     return -1;
@@ -2640,12 +2669,36 @@ void RT_UploadHandGlowLights()
     // The Arch-Vile shares this system but not its numbers: a flame is not a
     // fist. See the rt_vile_light_* cvar block.
     const float vileIntensity = std::max( 0.f, float{ cvar::rt_vile_light_intensity } );
-    if( intensity <= 0.01f && vileIntensity <= 0.01f )
+    if( intensity <= 0.01f && vileIntensity <= 0.01f &&
+        float{ cvar::rt_gunner_light_intensity } <= 0.01f )
     {
         return;
     }
     const float srcRadius  = std::max( 0.01f, float{ cvar::rt_hand_light_radius } );
     const float vileRadius = std::max( 0.01f, float{ cvar::rt_vile_light_radius } );
+    const float gunIntensity = std::max( 0.f, float{ cvar::rt_gunner_light_intensity } );
+    const float gunRadius    = std::max( 0.01f, float{ cvar::rt_gunner_light_radius } );
+    const float mmIntensity  = std::max( 0.f, float{ cvar::rt_mastermind_light_intensity } );
+    const float mmRadius     = std::max( 0.01f, float{ cvar::rt_mastermind_light_radius } );
+    const float revIntensity = std::max( 0.f, float{ cvar::rt_revenant_light_intensity } );
+    const float revRadius    = std::max( 0.01f, float{ cvar::rt_revenant_light_radius } );
+
+    // Per-monster intensity/radius. A fist, a flame and a muzzle flash are three
+    // different sources and sharing one pair of numbers makes two of them wrong.
+    auto intensityFor = [ & ]( int m ) {
+        return m == RT_HAND_ARCHVILE     ? vileIntensity
+             : m == RT_HAND_CHAINGUNNER  ? gunIntensity
+             : m == RT_HAND_MASTERMIND   ? mmIntensity
+             : m == RT_HAND_REVENANT     ? revIntensity
+                                         : intensity;
+    };
+    auto radiusFor = [ & ]( int m ) {
+        return m == RT_HAND_ARCHVILE     ? vileRadius
+             : m == RT_HAND_CHAINGUNNER  ? gunRadius
+             : m == RT_HAND_MASTERMIND   ? mmRadius
+             : m == RT_HAND_REVENANT     ? revRadius
+                                         : srcRadius;
+    };
     const double maxDist   = std::max( 64.0, double( float{ cvar::rt_hand_light_maxdist } ) );
     const double maxDist2  = maxDist * maxDist;
     const int    budget    = std::max( 0, int{ cvar::rt_hand_light_max } );
@@ -2665,6 +2718,7 @@ void RT_UploadHandGlowLights()
         float    px, py, pz;
         uint64_t id;
         int      frame;   // sprite frame, for the debug dump
+        float    scale;   // per-frame intensity multiplier (eyes vs a gun flash)
         int      monster; // index into RT_HAND_COLOR — green knight vs red baron
     };
     std::vector< HandCand > cand;
@@ -2705,7 +2759,8 @@ void RT_UploadHandGlowLights()
         const double fx = std::cos( yaw ), fy = std::sin( yaw );
         const double rx = std::sin( yaw ), ry = -std::cos( yaw );
 
-        for( int h = 0; h < hk.count && h < 2; ++h )
+        // 4, not 2: the Revenant lights both eyes AND both shoulder launchers.
+        for( int h = 0; h < hk.count && h < 4; ++h )
         {
             const RtHandPos& hand = hk.hands[ h ];
 
@@ -2722,10 +2777,14 @@ void RT_UploadHandGlowLights()
 
             // Stable across frames: actor identity + hand index. An id that shifted per
             // tick would make RTGL1 see the set vanish and reappear.
+            //
+            // SHIFT 2, NOT 1. There are up to FOUR lights per actor now, so one bit
+            // of room would make hand 2 of one actor collide with hand 0 of the
+            // next -- lights silently overwriting each other.
             const uint64_t id = HandLightId_Base +
                                 ( ( uint64_t{ reinterpret_cast< uintptr_t >( mo ) } &
                                     0xFFFFFFFFull )
-                                  << 1 ) +
+                                  << 2 ) +
                                 uint64_t( h );
 
             cand.push_back( HandCand{
@@ -2735,6 +2794,7 @@ void RT_UploadHandGlowLights()
                 float( wz ) * ONEGAMEUNIT_IN_METERS,
                 id,
                 frame,
+                hk.scale,
                 monster,
             } );
         }
@@ -2764,9 +2824,12 @@ void RT_UploadHandGlowLights()
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = rt.rgUtilPackColorFloat4D( kR, kG, kB, 1.0f ),
-            .intensity = ( c.monster == RT_HAND_ARCHVILE ) ? vileIntensity : intensity,
+            // hk.scale carries the eyes-vs-flash ratio: one cvar per monster, and
+            // the table says how much of it each frame gets. Without it the
+            // Mastermind's eyes would burn at gun-flash strength.
+            .intensity = intensityFor( c.monster ) * c.scale,
             .position  = { c.px, c.py, c.pz },
-            .radius    = ( c.monster == RT_HAND_ARCHVILE ) ? vileRadius : srcRadius,
+            .radius    = radiusFor( c.monster ),
         };
         auto info = RgLightInfo{
             .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
@@ -2779,13 +2842,23 @@ void RT_UploadHandGlowLights()
 
         if( cvar::rt_hand_light_debug )
         {
+            // The marker carries the SAME RADIANCE as the light it marks, not a
+            // fixed 350/0.05. RTGL1 encodes a sphere as intensity/(PI*r^2), so
+            // that old pair was ~44500 against a 676 flame -- 66x -- and a debug
+            // run therefore showed a bright magenta ball wherever the real light
+            // was invisible. A dim light must look dim in debug too, or the
+            // marker signs off on the bug.
+            constexpr float markR   = 0.05f;
+            const float     litR    = radiusFor( c.monster );
+            const float     litI    = intensityFor( c.monster ) * c.scale;
+            const float     markI   = litI * ( markR * markR ) / ( litR * litR );
             auto markSph = RgLightSphericalEXT{
                 .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
                 .pNext     = nullptr,
                 .color     = rt.rgUtilPackColorByte4D( 255, 0, 255, 255 ),
-                .intensity = 350.f,
+                .intensity = markI,
                 .position  = { c.px, c.py, c.pz },
-                .radius    = 0.05f,
+                .radius    = markR,
             };
             auto markInfo = RgLightInfo{
                 .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,

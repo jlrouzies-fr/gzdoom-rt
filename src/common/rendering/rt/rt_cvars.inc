@@ -857,14 +857,71 @@
     // where the flame sits 100..128 units up, near the top of a 137px sprite --
     // too weak to reach the floor at all, which is why the light looked like it
     // arrived several frames after the fire did.
-    RT_CVAR( rt_vile_light_intensity,   260.f,  "RT intensity per FLAME hand for the Unseen Evil Arch-Vile. Separate "
-                                                "from rt_hand_light_intensity because a flame is not a fist: the "
-                                                "Baron's value is ~4x too low here and the wind-up frames, whose "
-                                                "flames sit near the top of the sprite, never reached the floor." )
+    // RADIUS IS NOT INDEPENDENT OF BRIGHTNESS. RTGL1 encodes a sphere light as
+    // intensity / (PI * radius^2) -- LightManager.cpp, EncodeAsSphereLight -- so
+    // DOUBLING THE RADIUS QUARTERS THE LIGHT. This was got wrong once: 260 at
+    // r=0.35 was raised from the Baron's 65 at r=0.06 believing it 4x brighter,
+    // and it is 0.12x, because the radius went up 5.8x at the same time.
+    //
+    //   radiance = intensity / (PI * r^2)
+    //   Baron fist   65 / (PI*0.06^2) = 5748
+    //   wall strip  180 / (PI*0.35^2) =  468
+    //   this       1000 / (PI*0.35^2) = 2599   (0.45x a fist, 5.6x a wall strip)
+    //
+    // Change the radius and this number must move with it, or the light silently
+    // changes brightness while looking like a shape tweak.
+    //
+    // 1000 was chosen in the lab, and it is worth noting it came out BELOW half a
+    // fist -- an earlier guess of 8800 (4x a fist) was picked by arithmetic alone
+    // and was far too hot. Two flames beat one fist, and the sprite's own emissive
+    // is already carrying much of the look.
+    RT_CVAR( rt_vile_light_intensity,   1000.f, "RT intensity per FLAME hand for the Unseen Evil Arch-Vile. Chosen in "
+                                                "the lab; reads as 0.45x a Baron fist once the radius is divided out "
+                                                "-- see the radiance note above, and move this WITH "
+                                                "rt_vile_light_radius." )
+    // The Chaingunner's TWO BARREL ENDS. Its own pair because a muzzle flash is
+    // neither a fist nor a flame: small source, brief, and brighter per unit area
+    // than either. 160 / (PI*0.10^2) = 5093 radiance -- 0.89x a Baron fist and 2x
+    // the Arch-Vile's flame, from a source a third the width.
+    //
+    // These REPLACE the old CPOSF lightIntensity 520 row, which RTGL1 pinned to
+    // the centre of the billboard quad and therefore put a single warm blob on
+    // his chest while both barrels sat dark.
+    RT_CVAR( rt_gunner_light_intensity, 160.f,  "RT intensity per BARREL for the Unseen Evil Chaingunner's muzzle "
+                                                "flash. Radiance is intensity/(PI*r^2) -- move this WITH "
+                                                "rt_gunner_light_radius or the brightness changes silently." )
+    // The Spider Mastermind's gun flash. Wider source than the Chaingunner's
+    // barrel because the flash is 1187 texels across the front, not a point.
+    // 700 / (PI*0.20^2) = 5570 radiance, near the Chaingunner's 5093 from twice
+    // the width. Its EYES are deliberately NOT lit -- same red, different frames,
+    // gated in tools/gen_hand_light_offsets.py; a walking spider with two red
+    // lamps for eyes is the failure gen_enemy_eye_emissives keeps EYE_LIGHT 0 for.
+    RT_CVAR( rt_mastermind_light_intensity, 700.f, "RT intensity per gun-flash light for the Unseen Evil Spider "
+                                                "Mastermind, on its firing frame only. Radiance is "
+                                                "intensity/(PI*r^2) -- move this WITH the radius." )
+    // The Revenant's eyes AND its two shoulder launchers -- four small red points,
+    // each lit where it actually sits. Modest: they are points on a monster, not a
+    // muzzle flash. 90 / (PI*0.12^2) = 1989 radiance, ~0.35x a Baron fist.
+    RT_CVAR( rt_revenant_light_intensity,  90.f, "RT intensity per red point on the Unseen Evil Revenant (eyes and "
+                                                "shoulder launchers). Radiance is intensity/(PI*r^2) -- move this "
+                                                "WITH the radius." )
+    RT_CVAR( rt_revenant_light_radius,   0.12f,  "RT source radius in meters per Revenant red point. Brightness "
+                                                "falls with the SQUARE of this." )
+    RT_CVAR( rt_mastermind_light_radius,  0.20f,  "RT source radius in meters for the Mastermind's gun flash. "
+                                                "Brightness falls with the SQUARE of this." )
+    RT_CVAR( rt_gunner_light_radius,    0.10f,  "RT source radius in meters per Chaingunner barrel. Small: a barrel "
+                                                "end is a point next to a flame. Brightness falls with the SQUARE "
+                                                "of this." )
     RT_CVAR( rt_vile_light_radius,      0.35f,  "RT source radius in meters per Arch-Vile flame. Wide on purpose -- a "
                                                 "flame is a volume, not a point, and a small source gives it a hard "
-                                                "shadow edge no fire has. Matches rt_wall_strip_radius." )
-    RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at Baron-family fist lights" )
+                                                "shadow edge no fire has. Matches rt_wall_strip_radius. NOT free: "
+                                                "brightness falls with the SQUARE of this, so raise "
+                                                "rt_vile_light_intensity to match when widening it." )
+    RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at fist/flame light "
+                                                "positions. The markers are uploaded at the SAME RADIANCE as the light "
+                                                "they mark, so a debug run cannot make a dim light look bright -- an "
+                                                "earlier fixed 350/0.05 marker was 66x the light beside it, and a "
+                                                "too-dim flame was signed off on the strength of the magenta." )
 
     // Lava is a LIGHT, and it has to be an analytic one.
     //
