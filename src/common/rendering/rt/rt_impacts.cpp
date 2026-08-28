@@ -29,6 +29,7 @@
 
 #include "rt_sparks_internal.h"
 
+#include "filesystem.h"
 #include "p_trace.h"
 
 // NOTE: no `using namespace rtsp;` up here. This file DEFINES things inside
@@ -78,12 +79,80 @@ constexpr ArcStyle RT_ARC_STYLES[ int( ArcFlavor::COUNT ) ] = {
     { RT_FIRE_VIOLET_RAMP, RT_FIRE_VIOLET_RAMP_N, 1.0f, "fire-violet" },
     { RT_FIRE_GREEN_RAMP, RT_FIRE_GREEN_RAMP_N, 1.0f, "fire-green" },
     { RT_FIRE_RED_RAMP, RT_FIRE_RED_RAMP_N, 1.0f, "fire-red" },
+    // THE CACODEMON, and its FIRST ramp is the baron's -- byte for byte the row
+    // above. With the classic-recolour add-on off that is the whole of it and
+    // nothing has changed; ramp2 is only consulted when RT_CacoBlueFire() says
+    // the ball is wearing its blue fringe, and then half the flames burn it.
+    { RT_FIRE_RED_RAMP,
+      RT_FIRE_RED_RAMP_N,
+      1.0f,
+      "fire-caco",
+      RT_FIRE_CACO_BLUE_RAMP,
+      RT_FIRE_CACO_BLUE_RAMP_N },
 };
 
 const ArcStyle& ArcStyleFor( ArcFlavor f )
 {
     const int i = int( f );
     return RT_ARC_STYLES[ ( i >= 0 && i < int( ArcFlavor::COUNT ) ) ? i : 0 ];
+}
+
+// IS THE CACODEMON'S BALL WEARING ITS BLUE FRINGE?
+//
+// The recolour is the PLAYER'S CHOICE, made in the startup window, and there is
+// no cvar carrying it: the launcher's answer is that it puts
+// d64r-caco-ball-recolor.pk3 on the command line and otherwise does not. So the
+// renderer reads that choice back off the loaded file list rather than being
+// told twice -- a pin would be a second source of truth that goes stale the
+// first time somebody unticks the box.
+//
+// CACHED, and it is a `static` in a function rather than a global on purpose:
+// the file list cannot change without a restart, and this is asked once per fire
+// mark per frame. The cvar is NOT cached -- it is the override and has to move
+// live.
+//
+// THE LOOKUP IS A SUBSTRING WALK, NOT CheckIfResourceFileLoaded, and that is a
+// scar. That helper compares against ExtractBaseName( name, true ) -- and its
+// second parameter is `include_extension`, so it wants "…-recolor.pk3" and
+// silently answers "not loaded" to "…-recolor". Which is EXACTLY the shape of
+// failure this whole feature is exposed to: the pk3 really was loaded, the
+// sprite really was blue, and every flame came out red with nothing anywhere
+// saying why. Matching the stem instead also survives the file being renamed to
+// a .wad or gaining a suffix, neither of which should quietly turn a feature
+// off.
+//
+// The one-shot line under rt_verbose is the readback. It costs one Printf per
+// session and it is the only thing that can distinguish "the gate is off" from
+// "the split is broken", which took a rebuild to tell apart once already.
+bool RT_CacoBlueFire()
+{
+    const int mode = int{ cvar::rt_fire_caco_blue };
+    if( mode <= 0 )
+    {
+        return false;
+    }
+    if( mode >= 2 )
+    {
+        return true; // forced: the blue half against the stock orange ball
+    }
+    static const bool s_loaded = [] {
+        for( int i = 0; i < fileSystem.GetNumWads(); i++ )
+        {
+            const char* f = fileSystem.GetResourceFileName( i );
+            if( f != nullptr && strstr( f, "d64r-caco-ball-recolor" ) != nullptr )
+            {
+                Printf( RT_DiagPrintLevel(),
+                        "RT caco fire: d64r-caco-ball-recolor.pk3 loaded -- the "
+                        "Cacodemon's impact fire burns half blue\n" );
+                return true;
+            }
+        }
+        Printf( RT_DiagPrintLevel(),
+                "RT caco fire: no d64r-caco-ball-recolor.pk3 -- the Cacodemon's "
+                "impact fire stays all red (rt_fire_caco_blue 2 forces it on)\n" );
+        return false;
+    }();
+    return s_loaded;
 }
 
 // WHICH ACTORS ARC, matched by a substring of the class name.
@@ -178,7 +247,13 @@ constexpr ArcSource RT_ARC_SOURCES[] = {
     // the SAME GLDEFS colour, 1.0 0.0 0.0. Two projectiles Doom 64 itself lights
     // identically red sharing one red ramp is coherent; giving one of them a
     // white-to-orange flame while its own dynamic light is pure red would not be.
-    { "CacodemonBall", ArcFlavor::FireRed, ImpactFx::Fire },
+    //
+    // ALL OF THAT STILL HOLDS, and the flavour is FireCaco rather than FireRed
+    // only so the caco can carry a SECOND ramp the baron must not. FireCaco's
+    // first ramp IS RT_FIRE_RED_RAMP, so with the classic-recolour add-on off
+    // this row behaves exactly as the line above it used to. With the add-on on,
+    // the ball has a blue fringe and half these flames burn blue to match.
+    { "CacodemonBall", ArcFlavor::FireCaco, ImpactFx::Fire },
     { "NightmareImpBall", ArcFlavor::FireViolet, ImpactFx::Fire },
     { "DoomImpBall", ArcFlavor::FireOrange, ImpactFx::Fire },
 };

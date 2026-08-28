@@ -22,6 +22,11 @@
 
 #include "rt_internal.h"
 
+// For RT_CacoBlueFire() and RT_FIRE_CACO_BLUE_RAMP: the Cacodemon ball's light
+// in FLIGHT is recoloured to the same blue its impact flames burn, so the two
+// cannot drift apart. See the block that uses them, below.
+#include "rt_sparks_internal.h"
+
 // The shared internals (RG_CHECK, ONEGAMEUNIT_IN_METERS, RT_SectorHue, the
 // light-ID bases) come in unqualified, exactly as when this code lived inside
 // rt_main.cpp's anonymous namespace.
@@ -191,6 +196,13 @@ void RT_UploadGzDoomDynamicLights()
     const float intensityMax   = std::max( 0.f, float{ cvar::rt_dynlight_max } );
     const float srcRadius      = std::max( 0.01f, float{ cvar::rt_dynlight_radius } );
     const bool  stackAtten     = bool{ cvar::rt_dynlight_stack_atten };
+
+    // Hoisted so the class-name compare below is reached only when the
+    // Cacodemon's ball is actually wearing its blue fringe -- this loop runs
+    // over every dynamic light in the level, every frame, and a strstr on all of
+    // them to serve one projectile would be the wrong way round.
+    const float cacoBlue     = std::max( 0.f, float{ cvar::rt_fire_caco_blue_light } );
+    const bool  wantCacoBlue = cacoBlue > 0.f && rtsp::RT_CacoBlueFire();
 
     // Doom64 key doors place 3 PointLights on the same XY at different heights so the
     // classic HW path lights a tall jamb strip. In PT those spheres add, so bloom goes
@@ -401,12 +413,54 @@ void RT_UploadGzDoomDynamicLights()
             continue;
         }
 
-        const int cr = light->GetRed();
-        const int cg = light->GetGreen();
-        const int cb = light->GetBlue();
+        int cr = light->GetRed();
+        int cg = light->GetGreen();
+        int cb = light->GetBlue();
         if( cr + cg + cb <= 0 )
         {
             continue;
+        }
+
+        // THE CACODEMON'S BALL, WHEN IT IS WEARING ITS BLUE FRINGE.
+        //
+        // Under the classic-recolour add-on the ball is a warm core inside a
+        // violet-to-blue fringe (docs/classic-recolored-addon.md), and the light
+        // it threw was still Doom 64's pure red. This is the fringe's half of
+        // that light; the core's half is the RTGL1 attached light BAL2 carries
+        // in textures.json, and the two ADD at the ball -- which is the only way
+        // a mix happens at all, because one sphere light has one colour.
+        //
+        // WHY THIS LIGHT AND NOT A NEW ONE. The ball already carries a
+        // GLDEFS flickerlight (CACOBALL, and CACOBALL_X1..X5 down its death
+        // frames), so there is a light here with the right position, the right
+        // lifetime and an id already assigned. Adding a second would mean a new
+        // id range and a new walk for something the game is already doing.
+        //
+        // AND WHY IT NEEDS THE INTENSITY OVERRIDE. Recolouring alone does
+        // nothing you can see: CACOBALL's 64-unit radius comes out of the
+        // arithmetic above at about 49 -- 500 clamped, then multiplied by
+        // (rsoft/hi)^2 = (20/64)^2 -- against the 900 of the sprite's attached
+        // light. A hue swap on a light eighteen times dimmer than the one beside
+        // it is invisible, and radius cannot buy it back: above rt_dynlight_rsoft
+        // a WIDER light is a DIMMER one, and under rt_dynlight_minradius it is
+        // dropped outright.
+        //
+        // The colour is RT_FIRE_CACO_BLUE_RAMP's hot end -- the same blue the
+        // impact's blue flames start on, by construction rather than by two
+        // hexes that drift.
+        AActor* const lightOwner = wantCacoBlue ? light->target.Get() : nullptr;
+        if( lightOwner != nullptr && lightOwner->GetClass() != nullptr &&
+            strstr( lightOwner->GetClass()->TypeName.GetChars(), "CacodemonBall" ) !=
+                nullptr )
+        {
+            constexpr uint32_t kBlue = rtsp::RT_FIRE_CACO_BLUE_RAMP[ 0 ];
+            cr        = int( ( kBlue >> 16 ) & 0xFF );
+            cg        = int( ( kBlue >> 8 ) & 0xFF );
+            cb        = int( kBlue & 0xFF );
+            // Scaled by the fade the death frames already carry: CACOBALL_X1..X5
+            // step 0.9 -> 0.1 of red, so the ball's blue half dies on the same
+            // curve its red half does instead of snapping off at the burst.
+            intensity = cacoBlue * std::clamp( float( light->GetRed() ) / 255.f, 0.f, 1.f );
         }
 
         const auto color = rt.rgUtilPackColorByte4D( cr, cg, cb, 255 );
