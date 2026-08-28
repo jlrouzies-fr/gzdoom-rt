@@ -180,13 +180,13 @@ constexpr RtHandFrame RT_HAND_FRAMES[ RT_HAND_MONSTER_COUNT ][ RT_HAND_FRAME_COU
     },
     // Imp (TROO)
     {
-        { 2, { { 1.9f, 81.8f, 6.6f, 1.00f, 0u, true }, { -4.8f, 81.9f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // A
-        { 2, { { -6.3f, 77.0f, 6.6f, 1.00f, 0u, true }, { 0.6f, 76.9f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // B
-        { 2, { { -1.8f, 80.6f, 6.6f, 1.00f, 0u, true }, { 5.1f, 80.9f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // C
-        { 2, { { -2.0f, 77.9f, 6.6f, 1.00f, 0u, true }, { 4.5f, 77.5f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // D
-        { 1, { { -1.5f, 79.5f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // E
-        { 1, { { -1.5f, 79.5f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // F
-        { 2, { { 4.8f, 77.0f, 6.6f, 1.00f, 0u, true }, { -1.0f, 77.0f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // G
+        { 2, { { 1.9f, 81.8f, 9.6f, 1.00f, 0u, true }, { -4.8f, 81.9f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // A
+        { 2, { { -6.3f, 77.0f, 9.6f, 1.00f, 0u, true }, { 0.6f, 76.9f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // B
+        { 2, { { -1.8f, 80.6f, 9.6f, 1.00f, 0u, true }, { 5.1f, 80.9f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // C
+        { 2, { { -2.0f, 77.9f, 9.6f, 1.00f, 0u, true }, { 4.5f, 77.5f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // D
+        { 1, { { -1.5f, 79.5f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // E
+        { 1, { { -1.5f, 79.5f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // F
+        { 2, { { 4.8f, 77.0f, 9.6f, 1.00f, 0u, true }, { -1.0f, 77.0f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // G
         { 0, { { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // H
         { 0, { { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // I
         { 0, { { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // J
@@ -199,13 +199,13 @@ constexpr RtHandFrame RT_HAND_FRAMES[ RT_HAND_MONSTER_COUNT ][ RT_HAND_FRAME_COU
     },
     // Nightmare Imp (TRO2)
     {
-        { 2, { { 1.9f, 81.8f, 6.6f, 1.00f, 0u, true }, { -4.8f, 81.9f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // A
-        { 2, { { -6.3f, 77.0f, 6.6f, 1.00f, 0u, true }, { 0.6f, 76.9f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // B
-        { 2, { { -1.8f, 80.6f, 6.6f, 1.00f, 0u, true }, { 5.1f, 80.9f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // C
-        { 2, { { -2.0f, 77.9f, 6.6f, 1.00f, 0u, true }, { 4.5f, 77.5f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // D
-        { 1, { { -1.5f, 79.5f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // E
+        { 2, { { 1.9f, 81.8f, 9.6f, 1.00f, 0u, true }, { -4.8f, 81.9f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // A
+        { 2, { { -6.3f, 77.0f, 9.6f, 1.00f, 0u, true }, { 0.6f, 76.9f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // B
+        { 2, { { -1.8f, 80.6f, 9.6f, 1.00f, 0u, true }, { 5.1f, 80.9f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // C
+        { 2, { { -2.0f, 77.9f, 9.6f, 1.00f, 0u, true }, { 4.5f, 77.5f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // D
+        { 1, { { -1.5f, 79.5f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // E
         { 0, { { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // F
-        { 2, { { 4.8f, 77.0f, 6.6f, 1.00f, 0u, true }, { -1.0f, 77.0f, 6.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // G
+        { 2, { { 4.8f, 77.0f, 9.6f, 1.00f, 0u, true }, { -1.0f, 77.0f, 9.6f, 1.00f, 0u, true }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // G
         { 0, { { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // H
         { 0, { { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // I
         { 0, { { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false }, { 0.0f, 0.0f, 0.0f, 1.00f, 0u, false } } },  // J
