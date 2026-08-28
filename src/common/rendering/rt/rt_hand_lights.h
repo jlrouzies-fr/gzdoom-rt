@@ -33,11 +33,12 @@ enum RtHandMonster
 {
     RT_HAND_HELLKNIGHT = 0,  // Hell Knight
     RT_HAND_BARON = 1,  // Baron of Hell
-    RT_HAND_MONSTER_COUNT = 2,
+    RT_HAND_ARCHVILE = 2,  // Arch-Vile (Unseen Evil)
+    RT_HAND_MONSTER_COUNT = 3,
 };
 
 // Indexed by sprite frame letter: A=0 .. H=7.
-constexpr int RT_HAND_FRAME_COUNT = 8;
+constexpr int RT_HAND_FRAME_COUNT = 16;
 
 constexpr RtHandFrame RT_HAND_FRAMES[ RT_HAND_MONSTER_COUNT ][ RT_HAND_FRAME_COUNT ] = {
     // Hell Knight (BOS2)
@@ -50,6 +51,14 @@ constexpr RtHandFrame RT_HAND_FRAMES[ RT_HAND_MONSTER_COUNT ][ RT_HAND_FRAME_COU
         { 2, { { 32.4f, 76.0f, 0.0f }, { -23.3f, 43.1f, 0.0f } } },  // F
         { 2, { { -9.9f, 49.6f, 0.0f }, { -24.2f, 44.2f, 0.0f } } },  // G
         { 2, { { -19.2f, 43.9f, 0.0f }, { 25.5f, 48.2f, 0.0f } } },  // H
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // I
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // J
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // K
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // L
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // M
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // N
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // O
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // P
     },
     // Baron of Hell (BOSS)
     {
@@ -61,6 +70,33 @@ constexpr RtHandFrame RT_HAND_FRAMES[ RT_HAND_MONSTER_COUNT ][ RT_HAND_FRAME_COU
         { 2, { { 32.4f, 76.0f, 0.0f }, { -23.3f, 43.1f, 0.0f } } },  // F
         { 2, { { -9.9f, 49.6f, 0.0f }, { -24.2f, 44.2f, 0.0f } } },  // G
         { 2, { { -19.2f, 43.9f, 0.0f }, { 25.5f, 48.2f, 0.0f } } },  // H
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // I
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // J
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // K
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // L
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // M
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // N
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // O
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // P
+    },
+    // Arch-Vile (Unseen Evil) (VILE)
+    {
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // A
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // B
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // C
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // D
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // E
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // F
+        { 0, { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } } },  // G
+        { 2, { { -49.7f, 101.2f, 0.0f }, { -40.3f, 128.4f, 0.0f } } },  // H
+        { 2, { { 42.4f, 98.7f, 0.0f }, { 33.7f, 122.5f, 0.0f } } },  // I
+        { 2, { { 30.4f, 117.1f, 0.0f }, { -33.9f, 87.7f, 0.0f } } },  // J
+        { 2, { { -0.0f, 78.9f, 0.0f }, { -13.4f, 62.4f, 0.0f } } },  // K
+        { 2, { { -12.7f, 63.4f, 0.0f }, { 5.8f, 77.4f, 0.0f } } },  // L
+        { 2, { { -0.1f, 59.0f, 0.0f }, { 1.5f, 75.0f, 0.0f } } },  // M
+        { 2, { { -2.8f, 70.7f, 0.0f }, { 9.2f, 61.8f, 0.0f } } },  // N
+        { 2, { { 1.2f, 68.1f, 0.0f }, { -17.1f, 79.2f, 0.0f } } },  // O
+        { 2, { { -15.7f, 51.5f, 0.0f }, { 15.8f, 53.5f, 0.0f } } },  // P
     },
 };
 
@@ -69,4 +105,5 @@ constexpr RtHandFrame RT_HAND_FRAMES[ RT_HAND_MONSTER_COUNT ][ RT_HAND_FRAME_COU
 constexpr unsigned RT_HAND_COLOR[ RT_HAND_MONSTER_COUNT ] = {
     0x08ff5eu,  // Hell Knight (BOS2)
     0xe01000u,  // Baron of Hell (BOSS)
+    0xff9028u,  // Arch-Vile (Unseen Evil) (VILE)
 };

@@ -851,6 +851,19 @@
     // magenta marker spheres at 350 intensity; archived, a single debug launch would
     // leave them burned into the ini and silently wreck every later visual judgement.
     // That is the "A/B cvars must not persist" failure this project has already paid for.
+    // The Arch-Vile is on the same system but is NOT a fist. Its hands hold a
+    // column of fire the height of the sprite, so the Baron's 65/0.06 reads as a
+    // pinprick: too dim to light the vile itself, and on the wind-up frames --
+    // where the flame sits 100..128 units up, near the top of a 137px sprite --
+    // too weak to reach the floor at all, which is why the light looked like it
+    // arrived several frames after the fire did.
+    RT_CVAR( rt_vile_light_intensity,   260.f,  "RT intensity per FLAME hand for the Unseen Evil Arch-Vile. Separate "
+                                                "from rt_hand_light_intensity because a flame is not a fist: the "
+                                                "Baron's value is ~4x too low here and the wind-up frames, whose "
+                                                "flames sit near the top of the sprite, never reached the floor." )
+    RT_CVAR( rt_vile_light_radius,      0.35f,  "RT source radius in meters per Arch-Vile flame. Wide on purpose -- a "
+                                                "flame is a volume, not a point, and a small source gives it a hard "
+                                                "shadow edge no fire has. Matches rt_wall_strip_radius." )
     RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at Baron-family fist lights" )
 
     // Lava is a LIGHT, and it has to be an analytic one.
@@ -4944,6 +4957,43 @@
                                                 "in that shader, which is what the debris whiteout was about.\n"
                                                 "Off draws every fireball's flames white: the arm that shows the tint "
                                                 "doing its work." )
+    RT_CVAR( rt_fire_caco_blue,         1,      "the CACODEMON's impact fire burns HALF RED AND HALF BLUE, to match "
+                                                "the blue fringe its fireball wears under the optional classic "
+                                                "recolour add-on (docs/classic-recolored-addon.md).\n"
+                                                "1 = FOLLOW THE ADD-ON. The renderer asks the file system whether "
+                                                "d64r-caco-ball-recolor.pk3 is loaded, which the launcher passes only "
+                                                "when the player ticked the box -- so this reads the player's own "
+                                                "choice back rather than being pinned alongside it and going stale "
+                                                "the first time they untick it.\n"
+                                                "0 = never: every caco flame on RT_FIRE_RED_RAMP, exactly as the "
+                                                "baron's. This is what the game did before the split existed and it "
+                                                "is the honest BEFORE for judging it.\n"
+                                                "2 = always, add-on or not: the blue half against Doom 64's own "
+                                                "orange ball, which is the arm that shows what the recolour is "
+                                                "buying.\n"
+                                                "The split is by FLAME INDEX, not by a hash -- alternating means an "
+                                                "exact half at rt_fire_count 7, where a per-flame random would "
+                                                "sometimes deal six of one." )
+    RT_CVAR( rt_fire_caco_blue_light,   450.f,  "intensity of the BLUE HALF of the recoloured Cacodemon ball's light "
+                                                "IN FLIGHT -- the fringe's half. Gated by rt_fire_caco_blue; 0 "
+                                                "leaves the ball's own red GLDEFS light alone.\n"
+                                                "IT IS A MIX OF TWO LIGHTS AND IT HAS TO BE. One sphere light has "
+                                                "one colour, so red-and-blue can only happen by adding two: the warm "
+                                                "one is the RTGL1 attached light BAL2 carries in textures.json "
+                                                "(ff5a28 at 900, keyed BY NAME and therefore on with or without the "
+                                                "add-on), and this recolours the ball's own GLDEFS flickerlight to "
+                                                "carry the other half.\n"
+                                                "450 AGAINST THAT 900 is the whole calibration. Recolouring alone "
+                                                "does nothing visible: CACOBALL's 64-unit radius comes out of "
+                                                "rt_lights_sector's arithmetic at about 49, and a hue swap on a "
+                                                "light eighteen times dimmer than its neighbour cannot be seen. "
+                                                "Radius cannot buy it back either -- above rt_dynlight_rsoft a wider "
+                                                "light is a DIMMER one, and under rt_dynlight_minradius it is "
+                                                "dropped outright -- which is why this is an absolute override and "
+                                                "not a multiplier.\n"
+                                                "The hue is RT_FIRE_CACO_BLUE_RAMP's hot end, shared with the impact "
+                                                "flames by construction. Faded by the ball's own death ramp, so the "
+                                                "blue half dies on the curve CACOBALL_X1..X5 already draw." )
     RT_CVAR( rt_fire_glow,              420.f,  "how far a fireball mark's light reaches. Absolute, replacing "
                                                 "rt_ember_glow_intensity for this mark only -- the same shape as "
                                                 "rt_laser_glow, and for the same reason.\n"

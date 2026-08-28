@@ -2595,6 +2595,13 @@ static int RT_HandGlowMonster( AActor* mo )
         {
             return RT_HAND_BARON;
         }
+        // The Unseen Evil Arch-Vile. Its fire is in its raised hands, exactly the
+        // case this system exists for. Only frames G..P have a table entry, so its
+        // walk (A..F) and its death (R..Y, past RT_HAND_FRAME_COUNT) cannot light.
+        if( sn && strnicmp( sn, "VILE", 4 ) == 0 )
+        {
+            return RT_HAND_ARCHVILE;
+        }
     }
     if( mo->GetClass() && mo->GetClass()->TypeName.IsValidName() )
     {
@@ -2607,6 +2614,10 @@ static int RT_HandGlowMonster( AActor* mo )
         if( cn && strnicmp( cn, "64BaronOfHell", 13 ) == 0 )
         {
             return RT_HAND_BARON;
+        }
+        if( cn && strnicmp( cn, "D64R_Archvile", 13 ) == 0 )
+        {
+            return RT_HAND_ARCHVILE;
         }
     }
     return -1;
@@ -2626,11 +2637,15 @@ void RT_UploadHandGlowLights()
     }
 
     const float intensity = std::max( 0.f, float{ cvar::rt_hand_light_intensity } );
-    if( intensity <= 0.01f )
+    // The Arch-Vile shares this system but not its numbers: a flame is not a
+    // fist. See the rt_vile_light_* cvar block.
+    const float vileIntensity = std::max( 0.f, float{ cvar::rt_vile_light_intensity } );
+    if( intensity <= 0.01f && vileIntensity <= 0.01f )
     {
         return;
     }
-    const float  srcRadius = std::max( 0.01f, float{ cvar::rt_hand_light_radius } );
+    const float srcRadius  = std::max( 0.01f, float{ cvar::rt_hand_light_radius } );
+    const float vileRadius = std::max( 0.01f, float{ cvar::rt_vile_light_radius } );
     const double maxDist   = std::max( 64.0, double( float{ cvar::rt_hand_light_maxdist } ) );
     const double maxDist2  = maxDist * maxDist;
     const int    budget    = std::max( 0, int{ cvar::rt_hand_light_max } );
@@ -2649,6 +2664,7 @@ void RT_UploadHandGlowLights()
         double   d2;
         float    px, py, pz;
         uint64_t id;
+        int      frame;   // sprite frame, for the debug dump
         int      monster; // index into RT_HAND_COLOR — green knight vs red baron
     };
     std::vector< HandCand > cand;
@@ -2718,6 +2734,7 @@ void RT_UploadHandGlowLights()
                 float( wy ) * ONEGAMEUNIT_IN_METERS,
                 float( wz ) * ONEGAMEUNIT_IN_METERS,
                 id,
+                frame,
                 monster,
             } );
         }
@@ -2747,9 +2764,9 @@ void RT_UploadHandGlowLights()
             .sType     = RG_STRUCTURE_TYPE_LIGHT_SPHERICAL_EXT,
             .pNext     = nullptr,
             .color     = rt.rgUtilPackColorFloat4D( kR, kG, kB, 1.0f ),
-            .intensity = intensity,
+            .intensity = ( c.monster == RT_HAND_ARCHVILE ) ? vileIntensity : intensity,
             .position  = { c.px, c.py, c.pz },
-            .radius    = srcRadius,
+            .radius    = ( c.monster == RT_HAND_ARCHVILE ) ? vileRadius : srcRadius,
         };
         auto info = RgLightInfo{
             .sType        = RG_STRUCTURE_TYPE_LIGHT_INFO,
@@ -2786,12 +2803,28 @@ void RT_UploadHandGlowLights()
         static int s_tick;
         if( ( ++s_tick % 60 ) == 0 )
         {
-            Printf( "rt_hand_light: uploaded=%zu of %zu wanted (cap %d, within %.0fu) I=%.0f\n",
+            // The frame letters matter: "the light shows up several frames after the
+            // fire" is a claim about WHICH frames upload, and without them the dump
+            // cannot tell a missing table row from a light that is simply too dim or
+            // too high up to see.
+            char frames[ 24 ] = { 0 };
+            int  nf           = 0;
+            for( const HandCand& fc : cand )
+            {
+                const char L = char( 'A' + fc.frame );
+                if( nf < 16 && !strchr( frames, L ) )
+                {
+                    frames[ nf++ ] = L;
+                }
+            }
+            Printf( "rt_hand_light: uploaded=%zu of %zu wanted (cap %d, within %.0fu) I=%.0f vileI=%.0f frames=[%s]\n",
                     cand.size(),
                     wanted,
                     budget,
                     maxDist,
-                    intensity );
+                    intensity,
+                    vileIntensity,
+                    nf ? frames : "-" );
         }
     }
 }
