@@ -669,18 +669,27 @@ void RT_ApplyTintPreset( const char* mapname )
 //
 // rt_sector_emis_saturation is the COLOUR gate on rt_sector_emis: a surface
 // that already clears the lightlevel threshold self-emits only if its sector's
-// colormap tint is at least this saturated. The global 0.58 was measured on one
-// map -- MAP04 sector 68, tint 255,231,145, saturation 0.431 -- against MAP02's
-// red corridor panels, and it is a single number standing in for "is this a
-// coloured ROOM or merely a bright one" across every map in the game, whose
-// authors tinted them independently of each other.
+// colormap tint is at least this saturated. It is one number standing in for
+// "is this a coloured ROOM or merely a bright one" across every map in the
+// game, whose authors tinted them independently of each other -- so it is the
+// wrong shape for a global, and this table is the per-map override: one row,
+// one number, the same shape as RT_TINT_PRESETS above and read at the same
+// moment.
 //
-// So it is the wrong shape for a global. A map whose tints happen to sit just
-// above 0.58 on surfaces that are only bright gets fake lights on plain walls,
-// and the only global fix is to raise the gate everywhere -- which drops the
-// panels the feature exists for on the maps that were already right. This table
-// is the per-map override for exactly that: one row, one number, the same shape
-// as RT_TINT_PRESETS above and read at the same moment.
+// WHICH WAY ROUND THE TABLE RUNS, AND WHY IT FLIPPED (2026-08-28). It used to
+// hold the maps that needed the gate RAISED: the global was 0.58 (measured on
+// MAP04 sector 68, tint 255,231,145, saturation 0.431, against MAP02's red
+// corridor panels), and MAP08, MAP12 and MAP13 each got a row at 0.80 because
+// at 0.58 too much of them self-lit. Three maps in a row asking for the same
+// number is the table saying the global was wrong, not that those maps were
+// unusual -- 0.58 was the exception all along, tuned to keep ONE map's panels.
+// So the default is 0.80 everywhere (rt_cvars.inc, restated in the launcher
+// pins) and the three rows are gone, because a row that equals the global is
+// noise. MAP02 carries the only row, at 0.58, the loosest gate in the game.
+//
+// A row LOWER than the global is a claim that the map is genuinely coloured
+// where it is bright. A row HIGHER is a claim that it is merely bright. Both
+// are legitimate; neither should be added without looking at the map.
 //
 // SAME TRAP AS RT_MOON_PRESETS AND RT_FOG_PRESETS: it writes the cvar at LEVEL
 // LOAD, after the command line is parsed, so on a listed map it overrides a
@@ -691,6 +700,9 @@ void RT_ApplyTintPreset( const char* mapname )
 // `whatsthat`. It prints the sector's colormap tint AND the saturation computed
 // the same way this gate computes it, next to the threshold in force. Pick a
 // value above the surface you want gone and below the one you want kept.
+//
+// A row equal to the compiled default does nothing -- delete it rather than
+// leave it standing, or the table stops being a list of exceptions.
 struct EmisPreset
 {
     const char* map;
@@ -699,30 +711,16 @@ struct EmisPreset
 };
 
 constexpr EmisPreset RT_EMIS_PRESETS[] = {
-    { "map08", 0.80f, "set by eye on request (2026-08-26), NOT measured with `whatsthat` -- "
-                      "so treat 0.80 as a starting point and re-derive it the documented way "
-                      "if it needs to move. At the global 0.58 too much of this map clears "
-                      "the colour gate and self-lights; 0.80 keeps only strongly coloured "
-                      "sectors. MAP08 is also the pit-blood map (9 pools, rt_blood_goto), so "
-                      "check the pools when judging it -- they sit at z -256 and a verdict "
-                      "from the spawn point is worthless." },
-    { "map12", 0.80f, "set by eye on request (2026-08-27), NOT measured with `whatsthat` -- "
-                      "same status as the map08 row above: 0.80 is a starting point, and if "
-                      "it needs to move, re-derive it the documented way. At the global 0.58 "
-                      "too much of this map clears the colour gate and self-lights; 0.80 "
-                      "keeps only strongly coloured sectors. MAP12 is also one of the nine "
-                      "MAPINFO fog maps (see RT_FOG_PRESETS below), so judge it with the "
-                      "medium in force -- fog lifts the apparent brightness of a wall and "
-                      "will flatter a gate that is still too low." },
-    { "map13", 0.80f, "set by eye on request (2026-08-27), NOT measured with `whatsthat` -- "
-                      "same status as the two rows above: 0.80 is a starting point, and if "
-                      "it needs to move, re-derive it the documented way. At the global 0.58 "
-                      "too much of this map clears the colour gate and self-lights; 0.80 "
-                      "keeps only strongly coloured sectors. MAP13 is the MOON map "
-                      "(RT_MOON_PRESETS = 90, rt_sun aimed by the `moon` CCMD), so it is the "
-                      "one map where a wall can be bright because the directional light is "
-                      "ON it -- judge this gate somewhere the moon does not reach, or a "
-                      "sunlit wall will read as a self-emitter that the gate never touched." },
+    { "map02", 0.58f, "THE ONE ROW, and the only map with a gate LOWER than the global "
+                      "(2026-08-28). 0.58 is the value the whole feature was measured at -- "
+                      "MAP04 sector 68's warm cream tint (255,231,145, saturation 0.431) had "
+                      "to be excluded while MAP02's red corridor panels kept glowing, and "
+                      "0.58 is the margin that did it. When the default went to 0.80 "
+                      "everywhere, this map kept 0.58 because those panels ARE the feature: "
+                      "they are the surfaces rt_sector_emis was written to light, and no "
+                      "other map is holding the number up. If MAP02 ever needs to move, "
+                      "re-derive it with `whatsthat` on a panel and on a merely-bright wall "
+                      "in the same run -- the gate has to sit between the two." },
 };
 
 // The launcher's value, captured once before any row overwrites it, so a map
@@ -731,7 +729,7 @@ constexpr EmisPreset RT_EMIS_PRESETS[] = {
 // most maps have NO row, so a leaked value would be the common case, not the
 // rare one.
 bool  g_emis_base_set = false;
-float g_emis_base_sat = 0.58f;
+float g_emis_base_sat = 0.80f; // rt_cvars.inc default; overwritten on first apply
 
 const EmisPreset* RT_FindEmisPreset( const char* mapname )
 {
