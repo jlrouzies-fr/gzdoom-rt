@@ -2114,6 +2114,14 @@ void RT_DrawSparks()
                 // ternary -- a fifth fx would otherwise need a fourth.
                 const uint32_t* eramp = RT_EMBER_RAMP;
                 int             erampN = RT_EMBER_RAMP_N;
+                // A SECOND RAMP, for the one flavour that is two colours: the
+                // Cacodemon's ball under the classic recolour burns half red and
+                // half blue, because that is what the ball itself now looks
+                // like. Null for everything else, and null is what turns the
+                // whole split off -- so the alternation below costs one
+                // already-loaded pointer test on every other mark in the game.
+                const uint32_t* eramp2  = nullptr;
+                int             eramp2N = 0;
                 if( m.fx == ImpactFx::Laser )
                 {
                     eramp  = RT_LASER_RAMP;
@@ -2121,8 +2129,14 @@ void RT_DrawSparks()
                 }
                 else if( m.fx == ImpactFx::Fire )
                 {
-                    eramp  = ArcStyleFor( m.flavor ).ramp;
-                    erampN = ArcStyleFor( m.flavor ).rampN;
+                    const ArcStyle& st = ArcStyleFor( m.flavor );
+                    eramp  = st.ramp;
+                    erampN = st.rampN;
+                    if( st.ramp2 != nullptr && st.ramp2N > 1 && RT_CacoBlueFire() )
+                    {
+                        eramp2  = st.ramp2;
+                        eramp2N = st.ramp2N;
+                    }
                 }
 
                 const float emberLife =
@@ -2147,22 +2161,47 @@ void RT_DrawSparks()
                     // entries. Not quantized: an ember is watched for seconds,
                     // and hard steps on something held still read as banding
                     // rather than as style.
-                    float er, eg, eb;
-                    {
-                        const float f  = et * float( erampN - 1 );
-                        const int   i0 = std::clamp( int( f ), 0, erampN - 1 );
-                        const int   i1 = std::min( i0 + 1, erampN - 1 );
+                    auto l_sample = [ & ]( const uint32_t* ramp, int n,
+                                           float& outR, float& outG, float& outB ) {
+                        const float f  = et * float( n - 1 );
+                        const int   i0 = std::clamp( int( f ), 0, n - 1 );
+                        const int   i1 = std::min( i0 + 1, n - 1 );
                         const float fr = f - float( i0 );
-                        const uint32_t c0 = eramp[ i0 ];
-                        const uint32_t c1 = eramp[ i1 ];
+                        const uint32_t c0 = ramp[ i0 ];
+                        const uint32_t c1 = ramp[ i1 ];
                         auto l_l = [ & ]( int sh ) {
                             const float a0 = ( ( c0 >> sh ) & 0xFF ) / 255.f;
                             const float a1 = ( ( c1 >> sh ) & 0xFF ) / 255.f;
                             return a0 + ( a1 - a0 ) * fr;
                         };
-                        er = l_l( 16 );
-                        eg = l_l( 8 );
-                        eb = l_l( 0 );
+                        outR = l_l( 16 );
+                        outG = l_l( 8 );
+                        outB = l_l( 0 );
+                    };
+
+                    float er, eg, eb;
+                    l_sample( eramp, erampN, er, eg, eb );
+
+                    // THE SECOND HALF OF A TWO-COLOUR FIRE, and the MIX the one
+                    // light per mark is cast in.
+                    //
+                    // A mark gets ONE light (the density arithmetic in
+                    // rt_fire_glow's help), so with half the flames red and half
+                    // blue there is no honest single colour but their average --
+                    // which lands on the violet the ball's own midtones pass
+                    // through, and is why the wall reads as lit by BOTH halves
+                    // rather than by whichever flame happens to be index 0.
+                    //
+                    // Averaged at the SAME point on the two ramps, not at two
+                    // different ages: the two halves cool together.
+                    float er2 = er, eg2 = eg, eb2 = eb;
+                    float erL = er, egL = eg, ebL = eb;
+                    if( eramp2 != nullptr )
+                    {
+                        l_sample( eramp2, eramp2N, er2, eg2, eb2 );
+                        erL = ( er + er2 ) * 0.5f;
+                        egL = ( eg + eg2 ) * 0.5f;
+                        ebL = ( eb + eb2 ) * 0.5f;
                     }
 
                     const RgNormalPacked32 en =
@@ -2288,6 +2327,21 @@ void RT_DrawSparks()
                         // for the one thing this flavour's colour rests on.
                         const bool tintThis = !useFireArt || bool( cvar::rt_fire_tint );
 
+                        // HALF THE FLAMES ON EACH RAMP, alternating by INDEX.
+                        //
+                        // A per-flame hash was the obvious move -- everything
+                        // else about a spot is hashed off `eh` -- and it is
+                        // wrong here. rt_fire_count is 7: a fair coin per flame
+                        // deals 6-1 or 7-0 about one mark in eight, and "half
+                        // blue" that is occasionally all red is a bug report.
+                        // The parity is exact at every count, and the flames are
+                        // scattered in space anyway (rt_fire_scatter), so
+                        // alternating in index order shows no pattern.
+                        const bool coolFlame = ( eramp2 != nullptr ) && ( ( e & 1 ) != 0 );
+                        const float fer = coolFlame ? er2 : er;
+                        const float feg = coolFlame ? eg2 : eg;
+                        const float feb = coolFlame ? eb2 : eb;
+
                         //
                         // THE FLICKER HAS TO SURVIVE THE CLAMP, and for a coal it
                         // does not have to -- which is why the two orders differ.
@@ -2316,9 +2370,9 @@ void RT_DrawSparks()
                                 : std::clamp( emberBright * efade * pulse, 0.f, 1.f );
 
                         const RgColor4DPacked32 ec = rt.rgUtilPackColorFloat4D(
-                            tintThis ? er : 1.f,
-                            tintThis ? eg : 1.f,
-                            tintThis ? eb : 1.f,
+                            tintThis ? fer : 1.f,
+                            tintThis ? feg : 1.f,
+                            tintThis ? feb : 1.f,
                             alpha );
 
                         // The pulse SIZE as well as its brightness, gently. A
@@ -2558,10 +2612,13 @@ void RT_DrawSparks()
                         if( emberHalo > 0.f && emberHaloA > 0.f )
                         {
                             const float hr = szp * emberHalo;
+                            // THIS SPOT'S OWN colour, not the mark's mix: the
+                            // halo is the glow around one flame, so a blue flame
+                            // must not sit in a red one.
                             const RgColor4DPacked32 hc = rt.rgUtilPackColorFloat4D(
-                                er,
-                                eg,
-                                eb,
+                                fer,
+                                feg,
+                                feb,
                                 std::clamp( emberBright * efade * pulse * emberHaloA,
                                             0.f,
                                             1.f ) );
@@ -2569,7 +2626,7 @@ void RT_DrawSparks()
                             // reads as a sticker; the whole point of a halo is
                             // that it has no edge.
                             const RgColor4DPacked32 hrim =
-                                rt.rgUtilPackColorFloat4D( er, eg, eb, 0.f );
+                                rt.rgUtilPackColorFloat4D( fer, feg, feb, 0.f );
 
                             constexpr int kHaloSegs = 10;
                             const uint32_t hb = uint32_t( s_batchSpark.verts.size() );
@@ -2642,9 +2699,14 @@ void RT_DrawSparks()
                         {
                             s_arcLights.push_back( ArcLightCand{
                                 c + m.nrm * 0.05f,
-                                er,
-                                eg,
-                                eb,
+                                // THE MIX, not this spot's own colour. Identical
+                                // to `er` for every mark in the game except the
+                                // two-colour one, where the single light a mark
+                                // is allowed has to carry both halves -- see
+                                // where erL is computed.
+                                erL,
+                                egL,
+                                ebL,
                                 // The pulse rides the light too, so the glow on
                                 // the wall breathes with the ember casting it.
                                 // Linear fade for the reason the arcs' is --

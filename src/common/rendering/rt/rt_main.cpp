@@ -2380,6 +2380,70 @@ void rtx::RTFrameBuffer::RT_BeginFrame()
     rt_cullmode = l_clm();
 }
 
+
+// Doom64-RT: say out loud when a DEBUG VIEW is repainting the image.
+//
+// Every one of these is NOARCH, so a value typed in the console leaves no trace
+// in the ini and none in the pins -- there is nothing to grep afterwards. Two
+// separate sessions have now been spent asking "was a debug view on?" about a
+// magenta light, with the answer unobtainable either way. So the renderer says
+// so itself, and says it again whenever the set changes.
+//
+// Only views that REPAINT LIGHTING are listed. A console dump or a marker sphere
+// is additive and does not lie about the image; these replace what you are
+// looking at, which is exactly what makes them mistakable for the effect.
+static void RT_WarnDebugViews()
+{
+    const struct
+    {
+        const char* name;
+        int         value;
+        const char* effect;
+    } views[] = {
+        { "rt_svgf_fp",          int( cvar::rt_svgf_fp ) == 2 ? 2 : 0,
+          "borrowed denoiser pixels painted MAGENTA (any sprite silhouette)" },
+        { "rt_debug_visibility", int( cvar::rt_debug_visibility ),
+          "shadow term instead of radiance; 2 tints shadowed pixels RED" },
+        { "rt_debug_show",       int( cvar::rt_debug_show ),
+          "raw denoiser layer instead of the final image" },
+        { "rt_lava_debug",       int( cvar::rt_lava_debug ) ? 1 : 0,
+          "every lava surface painted MAGENTA" },
+        { "rt_smoke_debug",      int( cvar::rt_smoke_debug ) == 2 ? 2 : 0,
+          "froxels covered by a puff painted MAGENTA" },
+        { "rt_debug_restir_m",   int( cvar::rt_debug_restir_m ),
+          "ReSTIR reservoir M as a green ramp instead of radiance" },
+    };
+
+    FString now;
+    for( const auto& v : views )
+    {
+        if( v.value != 0 )
+        {
+            now.AppendFormat( "  %s %d -- %s\n", v.name, v.value, v.effect );
+        }
+    }
+
+    // The sentinel matters: with a default-constructed s_last, an empty `now` on
+    // the FIRST call compares equal and returns before printing anything -- so
+    // the one case the line exists for, "confirm no debug view is on", said
+    // nothing at all. Start from a value no report can produce.
+    static FString s_last = "";
+    if( now.Compare( s_last ) == 0 )
+    {
+        return;
+    }
+    s_last = now;
+    if( now.IsEmpty() )
+    {
+        Printf( "RT debug views: none (the image is the real render)\n" );
+    }
+    else
+    {
+        Printf( "\n*** RT DEBUG VIEW ACTIVE -- WHAT YOU SEE IS NOT THE REAL RENDER ***\n%s\n",
+                now.GetChars() );
+    }
+}
+
 void rtx::RTFrameBuffer::RT_DrawFrame()
 {
     // Sky primitives are collected as the renderer walks the BSP, so the list
@@ -2581,6 +2645,7 @@ void rtx::RTFrameBuffer::RT_DrawFrame()
     RT_UploadGzDoomDynamicLights();
     RT_UploadCeilingInsetLamps();
     RT_UploadHangingTechLamps();
+    RT_WarnDebugViews();
     RT_UploadHandGlowLights();
     RT_UploadFlameLights();
     RT_UploadLavaLights();

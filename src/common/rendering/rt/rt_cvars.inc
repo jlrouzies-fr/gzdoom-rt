@@ -851,7 +851,92 @@
     // magenta marker spheres at 350 intensity; archived, a single debug launch would
     // leave them burned into the ini and silently wreck every later visual judgement.
     // That is the "A/B cvars must not persist" failure this project has already paid for.
-    RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at Baron-family fist lights" )
+    // The Arch-Vile is on the same system but is NOT a fist. Its hands hold a
+    // column of fire the height of the sprite, so the Baron's 65/0.06 reads as a
+    // pinprick: too dim to light the vile itself, and on the wind-up frames --
+    // where the flame sits 100..128 units up, near the top of a 137px sprite --
+    // too weak to reach the floor at all, which is why the light looked like it
+    // arrived several frames after the fire did.
+    // RADIUS IS NOT INDEPENDENT OF BRIGHTNESS. RTGL1 encodes a sphere light as
+    // intensity / (PI * radius^2) -- LightManager.cpp, EncodeAsSphereLight -- so
+    // DOUBLING THE RADIUS QUARTERS THE LIGHT. This was got wrong once: 260 at
+    // r=0.35 was raised from the Baron's 65 at r=0.06 believing it 4x brighter,
+    // and it is 0.12x, because the radius went up 5.8x at the same time.
+    //
+    //   radiance = intensity / (PI * r^2)
+    //   Baron fist   65 / (PI*0.06^2) = 5748
+    //   wall strip  180 / (PI*0.35^2) =  468
+    //   this       1000 / (PI*0.35^2) = 2599   (0.45x a fist, 5.6x a wall strip)
+    //
+    // Change the radius and this number must move with it, or the light silently
+    // changes brightness while looking like a shape tweak.
+    //
+    // 1000 was chosen in the lab, and it is worth noting it came out BELOW half a
+    // fist -- an earlier guess of 8800 (4x a fist) was picked by arithmetic alone
+    // and was far too hot. Two flames beat one fist, and the sprite's own emissive
+    // is already carrying much of the look.
+    RT_CVAR( rt_vile_light_intensity,   1000.f, "RT intensity per FLAME hand for the Unseen Evil Arch-Vile. Chosen in "
+                                                "the lab; reads as 0.45x a Baron fist once the radius is divided out "
+                                                "-- see the radiance note above, and move this WITH "
+                                                "rt_vile_light_radius." )
+    // The Chaingunner's TWO BARREL ENDS. Its own pair because a muzzle flash is
+    // neither a fist nor a flame: small source, brief, and brighter per unit area
+    // than either. 160 / (PI*0.10^2) = 5093 radiance -- 0.89x a Baron fist and 2x
+    // the Arch-Vile's flame, from a source a third the width.
+    //
+    // These REPLACE the old CPOSF lightIntensity 520 row, which RTGL1 pinned to
+    // the centre of the billboard quad and therefore put a single warm blob on
+    // his chest while both barrels sat dark.
+    RT_CVAR( rt_gunner_light_intensity, 160.f,  "RT intensity per BARREL for the Unseen Evil Chaingunner's muzzle "
+                                                "flash. Radiance is intensity/(PI*r^2) -- move this WITH "
+                                                "rt_gunner_light_radius or the brightness changes silently." )
+    // The Spider Mastermind's gun flash. Wider source than the Chaingunner's
+    // barrel because the flash is 1187 texels across the front, not a point.
+    // 700 / (PI*0.20^2) = 5570 radiance, near the Chaingunner's 5093 from twice
+    // the width. Its EYES are deliberately NOT lit -- same red, different frames,
+    // gated in tools/gen_hand_light_offsets.py; a walking spider with two red
+    // lamps for eyes is the failure gen_enemy_eye_emissives keeps EYE_LIGHT 0 for.
+    RT_CVAR( rt_mastermind_light_intensity, 700.f, "RT intensity per gun-flash light for the Unseen Evil Spider "
+                                                "Mastermind, on its firing frame only. Radiance is "
+                                                "intensity/(PI*r^2) -- move this WITH the radius." )
+    // The Revenant's eyes AND its two shoulder launchers -- four small red points,
+    // each lit where it actually sits. Modest: they are points on a monster, not a
+    // muzzle flash. 90 / (PI*0.12^2) = 1989 radiance, ~0.35x a Baron fist.
+    RT_CVAR( rt_revenant_light_intensity,  90.f, "RT intensity per red point on the Unseen Evil Revenant (eyes and "
+                                                "shoulder launchers). Radiance is intensity/(PI*r^2) -- move this "
+                                                "WITH the radius." )
+    RT_CVAR( rt_revenant_light_radius,   0.12f,  "RT source radius in meters per Revenant red point. Brightness "
+                                                "falls with the SQUARE of this." )
+    // EYES, SHARED BY EVERY MONSTER THAT HAS THEM. An eye is a different ORDER of
+    // light from a fist or a muzzle: it should tint the face and the wall an inch
+    // behind it, not light a room. 25/(PI*0.10^2) = 796 radiance -- 0.40x a
+    // Revenant LED (1989) and 0.14x a Baron fist (5748).
+    //
+    // Positions come from each monster's OWN _e mask (gen_hand_light_offsets.py,
+    // EYE_MONSTERS), so the light sits exactly under the glow. This is NOT the
+    // textures.json lightIntensity route, which gen_enemy_eye_emissives keeps at
+    // zero on purpose: RTGL1 pins an attached sprite light to the CENTRE of the
+    // billboard quad, so that route turns a zombie into a lantern instead of
+    // lighting its eyes.
+    RT_CVAR( rt_eye_light_intensity,    25.f,   "RT intensity per lit monster eye. Radiance is intensity/(PI*r^2) -- "
+                                                "move this WITH the radius. 0 disables every eye light." )
+    RT_CVAR( rt_eye_light_radius,       0.10f,  "RT source radius in meters per monster eye. Brightness falls with "
+                                                "the SQUARE of this." )
+    RT_CVAR( rt_mastermind_light_radius,  0.20f,  "RT source radius in meters for the Mastermind's gun flash. "
+                                                "Brightness falls with the SQUARE of this." )
+    RT_CVAR( rt_gunner_light_radius,    0.10f,  "RT source radius in meters per Chaingunner barrel. Small: a barrel "
+                                                "end is a point next to a flame. Brightness falls with the SQUARE "
+                                                "of this." )
+    RT_CVAR( rt_vile_light_radius,      0.35f,  "RT source radius in meters per Arch-Vile flame. Wide on purpose -- a "
+                                                "flame is a volume, not a point, and a small source gives it a hard "
+                                                "shadow edge no fire has. Matches rt_wall_strip_radius. NOT free: "
+                                                "brightness falls with the SQUARE of this, so raise "
+                                                "rt_vile_light_intensity to match when widening it." )
+    RT_CVAR_NOARCH( rt_hand_light_debug, false, "periodic console dump + magenta marker spheres at fist/flame light "
+                                                "positions. The markers are uploaded at the SAME RADIANCE as the light "
+                                                "they mark, so a debug run cannot make a dim light look bright -- an "
+                                                "earlier fixed 350/0.05 marker was 66x the light beside it, and a "
+                                                "too-dim flame was signed off on the strength of the magenta." )
 
     // Lava is a LIGHT, and it has to be an analytic one.
     //
@@ -1072,7 +1157,7 @@
                                                 "a light feature. This is what stops the flood: 180 means 'glowing panel' in a dark "
                                                 "corridor and 'ordinary lit room' on a bright deck, so an absolute threshold either "
                                                 "misses the panels or turns every wall in the level into a light (2026-08-07)" )
-    RT_CVAR( rt_sector_emis_saturation, 0.58f,  "minimum colour saturation of the sector's colormap tint (rtstate.m_sectorLightColor, "
+    RT_CVAR( rt_sector_emis_saturation, 0.80f,  "minimum colour saturation of the sector's colormap tint (rtstate.m_sectorLightColor, "
                                                 "i.e. Colormap.LightColor -- the same hue primColor tints the surface with, see "
                                                 "RT_SectorHue) required for a lightlevel-qualifying surface to actually self-emit "
                                                 "[0..1, (max-min)/max over rgb]. 0 = off, any qualifying surface emits regardless "
@@ -1083,17 +1168,27 @@
                                                 "SPACEAP1, sector 70 SPACECL1; MAP04 sector 68 SPACEAF) qualified exactly the same "
                                                 "way and self-lit with nothing casting it -- it reads as a fake light on a wall "
                                                 "that is just bright, not as a light source.\n"
-                                                "WHY 0.58, NOT 0.12. `whatsthat` on MAP04 sector 68 measured colormap tint "
+                                                "WHERE 0.58 CAME FROM. `whatsthat` on MAP04 sector 68 measured colormap tint "
                                                 "255,231,145 -- saturation 0.431, a warm cream/lamp tint that reads as ordinary "
                                                 "light to the eye, not as a coloured room -- and 0.12 let it straight through. "
                                                 "0.12 only ever excluded true near-greys. Confirmed in play (2026-08-21): 0.5 "
-                                                "already dropped the MAP04 wall with MAP02's red corridor panels still glowing; "
-                                                "0.58 keeps that margin over 0.431 without a live re-check at this exact value" )
+                                                "already dropped the MAP04 wall with MAP02's red corridor panels still glowing, "
+                                                "so 0.58 kept a margin over 0.431 and became the global.\n"
+                                                "WHY IT IS 0.80 NOW (2026-08-28). 0.58 was measured on ONE map and then needed "
+                                                "an RT_EMIS_PRESETS row raising it to 0.80 on map after map (MAP08, MAP12, "
+                                                "MAP13) -- which is the table saying the global was the wrong way round. 0.80 "
+                                                "is the default everywhere, and MAP02 -- the red corridor panels this feature "
+                                                "was written for -- carries the only row, back at 0.58. A map that needs the "
+                                                "looser gate now asks for it explicitly instead of every map paying for MAP02.\n"
+                                                "This cvar is ARCHIVED, so tools/d64rt-pins.cfg restates it and check_pins.py "
+                                                "fails if the pin and this default ever drift apart" )
     RT_CVAR_NOARCH( rt_sector_emis_presets, true, "apply the per-map SELF-EMISSION SATURATION table (RT_EMIS_PRESETS) at level "
-                                                "load, which raises rt_sector_emis_saturation on the maps whose colormap tints "
-                                                "clear the global 0.58 on surfaces that are merely bright -- a per-map override "
-                                                "of the one number that decides whether a bright surface is a LIGHT or just lit. "
-                                                "A map with no row is left EXACTLY as it is. 0 turns the whole table off.\n"
+                                                "load, which overrides rt_sector_emis_saturation on a map whose colormap tints "
+                                                "do not sit where the global 0.80 assumes -- a per-map override of the one "
+                                                "number that decides whether a bright surface is a LIGHT or just lit. One row "
+                                                "today: MAP02 at 0.58, the loosest gate in the game, because its red corridor "
+                                                "panels are what rt_sector_emis exists for. A map with no row is left EXACTLY "
+                                                "as it is. 0 turns the whole table off.\n"
                                                 "SAME TRAP AS RT_MOON_PRESETS AND RT_FOG_PRESETS: the table writes "
                                                 "rt_sector_emis_saturation at LEVEL LOAD, after the command line is parsed, so "
                                                 "on a listed map it overrides a +rt_sector_emis_saturation pin. Set this to 0 "
@@ -4944,6 +5039,43 @@
                                                 "in that shader, which is what the debris whiteout was about.\n"
                                                 "Off draws every fireball's flames white: the arm that shows the tint "
                                                 "doing its work." )
+    RT_CVAR( rt_fire_caco_blue,         1,      "the CACODEMON's impact fire burns HALF RED AND HALF BLUE, to match "
+                                                "the blue fringe its fireball wears under the optional classic "
+                                                "recolour add-on (docs/classic-recolored-addon.md).\n"
+                                                "1 = FOLLOW THE ADD-ON. The renderer asks the file system whether "
+                                                "d64r-caco-ball-recolor.pk3 is loaded, which the launcher passes only "
+                                                "when the player ticked the box -- so this reads the player's own "
+                                                "choice back rather than being pinned alongside it and going stale "
+                                                "the first time they untick it.\n"
+                                                "0 = never: every caco flame on RT_FIRE_RED_RAMP, exactly as the "
+                                                "baron's. This is what the game did before the split existed and it "
+                                                "is the honest BEFORE for judging it.\n"
+                                                "2 = always, add-on or not: the blue half against Doom 64's own "
+                                                "orange ball, which is the arm that shows what the recolour is "
+                                                "buying.\n"
+                                                "The split is by FLAME INDEX, not by a hash -- alternating means an "
+                                                "exact half at rt_fire_count 7, where a per-flame random would "
+                                                "sometimes deal six of one." )
+    RT_CVAR( rt_fire_caco_blue_light,   450.f,  "intensity of the BLUE HALF of the recoloured Cacodemon ball's light "
+                                                "IN FLIGHT -- the fringe's half. Gated by rt_fire_caco_blue; 0 "
+                                                "leaves the ball's own red GLDEFS light alone.\n"
+                                                "IT IS A MIX OF TWO LIGHTS AND IT HAS TO BE. One sphere light has "
+                                                "one colour, so red-and-blue can only happen by adding two: the warm "
+                                                "one is the RTGL1 attached light BAL2 carries in textures.json "
+                                                "(ff5a28 at 900, keyed BY NAME and therefore on with or without the "
+                                                "add-on), and this recolours the ball's own GLDEFS flickerlight to "
+                                                "carry the other half.\n"
+                                                "450 AGAINST THAT 900 is the whole calibration. Recolouring alone "
+                                                "does nothing visible: CACOBALL's 64-unit radius comes out of "
+                                                "rt_lights_sector's arithmetic at about 49, and a hue swap on a "
+                                                "light eighteen times dimmer than its neighbour cannot be seen. "
+                                                "Radius cannot buy it back either -- above rt_dynlight_rsoft a wider "
+                                                "light is a DIMMER one, and under rt_dynlight_minradius it is "
+                                                "dropped outright -- which is why this is an absolute override and "
+                                                "not a multiplier.\n"
+                                                "The hue is RT_FIRE_CACO_BLUE_RAMP's hot end, shared with the impact "
+                                                "flames by construction. Faded by the ball's own death ramp, so the "
+                                                "blue half dies on the curve CACOBALL_X1..X5 already draw." )
     RT_CVAR( rt_fire_glow,              420.f,  "how far a fireball mark's light reaches. Absolute, replacing "
                                                 "rt_ember_glow_intensity for this mark only -- the same shape as "
                                                 "rt_laser_glow, and for the same reason.\n"
